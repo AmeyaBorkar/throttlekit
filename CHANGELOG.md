@@ -6,7 +6,16 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Redis client adapters** (`throttlekit/redis`): `fromNodeRedis`, `fromUpstash`, and `fromIoredis`.
+  `RedisStore` now works with the official **node-redis** client and the **Upstash REST** client
+  (Cloudflare Workers, Vercel, Deno, Bun — anywhere TCP isn't allowed), not just `ioredis`. Every
+  built-in strategy's atomic Lua runs identically across all three; the node-redis path is proven
+  bit-identical to the JS path against a live server. (Upstash REST is Lua-only — no `WATCH`/`MULTI`.)
+- **Framework adapters** on a shared core, each its own subpath: `throttlekit/hono` (`honoRateLimit`),
+  `throttlekit/next` (`nextRateLimit`, dependency-free), `throttlekit/fastify` (`fastifyRateLimit`),
+  and `throttlekit/koa` (`koaRateLimit`). Hono/Fastify/Koa are optional peers.
 
 ## [0.1.0] — 2026-05-26
 
