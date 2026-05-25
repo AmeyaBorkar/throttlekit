@@ -83,7 +83,7 @@ Redis: `ZREMRANGEBYSCORE` + `ZCARD` + `ZADD` inside one Lua script.
 **Gradient2** (verified against Netflix `Gradient2Limit.java`):
 
 ```
-gradient = clamp(0.5, 1.0, tolerance · rttNoload / rttActual)   // tolerance default 1.5
+gradient = clamp(0.5, 1.0, tolerance · rttNoload / rttActual)   // tolerance: TK default 2.0 (Netflix Gradient2 uses 1.5); configurable
 newLimit = limit · gradient + queueSize
 newLimit = limit · (1 − smoothing) + newLimit · smoothing       // smoothing default 0.2
 newLimit = clamp(minLimit, maxLimit, newLimit)
