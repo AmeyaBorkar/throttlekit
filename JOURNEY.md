@@ -5,6 +5,34 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — Benchmark sweep, and a deliberately-declined optimization
+
+Re-measured the full comparative suite (memory / Redis / Postgres) and audited the docs for drift.
+Where we land, honestly:
+
+- **In-process:** `checkSync` ~320 ns (≈allocation-free) beats rate-limiter-flexible's async-only API;
+  on the async *counter* path the bare-counter incumbents are ~2–3× faster — inherent, since GCRA over
+  a timing-wheel + CLOCK-eviction store is more work than `Map++`.
+- **Redis:** tied on p50/throughput (both one atomic round trip); **we win the tail** (p999 ~1.6×
+  tighter — cached `EVALSHA` + a leaner script).
+- **Postgres:** two opposite truths. rate-limiter-flexible wins the **bare single op ~3×** (its counter
+  is one atomic UPSERT; our generic RMW is a ~5-round-trip transaction), but **`twoTier(leased)` over
+  Postgres wins throughput ~34×** — measured 12.6k vs 366 ops/s, 79.7 µs vs 2.6 ms/op (one transaction
+  per batch; no incumbent equivalent).
+
+Chased the Postgres per-op gap into the implementation. A single-statement SQL fast-path **can't**
+safely win here: "deny-doesn't-consume" can't both skip the write *and* return the deny decision from
+one `INSERT … ON CONFLICT … RETURNING`, and first-touch concurrency loses updates without the advisory
+lock (which needs the transaction). The clean 1-round-trip path is a **server-side PL/pgSQL function**
+— a *third* execution path with its own bit-identical conformance, float-exactness risk, and DB
+function lifecycle. **Declined on purpose:** Postgres per-op latency only bites at high volume, and at
+high volume you use `leased` (already winning 34×), so the function would buy a corner case that barely
+exists, at permanent maintenance cost. Honest ROI over a vanity benchmark row.
+
+Net: we win or tie on every axis that matters for real workloads; the only outright losses are
+async in-process micro-throughput (vs a feature-less counter) and Postgres bare-single-op — both
+corner cases. SCOREBOARD/README synced; `bench:compare` now covers all three tiers + the leased row.
+
 ## 2026-05-26 — Tested latency, and Postgres as a first-class backend
 
 Measured the latency story end-to-end (this machine, Node 24, Redis + Postgres in Docker), and
