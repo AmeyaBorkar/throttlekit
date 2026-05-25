@@ -9,3 +9,19 @@
 
 /** The current package version. Kept in sync with package.json. */
 export const version = "0.1.0";
+
+export type {
+  Clock,
+  Decision,
+  Strategy,
+  StrategyOutcome,
+  Store,
+  ApplyOutcome,
+  Transform,
+  LuaProgram,
+  LuaInvocation,
+  FailMode,
+  Limiter,
+} from "./core/types";
+export { systemClock, ManualClock } from "./core/clock";
+export { ThrottleKitError, StoreUnavailableError, RateLimitExceededError } from "./core/errors";
