@@ -5,6 +5,26 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-25 — Dual-path proven end-to-end
+
+The central thesis is now demonstrated, not just claimed. Built the vertical slice
+(`rateLimit` + `gcra` + `MemoryStore`), the `RedisStore` (atomic Lua via `EVALSHA` with an
+`EVAL`/`NOSCRIPT` fallback and an OCC fallback for custom strategies), and a **conformance vector
+suite** that runs each strategy through both the JS executor and the Redis-Lua executor across
+40×25 generated timelines and asserts bit-identical decision streams — ~49k validated round trips
+across GCRA, token bucket, and fixed window, all green.
+
+Key engineering call that makes conformance exact: the TAT (and other fractional state) is stored
+in Redis via `string.format('%.17g', x)` so it round-trips through Redis as the *exact* IEEE-754
+double, and both paths derive every float from the same integer ARGV with identical operations.
+A pleasant discovery: GCRA / token bucket / fixed window are all idempotent w.r.t. stale state
+(a TAT in the logical past clamps to `now`; a long-elapsed token bucket refills to capacity), so
+the Redis-PEXPIRE-vs-logical-clock mismatch can't cause divergence in the conformance harness.
+
+Parallelized with background agents (research verification, then token bucket + fixed window) while
+keeping file ownership disjoint. Test Redis runs on **6380** locally to avoid clobbering an
+unrelated `sarva-redis` already on 6379.
+
 ## 2026-05-25 — Kickoff & foundations
 
 **Goal for the session.** Stand up a production-grade, framework-agnostic rate-limiting
