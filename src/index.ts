@@ -54,3 +54,11 @@ export type { HeaderEmit, BuildRateLimitHeadersOptions } from "./http/headers";
 export { clientIp } from "./security/ip";
 export type { TrustProxyConfig, ClientIpInput } from "./security/ip";
 export { hashKey, hmacKeyer } from "./security/keys";
+export { all, any, multiRateLimit } from "./multi";
+export type {
+  Dimension,
+  Dimensions,
+  MultiStrategy,
+  MultiLimiter,
+  MultiRateLimitOptions,
+} from "./multi";
