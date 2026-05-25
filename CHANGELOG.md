@@ -16,6 +16,16 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 - **Framework adapters** on a shared core, each its own subpath: `throttlekit/hono` (`honoRateLimit`),
   `throttlekit/next` (`nextRateLimit`, dependency-free), `throttlekit/fastify` (`fastifyRateLimit`),
   and `throttlekit/koa` (`koaRateLimit`). Hono/Fastify/Koa are optional peers.
+- A **comparative benchmark** (`npm run bench:compare`) measuring ThrottleKit against
+  `rate-limiter-flexible` and `express-rate-limit` on one fair harness (memory + Redis tiers).
+
+### Changed
+
+- **Faster async `check()`** on synchronous stores (e.g. `MemoryStore`): it now runs the transition
+  inline and hands back a resolved promise, skipping the async store frame and the per-call
+  transform closure. Measured ~2.7× faster (596.9k → ~1.64M ops/s in memory, single hot key);
+  `checkSync` remains allocation-free at ~3.2M ops/s. The async path is unchanged for genuinely
+  async stores (Redis). No observable behavior change.
 
 ## [0.1.0] — 2026-05-26
 

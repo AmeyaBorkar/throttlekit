@@ -461,6 +461,18 @@ Two extra hedges against transient outages: **`twoTier` in `leased` mode** keeps
 
 ---
 
+## Performance
+
+In-process, single hot key (Node 24, reproducible via `npm run bench`):
+
+- **`checkSync` (GCRA): ~3.2M ops/s, ~316 ns/op, allocation-free.**
+- `check` (async, GCRA): **~1.6M ops/s** (~600 ns/op).
+- Redis: exactly **one** `EVALSHA` round trip per check.
+
+Head-to-head (`npm run bench:compare`, same machine/process/warmup, allow path) vs the closest incumbents: ThrottleKit **owns the sync path** — no other library offers a synchronous API, and ours is allocation-free — and **ties `rate-limiter-flexible` on Redis** (both one atomic Lua round trip, ~640 ops/s loopback). On async in-memory throughput the counter-based libraries are faster per call (`rate-limiter-flexible` ~2.9M, `express-rate-limit` ~4.2M) than ThrottleKit's GCRA (~1.7M) — the trade for a smoother algorithm over a bounded-memory store; all are in the millions/sec. Full table, methodology, and caveats in [SCOREBOARD.md](./SCOREBOARD.md).
+
+---
+
 ## How it's tested
 
 ThrottleKit is engineered to be *provably* correct:
