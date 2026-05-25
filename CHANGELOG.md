@@ -12,6 +12,9 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   memory** (~7.4 KB at the defaults, independent of key count) for huge-cardinality / DDoS shedding.
   Provably **never over-admits** (check-before-add over a never-underestimating sketch); its only
   error is bounded early denial (`ε·N` w.p. `≥ 1−δ`). Pure JS, sync + async.
+- **`withAnalytics`** — zero-config, dependency-free traffic insight: wrap any limiter to get
+  allow/deny counts and bounded-memory **top-K heavy hitters** (Space-Saving), queryable in-process
+  via `analytics()` without an OpenTelemetry backend.
 - **Redis client adapters** (`throttlekit/redis`): `fromNodeRedis`, `fromUpstash`, and `fromIoredis`.
   `RedisStore` now works with the official **node-redis** client and the **Upstash REST** client
   (Cloudflare Workers, Vercel, Deno, Bun — anywhere TCP isn't allowed), not just `ioredis`. Every

@@ -454,6 +454,20 @@ instrumentGuard(guard, meter);                       // concurrency.limit / .inf
 
 `instrumentLimiter` returns a drop-in `Limiter`; `instrumentGuard` returns the same guard with observable gauges attached. The adapters also expose `onLimited` and `onError` hooks for custom sinks.
 
+For zero-config insight without a metrics backend, wrap a limiter with **`withAnalytics`** — it tracks allow/deny counts and the **top-K "heavy hitters"** (the keys driving the most traffic and the most denials) in bounded memory:
+
+```ts
+import { withAnalytics, rateLimit, gcra } from "throttlekit";
+
+const limiter = withAnalytics(rateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
+await limiter.check(clientIp); // use exactly like any limiter
+
+const a = limiter.analytics();
+// { allowed, denied, total, denyRate, topRequested: [{ key, count }], topDenied: [...] }
+```
+
+Top-K uses **Space-Saving** (Metwally et al. 2005): at most `topK` entries are tracked no matter how many distinct keys appear, so it surfaces your worst offenders even under a flood of unique keys without unbounded memory. Drop-in (`check`/`checkSync`/`reset` pass through); window resets each `windowMs`.
+
 ---
 
 ## Resilience (what happens when Redis is down)

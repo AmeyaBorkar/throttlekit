@@ -84,6 +84,7 @@ can't be benchmarked locally on equal footing.
 | Adapters: Express · Web `fetch`/edge · Hono · Next.js · Fastify · Koa | ✅ |
 | Injectable clock / determinism (`ManualClock`) | ✅ |
 | OpenTelemetry metrics + gauges | ✅ |
+| Built-in analytics (`withAnalytics`) — allow/deny + Space-Saving top-K heavy hitters | ✅ |
 | IETF (draft + structured) + legacy headers, `Retry-After` | ✅ |
 | Proxy-correct IP + IPv6 /64 aggregation + HMAC keys | ✅ |
 | Store conformance testkit | ✅ |
