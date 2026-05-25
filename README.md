@@ -363,6 +363,35 @@ The guarantee: because the sketch never *under*counts, **`allowed` implies the t
 
 ---
 
+## Overload & fairness (`adaptiveThrottle`, `fairShare`)
+
+Two admission-control primitives that sit *upstream* of the per-key limiters.
+
+**`adaptiveThrottle`** — Google-SRE [client-side adaptive throttling](https://sre.google/sre-book/handling-overload/). A client that keeps hammering an overloaded backend only deepens the overload; this sheds a growing fraction of requests *locally* based on the backend's recent accept rate, so callers back off automatically:
+
+```ts
+import { adaptiveThrottle } from "throttlekit";
+
+const throttle = adaptiveThrottle({ k: 2 }); // shed once sending > 2× what the backend accepts
+if (!throttle.request()) return failFast();   // shed locally, don't even try
+try { const res = await callBackend(); throttle.record(res.ok); }
+catch { throttle.record(false); }            // feed outcomes back so it self-corrects
+```
+
+`p = max(0, (requests − K·accepts) / (requests + 1))` over a smooth rolling window; `request(priority)` protects critical traffic (`priority: 1` is never shed).
+
+**`fairShare`** — split one global per-window budget across tenants so a greedy tenant can't starve the others (each active tenant is guaranteed ≥ `limit/N`, and the global total never exceeds `limit`):
+
+```ts
+import { fairShare } from "throttlekit";
+const fair = fairShare({ limit: 1000, windowMs: 60_000 });
+const d = fair.checkSync(tenantId); // d.limit is this tenant's current fair cap
+```
+
+It's an honest *online equal-share approximation*, not work-conserving max-min — the [reference docs](./src/admission/index.ts) spell out exactly what it does and doesn't guarantee.
+
+---
+
 ## Determinism with `ManualClock`
 
 Time is injected everywhere — no `Date.now()` hides inside an algorithm — so every limit is reproducible to the millisecond.

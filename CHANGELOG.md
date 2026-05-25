@@ -15,6 +15,9 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 - **`withAnalytics`** — zero-config, dependency-free traffic insight: wrap any limiter to get
   allow/deny counts and bounded-memory **top-K heavy hitters** (Space-Saving), queryable in-process
   via `analytics()` without an OpenTelemetry backend.
+- **Admission control** (`adaptiveThrottle`, `fairShare`): Google-SRE client-side adaptive
+  load-shedding (sheds locally based on the backend's accept rate, with priority), and an online
+  equal-share fairness splitter so one tenant can't starve a shared global budget.
 - **Redis client adapters** (`throttlekit/redis`): `fromNodeRedis`, `fromUpstash`, and `fromIoredis`.
   `RedisStore` now works with the official **node-redis** client and the **Upstash REST** client
   (Cloudflare Workers, Vercel, Deno, Bun — anywhere TCP isn't allowed), not just `ioredis`. Every

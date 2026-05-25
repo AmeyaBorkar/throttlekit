@@ -75,6 +75,7 @@ can't be benchmarked locally on equal footing.
 | Sliding window counter (sub-bucketed) · Sliding window log (exact) | ✅ |
 | Leaky bucket / queueing (`schedule`/`reserve`) | ✅ |
 | Adaptive concurrency (gradient2 + aimd) | ✅ |
+| Adaptive load-shedding (`adaptiveThrottle`, SRE) + cross-tenant fairness (`fairShare`) | ✅ |
 | MemoryStore (timing wheel + CLOCK approx-LRU) | ✅ |
 | RedisStore (atomic Lua, 1 RTT, OCC fallback) — ioredis · node-redis · Upstash REST | ✅ |
 | Two-tier local cache (strict / cached-deny / leased) | ✅ |
