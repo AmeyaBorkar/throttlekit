@@ -95,7 +95,7 @@ export function fixedWindow(options: FixedWindowOptions): Strategy<FixedWindowSt
             retryAfterMs: 0,
           },
           // Tighten the persisted TTL to exactly the remaining window.
-          ttlMs: resetAt - now,
+          ttlMs: Math.max(1, resetAt - now),
           persist: true,
         };
       }

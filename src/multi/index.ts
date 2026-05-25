@@ -170,7 +170,7 @@ for i = 1, n do
       al[i] = 1
       local r = math.floor((tau - (nt - now)) / T); if r < 0 then r = 0 end
       rem[i] = r; rst[i] = math.ceil(nt); rty[i] = 0
-      wtype[i] = 1; wval[i] = string.format('%.17g', nt); wttl[i] = math.ceil(nt - now)
+      wtype[i] = 1; wval[i] = string.format('%.17g', nt); wttl[i] = math.ceil(nt - now); if wttl[i] < 1 then wttl[i] = 1 end
     end
   elseif typ == 2 then
     local refill = p2 / 1000
@@ -317,8 +317,7 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
         out = dim.strategy.check(state, now, cost);
         return { state, result: out.decision, ttlMs: out.ttlMs, persist: false };
       }) as Transform<unknown, Decision>;
-      // biome-ignore lint/style/noNonNullAssertion: guarded above; call directly to keep `this`.
-      store.applySync!(fk, peek);
+      store.applySync(fk, peek);
       const o = out as StrategyOutcome<unknown>;
       captured.push({ fk, out: o });
       results.push(o.decision);
@@ -338,8 +337,7 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
             ttlMs: c.out.ttlMs,
             persist: true,
           })) as Transform<unknown, Decision>;
-          // biome-ignore lint/style/noNonNullAssertion: guarded above; call directly to keep `this`.
-          store.applySync!(c.fk, commit);
+          store.applySync(c.fk, commit);
         }
       }
     }

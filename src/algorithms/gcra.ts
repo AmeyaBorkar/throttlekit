@@ -41,7 +41,9 @@ if now < allow_at then
 end
 local remaining = math.floor((tau - (new_tat - now)) / T)
 if remaining < 0 then remaining = 0 end
-redis.call('SET', KEYS[1], string.format('%.17g', new_tat), 'PX', math.ceil(new_tat - now))
+local px = math.ceil(new_tat - now)
+if px < 1 then px = 1 end
+redis.call('SET', KEYS[1], string.format('%.17g', new_tat), 'PX', px)
 return {1, burst, remaining, math.ceil(new_tat), 0}`;
 
 /**
@@ -108,7 +110,7 @@ export function gcra(options: GcraOptions): Strategy<number> {
           resetAt: Math.ceil(newTat),
           retryAfterMs: 0,
         },
-        ttlMs: Math.ceil(newTat - now),
+        ttlMs: Math.max(1, Math.ceil(newTat - now)),
         persist: true,
       };
     },

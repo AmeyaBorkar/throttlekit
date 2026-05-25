@@ -78,7 +78,9 @@ if delay > maxQueueMs then
   return {0, math.ceil(delay - maxQueueMs)}
 end
 local new_departure = departure + inc
-redis.call('SET', KEYS[1], string.format('%.17g', new_departure), 'PX', math.ceil(new_departure - now))
+local px = math.ceil(new_departure - now)
+if px < 1 then px = 1 end
+redis.call('SET', KEYS[1], string.format('%.17g', new_departure), 'PX', px)
 return {1, math.ceil(delay)}`;
 
 function decodeReservation(raw: unknown): Reservation {
@@ -133,7 +135,7 @@ export function leakyBucket(options: LeakyBucketOptions): Shaper {
       return {
         state: newDeparture,
         result: { accepted: true, delayMs: Math.ceil(delay) },
-        ttlMs: Math.ceil(newDeparture - now),
+        ttlMs: Math.max(1, Math.ceil(newDeparture - now)),
         persist: true,
       };
     };
