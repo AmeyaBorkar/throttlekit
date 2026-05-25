@@ -1,9 +1,11 @@
 import Redis from "ioredis";
-import { afterAll, beforeAll } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ManualClock } from "../../src/core/clock";
 import { RedisStore } from "../../src/redis/store";
 import { MemoryStore } from "../../src/stores/memory";
 import { runStoreConformance } from "../../src/testkit";
+
+const harness = { describe, it, expect, beforeEach, afterEach };
 
 /**
  * Run the reusable store-conformance suite against the in-process store, then (gated on a real
@@ -12,15 +14,19 @@ import { runStoreConformance } from "../../src/testkit";
  */
 
 // MemoryStore: a controllable clock makes time-travel (and thus the TTL test) deterministic.
-runStoreConformance("MemoryStore", () => {
-  const clock = new ManualClock(0);
-  const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
-  return {
-    store,
-    advance: (ms) => clock.advance(ms),
-    teardown: () => store.close(),
-  };
-});
+runStoreConformance(
+  "MemoryStore",
+  () => {
+    const clock = new ManualClock(0);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    return {
+      store,
+      advance: (ms) => clock.advance(ms),
+      teardown: () => store.close(),
+    };
+  },
+  harness,
+);
 
 const url = process.env.THROTTLEKIT_TEST_REDIS;
 
@@ -37,19 +43,23 @@ if (url !== undefined) {
     await client.quit();
   });
 
-  runStoreConformance("RedisStore", async () => {
-    // Fresh context = clean key space: the in-memory store gets a brand-new map each test, so the
-    // Redis analogue is to FLUSHDB the dedicated DB before each test. (DB 3 is ours alone.)
-    await client.flushdb();
-    // useServerTime: false makes resetAt deterministic, but the server clock still cannot be
-    // advanced from the test — so time-travel is unsupported and the TTL test is skipped. The
-    // testkit's counter ships an atomic Lua form, so apply() takes the single-round-trip EVALSHA
-    // path (INCR), which is what proves Redis-side atomicity under the 200-way concurrent test.
-    const store = new RedisStore({ client, useServerTime: false });
-    return {
-      store,
-      advance: () => {},
-      supportsTimeTravel: false,
-    };
-  });
+  runStoreConformance(
+    "RedisStore",
+    async () => {
+      // Fresh context = clean key space: the in-memory store gets a brand-new map each test, so the
+      // Redis analogue is to FLUSHDB the dedicated DB before each test. (DB 3 is ours alone.)
+      await client.flushdb();
+      // useServerTime: false makes resetAt deterministic, but the server clock still cannot be
+      // advanced from the test — so time-travel is unsupported and the TTL test is skipped. The
+      // testkit's counter ships an atomic Lua form, so apply() takes the single-round-trip EVALSHA
+      // path (INCR), which is what proves Redis-side atomicity under the 200-way concurrent test.
+      const store = new RedisStore({ client, useServerTime: false });
+      return {
+        store,
+        advance: () => {},
+        supportsTimeTravel: false,
+      };
+    },
+    harness,
+  );
 }

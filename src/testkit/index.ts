@@ -4,8 +4,20 @@
  * load-bearing one) atomic read-modify-write under concurrency — so a new backend is "correct"
  * the moment this suite is green.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ApplyOutcome, LuaInvocation, LuaProgram, Store, Transform } from "../core/types";
+
+/**
+ * The slice of a test framework the conformance suite needs. Pass your runner's functions
+ * (`vitest`, `jest`, `node:test` via thin shims, …). Decoupling like this keeps `throttlekit/testkit`
+ * import-safe outside a test process and framework-agnostic.
+ */
+export interface TestHarness {
+  describe(name: string, fn: () => void): void;
+  it(name: string, fn: () => void | Promise<void>): void;
+  beforeEach(fn: () => void | Promise<void>): void;
+  afterEach(fn: () => void | Promise<void>): void;
+  expect(actual: unknown): { toBe(expected: unknown): void };
+}
 
 /** Everything {@link runStoreConformance} needs to exercise one store implementation. */
 export interface StoreTestContext {
@@ -91,15 +103,18 @@ function readCount(): Transform<number, number> {
  * `afterEach`.
  *
  * @example
+ * import { describe, it, expect, beforeEach, afterEach } from "vitest";
  * runStoreConformance("MemoryStore", () => {
  *   const clock = new ManualClock(0);
  *   return { store: new MemoryStore({ clock, sweepIntervalMs: 0 }), advance: (ms) => clock.advance(ms) };
- * });
+ * }, { describe, it, expect, beforeEach, afterEach });
  */
 export function runStoreConformance(
   name: string,
   setup: () => StoreTestContext | Promise<StoreTestContext>,
+  harness: TestHarness,
 ): void {
+  const { describe, it, beforeEach, afterEach, expect } = harness;
   describe(name, () => {
     let ctx: StoreTestContext;
 

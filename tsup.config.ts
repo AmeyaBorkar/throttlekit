@@ -9,8 +9,6 @@ export default defineConfig({
     otel: "src/observability/index.ts",
     testkit: "src/testkit/index.ts",
   },
-  // The testkit registers test cases via the host's test framework; keep it external.
-  external: ["vitest"],
   format: ["esm", "cjs"],
   dts: true,
   clean: true,
