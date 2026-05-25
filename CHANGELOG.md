@@ -6,8 +6,21 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.3.0] — 2026-05-26
+
 ### Added
 
+- **PostgreSQL store** (`throttlekit/postgres`): a fully distributed backend for teams already running
+  Postgres — no Redis required. `PostgresStore` runs the **same pure JS transform** as the in-memory
+  store (no Postgres-specific algorithm to keep in sync) inside a transaction serialized per key by a
+  transaction-scoped advisory lock (`pg_advisory_xact_lock` — which, unlike `SELECT … FOR UPDATE`,
+  also serializes first-touch keys). Concurrent checks are atomic (**N simultaneous checks at limit K
+  admit exactly K**, proven against a live server) and decisions are bit-identical to the in-memory
+  and Redis paths (state stored as JSON text, round-tripping the exact IEEE-754 double). State expiry
+  is clock-driven with lazy reads + a background sweep; safe because every built-in strategy is
+  idempotent w.r.t. stale state. Pass a `pg.Pool` directly — no adapter. `pg` is an optional peer.
 - **Batch checks** — `limiter.checkMany(keys, cost?)` and `limiter.checkManySync(keys, cost?)` check
   many independent keys in one call, each evaluated at a **single consistent timestamp** and returned
   in input order. On a synchronous store the checks run in an ordered loop with no per-key promise
@@ -30,16 +43,6 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   formally-verified bound capping worldwide overshoot at `Limit + regions × (batch − 1)` (no separate
   multi-region engine to trust). New `examples/multi-region.ts` demonstrates it (~50 requests served
   per cross-region hop in the default scenario).
-
-- **PostgreSQL store** (`throttlekit/postgres`): a fully distributed backend for teams already running
-  Postgres — no Redis required. `PostgresStore` runs the **same pure JS transform** as the in-memory
-  store (no Postgres-specific algorithm to keep in sync) inside a transaction serialized per key by a
-  transaction-scoped advisory lock (`pg_advisory_xact_lock` — which, unlike `SELECT … FOR UPDATE`,
-  also serializes first-touch keys). Concurrent checks are atomic (**N simultaneous checks at limit K
-  admit exactly K**, proven against a live server) and decisions are bit-identical to the in-memory
-  and Redis paths (state stored as JSON text, round-tripping the exact IEEE-754 double). State expiry
-  is clock-driven with lazy reads + a background sweep; safe because every built-in strategy is
-  idempotent w.r.t. stale state. Pass a `pg.Pool` directly — no adapter. `pg` is an optional peer.
 
 ## [0.2.0] — 2026-05-26
 
@@ -133,5 +136,7 @@ bit-identical by a dual-path conformance suite.
 - Tested with Vitest (unit, boundary, property via fast-check, dual-path conformance, and
   exactly-K concurrency/atomicity on memory and Redis); CI on Node 20/22/24 with a Redis service.
 
-[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AmeyaBorkar/throttlekit/releases/tag/v0.1.0
