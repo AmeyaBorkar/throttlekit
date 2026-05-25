@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     redis: "src/redis/index.ts",
+    postgres: "src/postgres/index.ts",
     express: "src/adapters/express.ts",
     fetch: "src/adapters/fetch.ts",
     hono: "src/adapters/hono.ts",
