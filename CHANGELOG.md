@@ -6,6 +6,10 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.2.0] — 2026-05-26
+
 ### Added
 
 - **`sketchRateLimit`** — a Count-Min Sketch limiter that caps an **unbounded key universe in fixed
