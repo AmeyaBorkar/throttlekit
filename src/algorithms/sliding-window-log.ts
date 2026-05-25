@@ -75,6 +75,7 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
   return {
     name: "slidingWindowLog",
     limit,
+    windowMs,
     ttlMs: windowMs,
     lua,
     check(state: number[] | undefined, now: number, cost: number): StrategyOutcome<number[]> {

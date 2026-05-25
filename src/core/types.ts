@@ -51,6 +51,8 @@ export interface Strategy<S = unknown> {
   readonly name: string;
   /** Effective ceiling reported to clients (burst capacity or window quota). */
   readonly limit: number;
+  /** Effective window length in ms, surfaced as the `w` of `RateLimit-Policy`. Optional. */
+  readonly windowMs?: number;
   /** Upper bound on how long state stays relevant; used as the store TTL hint. */
   readonly ttlMs: number;
   /** The pure transition. */

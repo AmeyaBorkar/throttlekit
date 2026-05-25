@@ -70,6 +70,7 @@ export function fixedWindow(options: FixedWindowOptions): Strategy<FixedWindowSt
   return {
     name: "fixedWindow",
     limit,
+    windowMs,
     ttlMs,
     lua,
     check(

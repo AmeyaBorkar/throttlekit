@@ -96,6 +96,7 @@ export function slidingWindow(options: SlidingWindowOptions): Strategy<Buckets> 
   return {
     name: "slidingWindow",
     limit,
+    windowMs,
     ttlMs: Math.ceil(windowMs + w),
     lua,
     check(state: Buckets | undefined, now: number, cost: number): StrategyOutcome<Buckets> {

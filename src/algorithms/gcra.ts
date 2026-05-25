@@ -70,6 +70,7 @@ export function gcra(options: GcraOptions): Strategy<number> {
   return {
     name: "gcra",
     limit: burst,
+    windowMs: period,
     ttlMs,
     lua,
     check(state: number | undefined, now: number, cost: number): StrategyOutcome<number> {

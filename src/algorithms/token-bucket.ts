@@ -76,6 +76,7 @@ export function tokenBucket(options: TokenBucketOptions): Strategy<TokenBucketSt
   return {
     name: "tokenBucket",
     limit: capacity,
+    windowMs: ttlMs,
     ttlMs,
     lua,
     check(
