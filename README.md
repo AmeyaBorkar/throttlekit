@@ -302,6 +302,16 @@ const limiter = twoTier({
 
 > **Formally verified.** The leased overshoot bound isn't just claimed — a [TLA⁺ spec](./spec/DistributedLeasing.tla) of the protocol is **model-checked with TLC** (the invariant `admitted ≤ Limit + N·(Batch−1)` holds across the full reachable state space, and a counterexample proves it's *exact*, not loose), and a Java-free [exhaustive checker](./test/twotier/leasing-model.test.ts) reproduces it in CI — independently finding the same state counts. Details in [`docs/FORMAL-MODEL.md`](./docs/FORMAL-MODEL.md).
 
+### Multi-region
+
+A global limit across regions is the leased model with the **regions as the leasing nodes** and one shared L2 (a global Redis/Postgres, or one region's store). Each region serves the bulk of its traffic from a local lease — region-local latency, no per-request cross-region hop — and the *same* formally-verified bound caps the **worldwide** overshoot:
+
+```text
+global admitted per window  ≤  Limit + regions × (batch − 1)
+```
+
+So 4 regions leasing `batch: 50` against a global `limit: 10_000` admit at most `10_000 + 4×49 = 10_196` worldwide — a < 2% overshoot for roughly one cross-region round trip per 50 requests. Smaller `batch` tightens the bound; larger `batch` cuts cross-region hops. Crucially there is **no separate multi-region engine to trust** — it's `twoTier` leased pointed at a shared store, and the bound is exactly the one proven in [`docs/FORMAL-MODEL.md`](./docs/FORMAL-MODEL.md). For a hard per-region cap with *zero* cross-region traffic, give each region its own limiter at `limit / regions` instead. See [`examples/multi-region.ts`](./examples/multi-region.ts).
+
 ---
 
 ## Multi-dimensional (one round trip)

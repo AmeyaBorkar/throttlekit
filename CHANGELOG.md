@@ -16,6 +16,14 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   are identical to per-key `check`. Available on every limiter, including `twoTier` and the
   `withAnalytics` / OpenTelemetry wrappers (batch checks are counted/instrumented too).
 
+### Documentation
+
+- **Multi-region guidance.** Documented that a global limit across regions is `twoTier` leased mode
+  with the regions as leasing nodes and one shared L2 — region-local latency, with the
+  formally-verified bound capping worldwide overshoot at `Limit + regions × (batch − 1)` (no separate
+  multi-region engine to trust). New `examples/multi-region.ts` demonstrates it (~50 requests served
+  per cross-region hop in the default scenario).
+
 - **PostgreSQL store** (`throttlekit/postgres`): a fully distributed backend for teams already running
   Postgres — no Redis required. `PostgresStore` runs the **same pure JS transform** as the in-memory
   store (no Postgres-specific algorithm to keep in sync) inside a transaction serialized per key by a

@@ -15,6 +15,7 @@ npx tsx examples/basic-memory.ts
 | [`redis-distributed.ts`](./redis-distributed.ts) | Distributed limiting over Redis (atomic Lua) |
 | [`postgres.ts`](./postgres.ts) | Distributed limiting over PostgreSQL (no Redis; advisory-lock atomic RMW) |
 | [`two-tier-leased.ts`](./two-tier-leased.ts) | Two-tier L1/L2 with token leasing |
+| [`multi-region.ts`](./multi-region.ts) | Global budget across regions (leased mode, shared L2, proven overshoot bound) |
 | [`multi-dimensional.ts`](./multi-dimensional.ts) | Per-IP ∧ per-user ∧ per-route in one round trip |
 | [`adaptive-concurrency.ts`](./adaptive-concurrency.ts) | Latency-gradient backpressure |
 | [`leaky-bucket.ts`](./leaky-bucket.ts) | Outbound traffic shaping (`schedule` / `reserve`) |
