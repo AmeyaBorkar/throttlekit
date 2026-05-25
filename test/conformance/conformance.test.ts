@@ -77,7 +77,8 @@ d("dual-path conformance (JS vs Redis Lua)", () => {
   let client: Redis;
 
   beforeAll(async () => {
-    client = new Redis(url as string, { maxRetriesPerRequest: 2, lazyConnect: false });
+    // Dedicated DB 0 so a parallel Redis-using test file's FLUSHDB can't wipe our keys.
+    client = new Redis(url as string, { maxRetriesPerRequest: 2, lazyConnect: false, db: 0 });
     await client.flushdb();
   });
 

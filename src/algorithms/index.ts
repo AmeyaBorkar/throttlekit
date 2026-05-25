@@ -8,3 +8,5 @@ export { slidingWindow } from "./sliding-window";
 export type { SlidingWindowOptions } from "./sliding-window";
 export { slidingWindowLog } from "./sliding-window-log";
 export type { SlidingWindowLogOptions } from "./sliding-window-log";
+export { leakyBucket, QueueFullError } from "./leaky-bucket";
+export type { LeakyBucketOptions, Reservation, Shaper } from "./leaky-bucket";

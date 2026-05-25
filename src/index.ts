@@ -39,6 +39,8 @@ export { slidingWindow } from "./algorithms/sliding-window";
 export type { SlidingWindowOptions } from "./algorithms/sliding-window";
 export { slidingWindowLog } from "./algorithms/sliding-window-log";
 export type { SlidingWindowLogOptions } from "./algorithms/sliding-window-log";
+export { leakyBucket, QueueFullError } from "./algorithms/leaky-bucket";
+export type { LeakyBucketOptions, Reservation, Shaper } from "./algorithms/leaky-bucket";
 export { adaptiveConcurrency } from "./concurrency/adaptive";
 export type {
   AdaptiveConcurrencyOptions,
