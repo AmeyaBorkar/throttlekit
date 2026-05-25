@@ -4,6 +4,10 @@ import { TimingWheel } from "./timing-wheel";
 
 interface Entry {
   state: unknown;
+  /** CLOCK reference bit: set on access, cleared by the hand (only used when bounded). */
+  ref: boolean;
+  /** Index into the CLOCK ring, or -1 when the store is unbounded. */
+  slot: number;
 }
 
 export interface MemoryStoreOptions {
@@ -32,17 +36,26 @@ export interface MemoryStoreOptions {
  * read-modify-write cannot interleave — {@link MemoryStore.applySync} needs no locks. The async
  * {@link MemoryStore.apply} simply resolves the same synchronous result, composing with code that
  * awaits stores. State is kept as native values (no JSON) so the hot path never serializes.
+ *
+ * When `maxKeys` is set, a CLOCK (second-chance) policy bounds the key cardinality: each access
+ * sets a reference bit, and the hand evicts the first key it finds with the bit clear — O(1)
+ * amortized, with no per-read map reordering, so an adversarial flood of unique keys can't OOM.
  */
 export class MemoryStore implements Store {
   readonly #clock: Clock;
   readonly #map = new Map<string, Entry>();
   readonly #wheel: TimingWheel;
   readonly #maxKeys: number;
+  readonly #bounded: boolean;
+  /** CLOCK ring of keys (or `undefined` tombstones); only populated when bounded. */
+  readonly #ring: (string | undefined)[] = [];
+  #hand = 0;
   #sweepTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(opts: MemoryStoreOptions = {}) {
     this.#clock = opts.clock ?? systemClock;
     this.#maxKeys = opts.maxKeys ?? Number.POSITIVE_INFINITY;
+    this.#bounded = Number.isFinite(this.#maxKeys);
     this.#wheel = new TimingWheel(this.#clock.now(), {
       tickMs: opts.tickMs ?? 1000,
       wheelSize: opts.wheelSize ?? 512,
@@ -50,7 +63,7 @@ export class MemoryStore implements Store {
     const sweep = opts.sweepIntervalMs ?? 5000;
     if (sweep > 0) {
       this.#sweepTimer = setInterval(() => {
-        this.#wheel.advance(this.#clock.now(), (k) => this.#map.delete(k));
+        this.#wheel.advance(this.#clock.now(), (k) => this.#drop(k));
       }, sweep);
       // Do not keep the host process alive solely for cleanup (Node only).
       (this.#sweepTimer as { unref?(): void }).unref?.();
@@ -62,17 +75,70 @@ export class MemoryStore implements Store {
     return this.#map.size;
   }
 
+  /** Whether `key` is present and unexpired at the current time. */
+  has(key: string): boolean {
+    return this.#map.has(key) && !this.#wheel.isExpired(key, this.#clock.now());
+  }
+
+  /** Remove a key from the map and release its CLOCK ring slot (does not touch the wheel). */
+  #drop(key: string): void {
+    const entry = this.#map.get(key);
+    if (entry === undefined) return;
+    if (this.#bounded && entry.slot >= 0) this.#ring[entry.slot] = undefined;
+    this.#map.delete(key);
+  }
+
+  /** Find a free ring slot, evicting one unreferenced live key if the ring is full (CLOCK). */
+  #evictSlot(): number {
+    const n = this.#ring.length;
+    // At most one full sweep to clear bits + one to find a victim ⇒ bounded work.
+    for (let i = 0; i <= n * 2; i++) {
+      const slot = this.#hand;
+      this.#hand = (this.#hand + 1) % n;
+      const k = this.#ring[slot];
+      if (k === undefined) return slot; // tombstone: free
+      const entry = this.#map.get(k);
+      if (entry === undefined) return slot; // stale: free
+      if (entry.ref) {
+        entry.ref = false; // second chance
+        continue;
+      }
+      // Evict this key.
+      this.#map.delete(k);
+      this.#wheel.delete(k);
+      return slot;
+    }
+    return this.#hand; // unreachable in practice
+  }
+
+  #insert(key: string, state: unknown): void {
+    if (!this.#bounded) {
+      this.#map.set(key, { state, ref: false, slot: -1 });
+      return;
+    }
+    let slot: number;
+    if (this.#ring.length < this.#maxKeys) {
+      slot = this.#ring.length;
+      this.#ring.push(key);
+    } else {
+      slot = this.#evictSlot();
+      this.#ring[slot] = key;
+    }
+    this.#map.set(key, { state, ref: false, slot });
+  }
+
   applySync<S, R>(key: string, transform: Transform<S, R>): R {
     const now = this.#clock.now();
-    this.#wheel.advance(now, (k) => this.#map.delete(k));
+    this.#wheel.advance(now, (k) => this.#drop(k));
 
     let entry = this.#map.get(key);
     if (entry !== undefined && this.#wheel.isExpired(key, now)) {
-      this.#map.delete(key);
+      this.#drop(key);
       this.#wheel.delete(key);
       entry = undefined;
     }
 
+    if (entry !== undefined && this.#bounded) entry.ref = true; // CLOCK: mark accessed
     const current = entry !== undefined ? (entry.state as S) : undefined;
     const out: ApplyOutcome<S, R> = transform(current);
 
@@ -80,8 +146,7 @@ export class MemoryStore implements Store {
       if (entry !== undefined) {
         entry.state = out.state;
       } else {
-        if (this.#map.size >= this.#maxKeys) this.#evict();
-        this.#map.set(key, { state: out.state });
+        this.#insert(key, out.state);
       }
       this.#wheel.set(key, now + Math.max(0, out.ttlMs));
     }
@@ -93,7 +158,7 @@ export class MemoryStore implements Store {
   }
 
   resetSync(key: string): void {
-    this.#map.delete(key);
+    this.#drop(key);
     this.#wheel.delete(key);
   }
 
@@ -107,17 +172,6 @@ export class MemoryStore implements Store {
       this.#sweepTimer = undefined;
     }
     this.#map.clear();
-  }
-
-  /**
-   * Evict one key to make room. Placeholder until CLOCK approximate-LRU lands; for now it drops
-   * the oldest insertion (Map iteration order), which is a safe upper bound on memory.
-   */
-  #evict(): void {
-    const oldest = this.#map.keys().next();
-    if (!oldest.done) {
-      this.#map.delete(oldest.value);
-      this.#wheel.delete(oldest.value);
-    }
+    this.#ring.length = 0;
   }
 }

@@ -65,6 +65,30 @@ describe("MemoryStore", () => {
     expect(store.size).toBeLessThanOrEqual(3);
   });
 
+  it("CLOCK eviction keeps recently-accessed keys (approximate-LRU)", () => {
+    const store = new MemoryStore({ clock: new ManualClock(0), sweepIntervalMs: 0, maxKeys: 2 });
+    store.applySync("a", inc());
+    store.applySync("b", inc());
+    store.applySync("a", inc()); // touch "a" — sets its reference bit
+    store.applySync("c", inc()); // ring full ⇒ "a" gets a second chance, "b" is evicted
+    expect(store.has("a")).toBe(true);
+    expect(store.has("b")).toBe(false);
+    expect(store.has("c")).toBe(true);
+    expect(store.size).toBe(2);
+  });
+
+  it("reuses freed slots after reset/expiry without growing the ring", () => {
+    const clock = new ManualClock(0);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0, maxKeys: 2 });
+    store.applySync("a", inc());
+    store.applySync("b", inc());
+    store.resetSync("a"); // frees a slot (tombstone)
+    store.applySync("c", inc()); // reuses the freed slot, no eviction of "b"
+    expect(store.has("b")).toBe(true);
+    expect(store.has("c")).toBe(true);
+    expect(store.size).toBe(2);
+  });
+
   it("close clears state and stops the sweep timer", async () => {
     const store = new MemoryStore({ clock: new ManualClock(0), sweepIntervalMs: 0 });
     store.applySync("k", inc());
