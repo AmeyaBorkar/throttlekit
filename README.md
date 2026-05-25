@@ -160,6 +160,47 @@ On allow it forwards to your handler and copies the rate-limit headers onto the 
 
 ---
 
+## More frameworks (Hono, Next.js, Fastify, Koa)
+
+Every adapter shares the same options (`strategy`/`limiter`, `store`, `key`, `cost`, `fail`, `emit`, `onLimited`, `handler`, trusted-proxy config) and the same standards headers — only the binding differs. Each is its own subpath, so you pull in only the framework you use.
+
+```ts
+// Hono (edge-first) — throttlekit/hono
+import { honoRateLimit } from "throttlekit/hono";
+app.use("*", honoRateLimit({ strategy: gcra({ limit: 30, periodMs: 10_000 }) }));
+
+// Fastify v5 — throttlekit/fastify
+import { fastifyRateLimit } from "throttlekit/fastify";
+fastify.addHook("onRequest", fastifyRateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
+
+// Koa v3 — throttlekit/koa
+import { koaRateLimit } from "throttlekit/koa";
+app.use(koaRateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
+```
+
+**Next.js** middleware is dependency-free (no `next` import — `NextRequest`/`NextResponse` are Web `Request`/`Response`). Call the limiter, then branch:
+
+```ts
+// middleware.ts
+import { NextResponse, type NextRequest } from "next/server";
+import { nextRateLimit } from "throttlekit/next";
+import { gcra } from "throttlekit";
+
+const limit = nextRateLimit({ strategy: gcra({ limit: 30, periodMs: 10_000 }) });
+
+export async function middleware(req: NextRequest) {
+  const r = await limit(req);
+  if (r.limited) return r.response;            // 429 (or 503 on a fail-closed outage)
+  const res = NextResponse.next();
+  for (const [k, v] of Object.entries(r.headers)) res.headers.set(k, v);
+  return res;
+}
+```
+
+For Next.js **route handlers** (`app/.../route.ts`), use `throttlekit/fetch` directly — they're Web `fetch` handlers.
+
+---
+
 ## Distributed (Redis, atomic Lua)
 
 ```ts

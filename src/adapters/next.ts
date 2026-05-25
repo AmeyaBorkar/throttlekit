@@ -51,7 +51,7 @@ export type NextRateLimitResult =
  * @example
  * // middleware.ts
  * import { NextResponse, type NextRequest } from "next/server";
- * import { nextRateLimit } from "throttlekit/adapters/next";
+ * import { nextRateLimit } from "throttlekit/next";
  * import { gcra } from "throttlekit";
  *
  * const limit = nextRateLimit({ strategy: gcra({ limit: 30, periodMs: 10_000 }) });

@@ -38,7 +38,7 @@ export type HonoRateLimitOptions = LimiterOrStrategy &
  *
  * @example
  * import { Hono } from "hono";
- * import { honoRateLimit } from "throttlekit/adapters/hono";
+ * import { honoRateLimit } from "throttlekit/hono";
  * import { gcra } from "throttlekit";
  *
  * const app = new Hono();
