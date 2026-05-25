@@ -28,6 +28,11 @@
     "backpressure",
     "adaptive-concurrency",
     "express",
+    "fastify",
+    "koa",
+    "hono",
+    "nextjs",
+    "middleware",
     "fetch",
     "edge",
     "cloudflare-workers",
@@ -78,6 +83,46 @@
         "default": "./dist/fetch.cjs"
       }
     },
+    "./hono": {
+      "import": {
+        "types": "./dist/hono.d.ts",
+        "default": "./dist/hono.js"
+      },
+      "require": {
+        "types": "./dist/hono.d.cts",
+        "default": "./dist/hono.cjs"
+      }
+    },
+    "./next": {
+      "import": {
+        "types": "./dist/next.d.ts",
+        "default": "./dist/next.js"
+      },
+      "require": {
+        "types": "./dist/next.d.cts",
+        "default": "./dist/next.cjs"
+      }
+    },
+    "./fastify": {
+      "import": {
+        "types": "./dist/fastify.d.ts",
+        "default": "./dist/fastify.js"
+      },
+      "require": {
+        "types": "./dist/fastify.d.cts",
+        "default": "./dist/fastify.cjs"
+      }
+    },
+    "./koa": {
+      "import": {
+        "types": "./dist/koa.d.ts",
+        "default": "./dist/koa.js"
+      },
+      "require": {
+        "types": "./dist/koa.d.cts",
+        "default": "./dist/koa.cjs"
+      }
+    },
     "./otel": {
       "import": {
         "types": "./dist/otel.d.ts",
@@ -122,11 +167,15 @@
     "@biomejs/biome": "^1.9.4",
     "@opentelemetry/api": "^1.9.0",
     "@types/express": "^4.17.21",
+    "@types/koa": "^3.0.3",
     "@types/node": "^22.10.2",
     "@vitest/coverage-v8": "^3.0.5",
     "express": "^4.21.2",
     "fast-check": "^3.23.1",
+    "fastify": "^5.8.5",
+    "hono": "^4.12.23",
     "ioredis": "^5.4.2",
+    "koa": "^3.2.1",
     "redis": "^4.7.0",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
@@ -136,7 +185,10 @@
   "peerDependencies": {
     "@opentelemetry/api": ">=1.7.0",
     "express": ">=4",
-    "ioredis": ">=5"
+    "fastify": ">=4",
+    "hono": ">=4",
+    "ioredis": ">=5",
+    "koa": ">=2"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {
@@ -145,7 +197,16 @@
     "express": {
       "optional": true
     },
+    "fastify": {
+      "optional": true
+    },
+    "hono": {
+      "optional": true
+    },
     "ioredis": {
+      "optional": true
+    },
+    "koa": {
       "optional": true
     }
   }
