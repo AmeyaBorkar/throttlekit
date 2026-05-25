@@ -39,9 +39,11 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
       ? (k: string): string => `${prefix}:${k}`
       : (k: string): string => k;
 
-  // A single reused transform for the synchronous hot path. checkSync is non-reentrant (it never
-  // awaits), so threading `now`/`cost` through closure-captured mutable slots is safe and avoids a
-  // per-call closure allocation. No Lua invocation is attached: a synchronous store never uses it.
+  // A single reused transform for the local hot path, shared by checkSync and check's synchronous-
+  // store fast path. Both set `now`/`cost` on these slots and then invoke the transform *through a
+  // synchronous applySync* with no await in between, so single-threaded execution guarantees the
+  // slots are read before any other call can run — safe to reuse, and it avoids a per-call closure
+  // allocation. No Lua invocation is attached: a synchronous store never uses it.
   let syncNow = 0;
   let syncCost = 1;
   const syncTransform = ((state: S | undefined) => {
@@ -52,9 +54,23 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
   return {
     strategy: strategy as Strategy<unknown>,
 
-    async check(key: string, cost = 1): Promise<Decision> {
-      validateCost(cost);
-      return store.apply(keyFor(key), decisionTransform(strategy, clock.now(), cost));
+    check(key: string, cost = 1): Promise<Decision> {
+      if (!Number.isFinite(cost) || cost <= 0) {
+        return Promise.reject(
+          new RangeError(`cost must be a positive finite number, got ${String(cost)}`),
+        );
+      }
+      const k = keyFor(key);
+      // Synchronous store (e.g. MemoryStore): run the transition inline with the reused transform
+      // and hand back an already-resolved promise. This skips the async `store.apply` frame and the
+      // per-call `decisionTransform` closure entirely — the async path below is only for stores that
+      // are genuinely async (Redis), where a fresh transform is required for reentrancy.
+      if (store.applySync !== undefined) {
+        syncNow = clock.now();
+        syncCost = cost;
+        return Promise.resolve(store.applySync(k, syncTransform));
+      }
+      return store.apply(k, decisionTransform(strategy, clock.now(), cost));
     },
 
     checkSync(key: string, cost = 1): Decision {

@@ -51,6 +51,8 @@ export class MemoryStore implements Store {
   readonly #ring: (string | undefined)[] = [];
   #hand = 0;
   #sweepTimer: ReturnType<typeof setInterval> | undefined;
+  /** Pre-bound sweep callback, so the per-call `applySync` hot path allocates no closure. */
+  readonly #dropBound = (k: string): void => this.#drop(k);
 
   constructor(opts: MemoryStoreOptions = {}) {
     this.#clock = opts.clock ?? systemClock;
@@ -63,7 +65,7 @@ export class MemoryStore implements Store {
     const sweep = opts.sweepIntervalMs ?? 5000;
     if (sweep > 0) {
       this.#sweepTimer = setInterval(() => {
-        this.#wheel.advance(this.#clock.now(), (k) => this.#drop(k));
+        this.#wheel.advance(this.#clock.now(), this.#dropBound);
       }, sweep);
       // Do not keep the host process alive solely for cleanup (Node only).
       (this.#sweepTimer as { unref?(): void }).unref?.();
@@ -129,7 +131,7 @@ export class MemoryStore implements Store {
 
   applySync<S, R>(key: string, transform: Transform<S, R>): R {
     const now = this.#clock.now();
-    this.#wheel.advance(now, (k) => this.#drop(k));
+    this.#wheel.advance(now, this.#dropBound);
 
     let entry = this.#map.get(key);
     if (entry !== undefined && this.#wheel.isExpired(key, now)) {
