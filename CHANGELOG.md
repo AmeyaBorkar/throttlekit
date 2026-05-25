@@ -44,6 +44,8 @@ _Nothing yet._
   transform closure. Measured ~2.7× faster (596.9k → ~1.64M ops/s in memory, single hot key);
   `checkSync` remains allocation-free at ~3.2M ops/s. The async path is unchanged for genuinely
   async stores (Redis). No observable behavior change.
+- **Leaner package:** the published tarball no longer ships sourcemaps (~2.0 MB → ~600 KB unpacked,
+  72 → 52 files). Compiled code and `.d.ts` types are unchanged.
 
 ## [0.1.0] — 2026-05-26
 

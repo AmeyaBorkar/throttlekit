@@ -17,7 +17,9 @@ export default defineConfig({
   dts: true,
   clean: true,
   treeshake: true,
-  sourcemap: true,
+  // No sourcemaps in the published package — they more than doubled the tarball and a rate limiter
+  // is not something consumers step-debug into. Code + .d.ts ship; ~2.0 MB unpacked → ~400 KB.
+  sourcemap: false,
   target: "es2022",
   splitting: false,
   minify: false,
