@@ -6,7 +6,17 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **PostgreSQL store** (`throttlekit/postgres`): a fully distributed backend for teams already running
+  Postgres — no Redis required. `PostgresStore` runs the **same pure JS transform** as the in-memory
+  store (no Postgres-specific algorithm to keep in sync) inside a transaction serialized per key by a
+  transaction-scoped advisory lock (`pg_advisory_xact_lock` — which, unlike `SELECT … FOR UPDATE`,
+  also serializes first-touch keys). Concurrent checks are atomic (**N simultaneous checks at limit K
+  admit exactly K**, proven against a live server) and decisions are bit-identical to the in-memory
+  and Redis paths (state stored as JSON text, round-tripping the exact IEEE-754 double). State expiry
+  is clock-driven with lazy reads + a background sweep; safe because every built-in strategy is
+  idempotent w.r.t. stale state. Pass a `pg.Pool` directly — no adapter. `pg` is an optional peer.
 
 ## [0.2.0] — 2026-05-26
 

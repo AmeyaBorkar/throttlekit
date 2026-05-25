@@ -21,6 +21,7 @@ Peer dependencies are **optional** and only needed for the adapters you actually
 
 ```sh
 npm i ioredis              # for throttlekit/redis
+npm i pg                   # for throttlekit/postgres
 npm i express              # for throttlekit/express
 npm i @opentelemetry/api   # for throttlekit/otel
 ```
@@ -243,6 +244,26 @@ new RedisStore({ client: fromUpstash(Upstash.fromEnv()) });
 ```
 
 Every built-in strategy's atomic Lua runs **identically** across all three — proven bit-identical to the in-process path by the conformance suite (the ioredis and node-redis paths are tested against a live server). The Upstash REST API has no interactive `WATCH`/`MULTI`, so it supports the Lua-backed built-ins only; a custom non-Lua strategy needs `ioredis` or node-redis.
+
+---
+
+## Distributed (PostgreSQL — no Redis required)
+
+Already running Postgres? You don't need to add Redis. `PostgresStore` is a fully distributed backend:
+
+```ts
+import { rateLimit, gcra } from "throttlekit";
+import { PostgresStore } from "throttlekit/postgres";
+import { Pool } from "pg";
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const store = new PostgresStore({ pool, prefix: "api" }); // auto-creates its table on first use
+
+const limiter = rateLimit({ strategy: gcra({ limit: 1000, periodMs: 60_000, burst: 100 }), store });
+const d = await limiter.check(userId);
+```
+
+It runs the **same pure JS transform** the in-memory store runs — there is no Postgres-specific algorithm to keep in sync — inside a transaction serialized per key by a transaction-scoped **advisory lock** (`pg_advisory_xact_lock`, which serializes first-touch keys that `SELECT … FOR UPDATE` cannot lock). So concurrent checks are atomic: **N simultaneous checks at limit K admit exactly K**, proven against a live server, and decisions are bit-identical to the in-memory and Redis paths (state round-trips as JSON text). Expiry is keyed off the store's clock and reclaimed by a background sweep; because every built-in strategy is idempotent w.r.t. stale state, a slightly-late expiry can't change a decision. Pass a `pg.Pool` directly — no adapter. Each check is one transaction (a few round trips); for hot keys, use it as the L2 of `twoTier({ mode: "leased" })` to amortize the round trips, exactly as you would over Redis. See [`examples/postgres.ts`](./examples/postgres.ts).
 
 ---
 

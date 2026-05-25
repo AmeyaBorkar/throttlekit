@@ -5,6 +5,43 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — Tested latency, and Postgres as a first-class backend
+
+Measured the latency story end-to-end (this machine, Node 24, Redis + Postgres in Docker), and
+closed the biggest concrete gap vs the incumbents: **backend breadth.**
+
+**Latency, measured (not claimed).** In-process `gcra checkSync` is **~290–350 ns/op** (2–5 B/op);
+async `check` ~580–685 ns. The pure-counter incumbents are faster on the *async* memory path
+(express-rate-limit 199 ns, rate-limiter-flexible 344 ns) — honestly, because a GCRA cell over a
+store that does TTL expiry + CLOCK eviction is more work than `count++` in a Map; our `checkSync`
+(293 ns) still beats rate-limiter-flexible's async. On **Redis we tie on p50 and win the tail
+decisively** — p99 2461 vs 3045 µs, **p999 6.7 vs 18.5 ms** (tighter tails from `EVALSHA` + leaner
+Lua). The ~1.2 ms absolute p50 is a Docker-Desktop-on-Windows loopback artifact, common-mode to both
+contenders. **Leased mode is the latency lever**: 100 reqs/round trip ⇒ ~14 µs effective.
+
+**PostgresStore (`throttlekit/postgres`).** A Postgres-only shop previously couldn't adopt us without
+standing up Redis. Now there's a fully distributed Postgres backend — and the design keeps the whole
+correctness story intact: it runs the **same pure JS transform** the in-memory store runs (no new
+algorithm path to verify), inside a transaction serialized per key by a **transaction-scoped advisory
+lock**. The advisory lock (not `SELECT … FOR UPDATE`) is the crux: `FOR UPDATE` can't lock a row that
+doesn't exist yet, so two first-touch transactions on a new key could race; `pg_advisory_xact_lock`
+keyed by the key's hash serializes them regardless, and auto-releases at COMMIT/ROLLBACK. State is
+stored as the **same JSON text** the Redis OCC path writes, so decisions are bit-identical across
+backends. Expiry is clock-driven (lazy read-filter + background sweep), which is safe precisely
+because every built-in strategy is idempotent w.r.t. stale state — the same property the Redis
+conformance leans on; injecting the clock even lets the **TTL-expiry conformance test run** here
+(Redis has to skip it). Proven on a live server: the full conformance kit, **exactly-K under 200
+concurrent checks**, and dual-path equivalence to the JS executor for gcra/tokenBucket/slidingWindow.
+A `pg.Pool` is accepted directly (structurally typed — no adapter); `pg` is an optional peer.
+
+Isolation note for future me: tests use a dedicated **`tk-postgres` on 5433**, never the unrelated
+`sarva-postgres` on 5432 (mirrors the `tk-redis` 6380 vs `sarva-redis` 6379 split).
+
+**Status:** every gate green — **364 tests** (+9 Postgres), lint + strict types clean, build emits
+**11 subpaths** (added `/postgres`), `publint` clean. Pushed in small commits. Next on the
+ROI-ordered roadmap: a pipelined `checkMany`, then the multi-region story, then the distributed
+sketch/CRDT frontier.
+
 ## 2026-05-26 — Past v0.1.0: reach, parity, and a formally-verified frontier
 
 A second push after the publish, aimed at "the go-to package, eyes closed" and then beyond SOTA.
