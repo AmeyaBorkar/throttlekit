@@ -2,8 +2,9 @@
 
 [![npm](https://img.shields.io/npm/v/throttlekit.svg)](https://www.npmjs.com/package/throttlekit)
 [![CI](https://github.com/AmeyaBorkar/throttlekit/actions/workflows/ci.yml/badge.svg)](https://github.com/AmeyaBorkar/throttlekit/actions/workflows/ci.yml)
-[![license: MIT](https://img.shields.io/npm/l/throttlekit.svg)](./LICENSE)
 [![types: included](https://img.shields.io/npm/types/throttlekit.svg)](https://www.npmjs.com/package/throttlekit)
+[![node: >=18](https://img.shields.io/node/v/throttlekit.svg)](https://www.npmjs.com/package/throttlekit)
+[![license: MIT](https://img.shields.io/npm/l/throttlekit.svg)](./LICENSE)
 
 **Correctness you can prove, performance you can measure, and one configuration that scales from a single process to a global fleet.**
 
