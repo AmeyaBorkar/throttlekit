@@ -269,6 +269,8 @@ const limiter = twoTier({
 
 `leased` requires `lease.batch`. With the default `lowWater: 0`, refill is purely lease-on-demand (tightest overshoot bound, ≤ `L × batch`); set `lowWater > 0` to hide lease latency at a looser bound. `twoTier` returns a `Limiter` whose `check` is async (`checkSync` throws — L2 is asynchronous). See [`examples/two-tier-leased.ts`](./examples/two-tier-leased.ts).
 
+> **Formally verified.** The leased overshoot bound isn't just claimed — a [TLA⁺ spec](./spec/DistributedLeasing.tla) of the protocol is **model-checked with TLC** (the invariant `admitted ≤ Limit + N·(Batch−1)` holds across the full reachable state space, and a counterexample proves it's *exact*, not loose), and a Java-free [exhaustive checker](./test/twotier/leasing-model.test.ts) reproduces it in CI — independently finding the same state counts. Details in [`docs/FORMAL-MODEL.md`](./docs/FORMAL-MODEL.md).
+
 ---
 
 ## Multi-dimensional (one round trip)

@@ -28,6 +28,10 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   and `throttlekit/koa` (`koaRateLimit`). Hono/Fastify/Koa are optional peers.
 - A **comparative benchmark** (`npm run bench:compare`) measuring ThrottleKit against
   `rate-limiter-flexible` and `express-rate-limit` on one fair harness (memory + Redis tiers).
+- **Formal verification** of the leased two-tier overshoot bound: a TLA+ spec
+  (`spec/DistributedLeasing.tla`) model-checked with TLC, plus a Java-free exhaustive checker that
+  reproduces it in CI. Proves `admitted_per_window ≤ Limit + N·(Batch−1)` (tight; implies the
+  documented `≤ L×batch`). See `docs/FORMAL-MODEL.md`.
 
 ### Changed
 

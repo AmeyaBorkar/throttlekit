@@ -61,7 +61,7 @@ can't be benchmarked locally on equal footing.
 | Atomicity in Redis (Lua) | atomicity test (gated, exactly K) | ✅ |
 | JS ↔ Lua dual-path bit-identical decisions | conformance suite (6 strategies + multi-dim, both modes; ioredis + node-redis) | ✅ |
 | `remaining` never negative; integer decisions; retryAfter==0 iff allowed | property tests (fast-check) | ✅ |
-| Leased overshoot ≤ L×batch | property test (multi-node, refill boundary) | ✅ |
+| Leased overshoot bound (tight: `Limit + N·(Batch−1)`, implies ≤ L×batch) | **TLA+/TLC model-checked** + Java-free exhaustive JS checker (same state counts) + property test | ✅ |
 | Clock-jump safety (negative elapsed clamped) | unit tests | ✅ |
 | Defined fail-open / fail-closed on store error | adapter unit tests (all 6 adapters) | ✅ |
 | `ttl ≥ 1` under extreme params (ULP edge) | found by bench, guarded JS+Lua | ✅ |
