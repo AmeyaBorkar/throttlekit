@@ -35,3 +35,13 @@ export { tokenBucket } from "./algorithms/token-bucket";
 export type { TokenBucketOptions } from "./algorithms/token-bucket";
 export { fixedWindow } from "./algorithms/fixed-window";
 export type { FixedWindowOptions } from "./algorithms/fixed-window";
+export { slidingWindow } from "./algorithms/sliding-window";
+export type { SlidingWindowOptions } from "./algorithms/sliding-window";
+export { slidingWindowLog } from "./algorithms/sliding-window-log";
+export type { SlidingWindowLogOptions } from "./algorithms/sliding-window-log";
+export { adaptiveConcurrency } from "./concurrency/adaptive";
+export type {
+  AdaptiveConcurrencyOptions,
+  ConcurrencyGuard,
+  Lease,
+} from "./concurrency/adaptive";

@@ -4,3 +4,7 @@ export { tokenBucket } from "./token-bucket";
 export type { TokenBucketOptions } from "./token-bucket";
 export { fixedWindow } from "./fixed-window";
 export type { FixedWindowOptions } from "./fixed-window";
+export { slidingWindow } from "./sliding-window";
+export type { SlidingWindowOptions } from "./sliding-window";
+export { slidingWindowLog } from "./sliding-window-log";
+export type { SlidingWindowLogOptions } from "./sliding-window-log";

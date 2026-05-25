@@ -2,6 +2,8 @@ import Redis from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixedWindow } from "../../src/algorithms/fixed-window";
 import { gcra } from "../../src/algorithms/gcra";
+import { slidingWindow } from "../../src/algorithms/sliding-window";
+import { slidingWindowLog } from "../../src/algorithms/sliding-window-log";
 import { tokenBucket } from "../../src/algorithms/token-bucket";
 import { ManualClock } from "../../src/core/clock";
 import { rateLimit } from "../../src/core/limiter";
@@ -49,6 +51,23 @@ const cases: Case[] = [
   },
   { name: "fixedWindow-50-1s", make: () => fixedWindow({ limit: 50, windowMs: 1000 }) },
   { name: "fixedWindow-10-250ms", make: () => fixedWindow({ limit: 10, windowMs: 250 }) },
+  { name: "slidingWindowLog-5-1s", make: () => slidingWindowLog({ limit: 5, windowMs: 1000 }) },
+  {
+    name: "slidingWindowLog-10-500ms",
+    make: () => slidingWindowLog({ limit: 10, windowMs: 500 }),
+  },
+  {
+    name: "slidingWindow-50-1s-10buckets",
+    make: () => slidingWindow({ limit: 50, windowMs: 1000, buckets: 10 }),
+  },
+  {
+    name: "slidingWindow-20-1s-3buckets-fractional-w",
+    make: () => slidingWindow({ limit: 20, windowMs: 1000, buckets: 3 }),
+  },
+  {
+    name: "slidingWindow-100-60s-1bucket",
+    make: () => slidingWindow({ limit: 100, windowMs: 60_000, buckets: 1 }),
+  },
 ];
 
 const TIMELINES = 40;
