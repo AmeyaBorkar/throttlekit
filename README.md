@@ -1,5 +1,10 @@
 # ThrottleKit
 
+[![npm](https://img.shields.io/npm/v/throttlekit.svg)](https://www.npmjs.com/package/throttlekit)
+[![CI](https://github.com/AmeyaBorkar/throttlekit/actions/workflows/ci.yml/badge.svg)](https://github.com/AmeyaBorkar/throttlekit/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/npm/l/throttlekit.svg)](./LICENSE)
+[![types: included](https://img.shields.io/npm/types/throttlekit.svg)](https://www.npmjs.com/package/throttlekit)
+
 **Correctness you can prove, performance you can measure, and one configuration that scales from a single process to a global fleet.**
 
 A pluggable, framework-agnostic rate-limiting toolkit for Node and the web. The same limit runs as a sub-microsecond in-process check, a single atomic Redis round trip, or a near-zero-network leased budget across a fleet — all from one configuration.

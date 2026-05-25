@@ -5,6 +5,14 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — Published v0.1.0 to npm
+
+`throttlekit@0.1.0` is live on npm (`dist-tags.latest = 0.1.0`), published by the tag-triggered
+Release workflow with npm **provenance** via GitHub OIDC. Verified the published tarball is clean —
+`dist/` (ESM + CJS + types for all six subpaths), README, CHANGELOG, LICENSE; no source or tests
+leak. `npm i throttlekit` works. Added npm/CI/license/types badges to the README. (Sourcemaps make
+up most of the ~994 KB unpacked size; a candidate trim for 0.1.1.)
+
 ## 2026-05-26 — Feature-complete, measured, and benchmarked
 
 Landed the rest of the surface and proved it: the six strategies (GCRA, token bucket, fixed/
