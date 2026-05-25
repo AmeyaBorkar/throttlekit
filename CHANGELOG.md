@@ -1,0 +1,65 @@
+# Changelog
+
+All notable changes to ThrottleKit are documented in this file. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+_Nothing yet._
+
+## [0.1.0] — 2026-05-26
+
+Initial release — a pluggable, framework-agnostic rate-limiting toolkit for Node and the web.
+
+### Algorithms
+
+- **GCRA** (`gcra`, default) — single-timestamp pacing with a configurable burst.
+- **Token bucket** (`tokenBucket`) — explicit token count, lazy refill.
+- **Fixed window** (`fixedWindow`) — cheapest coarse cap (documented 2× boundary).
+- **Sliding window counter** (`slidingWindow`) — sub-bucketed, near-exact, bounded O(buckets) memory.
+- **Sliding window log** (`slidingWindowLog`) — exact "N in the trailing window".
+- **Leaky bucket** (`leakyBucket`) — a traffic `Shaper` that delays rather than rejects
+  (`reserve` / `reserveSync` / `schedule`, with `QueueFullError`).
+- **Adaptive concurrency** (`adaptiveConcurrency`) — Netflix-style Gradient2 + AIMD backpressure.
+
+Every pass/deny strategy ships a pure JS transition **and** an atomic Redis Lua form, proven
+bit-identical by a dual-path conformance suite.
+
+### Engine & stores
+
+- `rateLimit` limiter with `check` / `checkSync` / `reset`, injectable clock, and key prefixing.
+- One storage primitive — `Store.apply(key, transform)`.
+- `MemoryStore` — lock-free synchronous RMW, hierarchical timing-wheel expiry, CLOCK
+  (second-chance) approximate-LRU eviction.
+- `RedisStore` (`throttlekit/redis`) — single `EVALSHA` round trip (with `EVAL`/`NOSCRIPT`
+  fallback), optimistic-concurrency fallback for custom strategies, server-clock time source.
+- `twoTier` — L1/L2 engine with `strict`, `cached-deny`, and `leased` modes (bounded `L × batch`
+  overshoot, low-water async refill).
+- `multiRateLimit` with `all` / `any` — multi-dimensional limits in a single fused Lua round trip,
+  with no partial-consume.
+
+### Adapters, headers & security
+
+- Express middleware (`throttlekit/express`) and Web `fetch`/edge wrapper (`throttlekit/fetch`),
+  with `fail` open/closed, `onLimited`/`onError` hooks, and custom 429 handlers.
+- `buildRateLimitHeaders` — IETF draft triple, RFC 9651 structured `RateLimit`/`RateLimit-Policy`,
+  legacy `X-RateLimit-*`, and `Retry-After`.
+- `clientIp` — proxy-correct client IP with explicit trusted-proxy policy (default-deny `XFF`, hop
+  count, or CIDR allowlist) and IPv6 `/64` aggregation; `hashKey` / `hmacKeyer` for PII-safe keys.
+
+### Observability & testing
+
+- Optional OpenTelemetry instrumentation (`throttlekit/otel`): `instrumentLimiter` /
+  `instrumentGuard`.
+- Framework-agnostic store conformance kit (`throttlekit/testkit`): `runStoreConformance`.
+- Deterministic `ManualClock`; benchmark harness (`npm run bench`).
+
+### Tooling
+
+- TypeScript-first, strict; dual ESM + CJS builds with types across six subpaths.
+- Tested with Vitest (unit, boundary, property via fast-check, dual-path conformance, and
+  exactly-K concurrency/atomicity on memory and Redis); CI on Node 20/22/24 with a Redis service.
+
+[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/AmeyaBorkar/throttlekit/releases/tag/v0.1.0
