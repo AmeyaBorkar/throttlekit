@@ -11,7 +11,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write # create the GitHub Release for the tag
   id-token: write # for npm provenance attestations
 
 jobs:
@@ -40,3 +40,22 @@ jobs:
         if: ${{ env.HAS_NPM_TOKEN != 'true' }}
         run: |
           echo "::notice title=npm publish skipped::Set the NPM_TOKEN repository secret (an npm automation token), then re-run this workflow or push the tag again to publish."
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          # Pull this version's section out of the CHANGELOG; fall back to auto-generated notes.
+          notes="$(awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            flag && /^## \[/ { exit }
+            flag { print }
+          ' CHANGELOG.md)"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::notice title=release exists::$tag already has a GitHub Release; leaving it as-is."
+          elif [ -n "$notes" ]; then
+            gh release create "$tag" --title "$tag" --notes "$notes"
+          else
+            gh release create "$tag" --title "$tag" --generate-notes
+          fi
