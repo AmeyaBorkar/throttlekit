@@ -31,3 +31,7 @@ export { MemoryStore } from "./stores/memory";
 export type { MemoryStoreOptions } from "./stores/memory";
 export { gcra } from "./algorithms/gcra";
 export type { GcraOptions } from "./algorithms/gcra";
+export { tokenBucket } from "./algorithms/token-bucket";
+export type { TokenBucketOptions } from "./algorithms/token-bucket";
+export { fixedWindow } from "./algorithms/fixed-window";
+export type { FixedWindowOptions } from "./algorithms/fixed-window";
