@@ -180,6 +180,29 @@ const d = await limiter.check(userId);
 
 Built-in strategies run their atomic Lua form in a single `EVALSHA` round trip (with an `EVAL` fallback on `NOSCRIPT`). Custom strategies without a Lua form fall back to optimistic concurrency (`WATCH`/`MULTI`/`EXEC`). `RedisStore` derives `now` from the Redis server clock by default, so node clock skew never corrupts shared state. See [`examples/redis-distributed.ts`](./examples/redis-distributed.ts).
 
+### Any Redis client — including serverless / edge
+
+`RedisStore` speaks the `ioredis` shape directly. For the official **node-redis** client, or the **Upstash REST** client (Cloudflare Workers, Vercel, Deno, Bun — anywhere a TCP socket isn't allowed), wrap it in the matching adapter:
+
+```ts
+import { RedisStore, fromNodeRedis, fromUpstash } from "throttlekit/redis";
+
+// ioredis — pass it straight through
+new RedisStore({ client: new Redis(process.env.REDIS_URL) });
+
+// node-redis (the official `redis` client)
+import { createClient } from "redis";
+const node = createClient({ url: process.env.REDIS_URL });
+await node.connect();
+new RedisStore({ client: fromNodeRedis(node) });
+
+// Upstash REST — serverless / edge, no TCP
+import { Redis as Upstash } from "@upstash/redis";
+new RedisStore({ client: fromUpstash(Upstash.fromEnv()) });
+```
+
+Every built-in strategy's atomic Lua runs **identically** across all three — proven bit-identical to the in-process path by the conformance suite (the ioredis and node-redis paths are tested against a live server). The Upstash REST API has no interactive `WATCH`/`MULTI`, so it supports the Lua-backed built-ins only; a custom non-Lua strategy needs `ioredis` or node-redis.
+
 ---
 
 ## Two-tier (local + distributed, network-light)
