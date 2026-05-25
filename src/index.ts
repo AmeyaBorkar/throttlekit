@@ -25,3 +25,5 @@ export type {
 } from "./core/types";
 export { systemClock, ManualClock } from "./core/clock";
 export { ThrottleKitError, StoreUnavailableError, RateLimitExceededError } from "./core/errors";
+export { MemoryStore } from "./stores/memory";
+export type { MemoryStoreOptions } from "./stores/memory";
