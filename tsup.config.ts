@@ -6,6 +6,7 @@ export default defineConfig({
     redis: "src/redis/index.ts",
     express: "src/adapters/express.ts",
     fetch: "src/adapters/fetch.ts",
+    otel: "src/observability/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
