@@ -473,6 +473,64 @@ Head-to-head (`npm run bench:compare`, same machine/process/warmup, allow path) 
 
 ---
 
+## Migrating
+
+**From `express-rate-limit`:**
+
+```ts
+// before
+import rateLimit from "express-rate-limit";
+app.use(rateLimit({ windowMs: 60_000, limit: 100 }));
+
+// after — GCRA by default (smooth pacing, no 2× boundary burst), same standards headers
+import { expressRateLimit } from "throttlekit/express";
+import { gcra } from "throttlekit";
+app.use(expressRateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
+// want the classic window instead? swap in fixedWindow({ limit: 100, windowMs: 60_000 })
+```
+
+**From `rate-limiter-flexible`:**
+
+```ts
+// before — throws on exhaustion
+const rl = new RateLimiterRedis({ storeClient: redis, points: 100, duration: 60 });
+try { await rl.consume(key); } catch { /* respond 429 */ }
+
+// after — one atomic Lua round trip, a Decision object instead of throw-on-deny
+import { rateLimit, gcra } from "throttlekit";
+import { RedisStore } from "throttlekit/redis";
+const limiter = rateLimit({
+  strategy: gcra({ limit: 100, periodMs: 60_000 }),
+  store: new RedisStore({ client: redis }),
+});
+const d = await limiter.check(key);
+if (!d.allowed) { /* respond 429 with d.retryAfterMs */ }
+```
+
+---
+
+## Recipes
+
+**Tiered plans (free / pro) by API key** — one store, namespaced per tier:
+
+```ts
+const limiters = {
+  free: rateLimit({ strategy: gcra({ limit: 60, periodMs: 60_000 }), store, prefix: "free" }),
+  pro: rateLimit({ strategy: gcra({ limit: 1_000, periodMs: 60_000 }), store, prefix: "pro" }),
+};
+const d = await limiters[planFor(req)].check(apiKeyOf(req));
+```
+
+**Cost-weighted endpoints** — charge expensive routes more from the same budget:
+
+```ts
+await limiter.check(apiKeyOf(req), routeIsExpensive(req) ? 5 : 1); // `cost` second arg
+```
+
+**Per-IP *and* per-route in one round trip** — see [Multi-dimensional](#multi-dimensional-one-round-trip) (`all({ ip, route })`). **Tiered burst + sustained** — compose two GCRA limiters (e.g. 10/sec *and* 1000/hour) and allow only if both pass.
+
+---
+
 ## How it's tested
 
 ThrottleKit is engineered to be *provably* correct:
