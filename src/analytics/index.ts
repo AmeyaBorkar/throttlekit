@@ -243,6 +243,26 @@ export function withAnalytics(limiter: Limiter, options: AnalyticsOptions = {}):
       return decision;
     },
 
+    async checkMany(keys: readonly string[], cost?: number): Promise<Decision[]> {
+      const decisions = await limiter.checkMany(keys, cost);
+      for (let i = 0; i < decisions.length; i++) {
+        const d = decisions[i] as Decision;
+        record(d);
+        observe(keys[i] as string, d);
+      }
+      return decisions;
+    },
+
+    checkManySync(keys: readonly string[], cost?: number): Decision[] {
+      const decisions = limiter.checkManySync(keys, cost);
+      for (let i = 0; i < decisions.length; i++) {
+        const d = decisions[i] as Decision;
+        record(d);
+        observe(keys[i] as string, d);
+      }
+      return decisions;
+    },
+
     reset(key: string): Promise<void> {
       return limiter.reset(key);
     },

@@ -150,6 +150,26 @@ export interface Limiter {
    * (e.g. {@link MemoryStore}); throws otherwise.
    */
   checkSync(key: string, cost?: number): Decision;
+  /**
+   * Check many independent keys in one call, each with the same `cost` (default 1), returning a
+   * decision per key in input order. Every key is evaluated at a **single consistent timestamp**.
+   *
+   * On a synchronous store the checks run in an ordered loop with no per-key promise overhead. On an
+   * async store (e.g. Redis) they are issued **concurrently**; on a client that pipelines commands
+   * queued in the same tick (node-redis, or `ioredis` with `enableAutoPipelining`) that collapses to
+   * a single round trip. Decisions are identical to calling {@link Limiter.check} per key.
+   *
+   * Intended for **distinct** keys (the usual case: N different identities). If a key repeats within
+   * one batch, the async path lets those applies race — each stays atomic, so the totals are still
+   * correct, but their relative allow/deny order is unspecified; the sync path processes them in
+   * order.
+   */
+  checkMany(keys: readonly string[], cost?: number): Promise<Decision[]>;
+  /**
+   * Synchronous {@link Limiter.checkMany}: one consistent timestamp, no promises. Only available on
+   * a synchronous store (e.g. {@link MemoryStore}); throws otherwise.
+   */
+  checkManySync(keys: readonly string[], cost?: number): Decision[];
   /** Forget a key's state. */
   reset(key: string): Promise<void>;
 }

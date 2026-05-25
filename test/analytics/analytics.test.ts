@@ -46,6 +46,12 @@ function fakeLimiter(
       calls.push({ via: "checkSync", key, cost });
       return decide(plan(key, cost));
     },
+    checkMany(keys: readonly string[], cost = 1): Promise<Decision[]> {
+      return Promise.all(keys.map((k) => this.check(k, cost)));
+    },
+    checkManySync(keys: readonly string[], cost = 1): Decision[] {
+      return keys.map((k) => this.checkSync(k, cost));
+    },
     async reset(): Promise<void> {},
   };
   return { limiter, calls };
@@ -414,6 +420,12 @@ describe("withAnalytics — determinism & passthrough (test 6)", () => {
       checkSync(): Decision {
         captured = { allowed: false, limit: 1, remaining: 0, resetAt: 42, retryAfterMs: 7 };
         return captured;
+      },
+      async checkMany(keys: readonly string[]): Promise<Decision[]> {
+        return Promise.all(keys.map((k) => this.check(k)));
+      },
+      checkManySync(keys: readonly string[]): Decision[] {
+        return keys.map((k) => this.checkSync(k));
       },
       async reset(): Promise<void> {},
     };

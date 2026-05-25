@@ -8,6 +8,14 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ### Added
 
+- **Batch checks** — `limiter.checkMany(keys, cost?)` and `limiter.checkManySync(keys, cost?)` check
+  many independent keys in one call, each evaluated at a **single consistent timestamp** and returned
+  in input order. On a synchronous store the checks run in an ordered loop with no per-key promise
+  overhead; on an async store (e.g. Redis) they fire concurrently — a single round trip on clients
+  that pipeline same-tick commands (node-redis, or `ioredis` with `enableAutoPipelining`). Decisions
+  are identical to per-key `check`. Available on every limiter, including `twoTier` and the
+  `withAnalytics` / OpenTelemetry wrappers (batch checks are counted/instrumented too).
+
 - **PostgreSQL store** (`throttlekit/postgres`): a fully distributed backend for teams already running
   Postgres — no Redis required. `PostgresStore` runs the **same pure JS transform** as the in-memory
   store (no Postgres-specific algorithm to keep in sync) inside a transaction serialized per key by a

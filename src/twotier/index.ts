@@ -55,6 +55,12 @@ function noSync(): Decision {
   );
 }
 
+function noSyncMany(): Decision[] {
+  throw new ThrottleKitError(
+    "two-tier checkManySync is not supported because L2 access is asynchronous; use checkMany()",
+  );
+}
+
 /**
  * A two-tier limiter: a local in-process tier (L1) fronting a distributed tier (L2), with a
  * selectable consistency/throughput trade-off.
@@ -94,32 +100,36 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
         if (!oldest.done) denyUntil.delete(oldest.value);
       }
     };
+    const check = async (key: string, cost = 1): Promise<Decision> => {
+      validateCost(cost);
+      const fk = keyFor(key);
+      const now = clock.now();
+      const cached = denyUntil.get(fk);
+      if (cached !== undefined && now < cached.until) {
+        // Serve the denial locally — no L2 round trip for an already-blocked key.
+        return {
+          allowed: false,
+          limit: cached.decision.limit,
+          remaining: 0,
+          resetAt: cached.decision.resetAt,
+          retryAfterMs: Math.ceil(cached.until - now),
+        };
+      }
+      if (cached !== undefined) denyUntil.delete(fk);
+      const d = await l2.apply(fk, decisionTransform(strategy, now, cost));
+      if (!d.allowed) {
+        evict();
+        denyUntil.set(fk, { until: now + d.retryAfterMs, decision: d });
+      }
+      return d;
+    };
     return {
       strategy: strategy as Strategy<unknown>,
-      async check(key: string, cost = 1): Promise<Decision> {
-        validateCost(cost);
-        const fk = keyFor(key);
-        const now = clock.now();
-        const cached = denyUntil.get(fk);
-        if (cached !== undefined && now < cached.until) {
-          // Serve the denial locally — no L2 round trip for an already-blocked key.
-          return {
-            allowed: false,
-            limit: cached.decision.limit,
-            remaining: 0,
-            resetAt: cached.decision.resetAt,
-            retryAfterMs: Math.ceil(cached.until - now),
-          };
-        }
-        if (cached !== undefined) denyUntil.delete(fk);
-        const d = await l2.apply(fk, decisionTransform(strategy, now, cost));
-        if (!d.allowed) {
-          evict();
-          denyUntil.set(fk, { until: now + d.retryAfterMs, decision: d });
-        }
-        return d;
-      },
+      check,
       checkSync: noSync,
+      checkMany: (keys: readonly string[], cost = 1): Promise<Decision[]> =>
+        Promise.all(keys.map((k) => check(k, cost))),
+      checkManySync: noSyncMany,
       async reset(key: string): Promise<void> {
         const fk = keyFor(key);
         denyUntil.delete(fk);
@@ -195,34 +205,38 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
     (timer as { unref?(): void }).unref?.();
   }
 
+  const check = async (key: string, cost = 1): Promise<Decision> => {
+    validateCost(cost);
+    const fk = keyFor(key);
+    const now = clock.now();
+    lastUse.set(fk, now);
+
+    const have = credits.get(fk) ?? 0;
+    if (have >= cost) {
+      credits.set(fk, have - cost);
+      maybeRefill(fk);
+      return synthAllow(fk, now);
+    }
+
+    // Not enough local budget: lease a batch (or `cost` if larger) from L2 in one round trip.
+    const leaseAmount = Math.max(batch, cost);
+    const d = await l2.apply(fk, decisionTransform(strategy, clock.now(), leaseAmount));
+    lastDecision.set(fk, d);
+    if (d.allowed) {
+      evictCredits();
+      credits.set(fk, (credits.get(fk) ?? 0) + leaseAmount - cost);
+      return synthAllow(fk, now);
+    }
+    // L2 is globally exhausted — surface its denial (correct retryAfter/resetAt).
+    return d;
+  };
   return {
     strategy: strategy as Strategy<unknown>,
-    async check(key: string, cost = 1): Promise<Decision> {
-      validateCost(cost);
-      const fk = keyFor(key);
-      const now = clock.now();
-      lastUse.set(fk, now);
-
-      const have = credits.get(fk) ?? 0;
-      if (have >= cost) {
-        credits.set(fk, have - cost);
-        maybeRefill(fk);
-        return synthAllow(fk, now);
-      }
-
-      // Not enough local budget: lease a batch (or `cost` if larger) from L2 in one round trip.
-      const leaseAmount = Math.max(batch, cost);
-      const d = await l2.apply(fk, decisionTransform(strategy, clock.now(), leaseAmount));
-      lastDecision.set(fk, d);
-      if (d.allowed) {
-        evictCredits();
-        credits.set(fk, (credits.get(fk) ?? 0) + leaseAmount - cost);
-        return synthAllow(fk, now);
-      }
-      // L2 is globally exhausted — surface its denial (correct retryAfter/resetAt).
-      return d;
-    },
+    check,
     checkSync: noSync,
+    checkMany: (keys: readonly string[], cost = 1): Promise<Decision[]> =>
+      Promise.all(keys.map((k) => check(k, cost))),
+    checkManySync: noSyncMany,
     async reset(key: string): Promise<void> {
       const fk = keyFor(key);
       forget(fk);

@@ -89,6 +89,16 @@ You construct and pass a `cost` to spend more than one unit per request:
 await limiter.check(userId, 5); // this request costs 5 units
 ```
 
+Check **many keys at once** — every key evaluated at one consistent timestamp, returned in order:
+
+```ts
+const decisions = await limiter.checkMany([ip, userId, apiKey]); // Decision[] in input order
+const all = limiter.checkManySync(keys);                         // MemoryStore: one loop, no promises
+```
+
+On an async store the checks fire concurrently — a single round trip on clients that pipeline
+same-tick commands (node-redis, or `ioredis` with `enableAutoPipelining`). Intended for distinct keys.
+
 ---
 
 ## Strategies

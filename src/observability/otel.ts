@@ -104,6 +104,23 @@ export function instrumentLimiter(
       return decision;
     },
 
+    async checkMany(keys: readonly string[], cost?: number): Promise<Decision[]> {
+      const start = monoNowMs();
+      const decisions = await limiter.checkMany(keys, cost);
+      // Per-key latency isn't separable in a batch; attribute an equal share of the wall time.
+      const share = decisions.length > 0 ? (monoNowMs() - start) / decisions.length : 0;
+      for (const d of decisions) record(d, share);
+      return decisions;
+    },
+
+    checkManySync(keys: readonly string[], cost?: number): Decision[] {
+      const start = monoNowMs();
+      const decisions = limiter.checkManySync(keys, cost);
+      const share = decisions.length > 0 ? (monoNowMs() - start) / decisions.length : 0;
+      for (const d of decisions) record(d, share);
+      return decisions;
+    },
+
     reset(key: string): Promise<void> {
       return limiter.reset(key);
     },

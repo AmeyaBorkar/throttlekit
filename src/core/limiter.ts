@@ -85,6 +85,47 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
       return store.applySync(keyFor(key), syncTransform);
     },
 
+    checkMany(keys: readonly string[], cost = 1): Promise<Decision[]> {
+      if (!Number.isFinite(cost) || cost <= 0) {
+        return Promise.reject(
+          new RangeError(`cost must be a positive finite number, got ${String(cost)}`),
+        );
+      }
+      // Synchronous store: one clock read, a tight loop, no per-key promise. Reusing the shared
+      // transform is safe because applySync never yields between iterations.
+      if (store.applySync !== undefined) {
+        syncNow = clock.now();
+        syncCost = cost;
+        const out: Decision[] = new Array(keys.length);
+        for (let i = 0; i < keys.length; i++) {
+          out[i] = store.applySync(keyFor(keys[i] as string), syncTransform);
+        }
+        return Promise.resolve(out);
+      }
+      // Async store: one timestamp for the whole batch, fired concurrently. Each apply gets its own
+      // transform (the shared slots aren't reentrant across concurrent awaits).
+      const now = clock.now();
+      return Promise.all(
+        keys.map((k) => store.apply(keyFor(k), decisionTransform(strategy, now, cost))),
+      );
+    },
+
+    checkManySync(keys: readonly string[], cost = 1): Decision[] {
+      validateCost(cost);
+      if (store.applySync === undefined) {
+        throw new ThrottleKitError(
+          "checkManySync requires a synchronous store (e.g. MemoryStore); the configured store is async-only",
+        );
+      }
+      syncNow = clock.now();
+      syncCost = cost;
+      const out: Decision[] = new Array(keys.length);
+      for (let i = 0; i < keys.length; i++) {
+        out[i] = store.applySync(keyFor(keys[i] as string), syncTransform);
+      }
+      return out;
+    },
+
     async reset(key: string): Promise<void> {
       await store.reset(keyFor(key));
     },
