@@ -1,6 +1,26 @@
 import { systemClock } from "../core/clock";
 import type { Clock, Decision } from "../core/types";
 
+/** Bytes of fixed header in {@link CountMinSketch.toBytes}: width(u32) + depth(u32) + total(f64). */
+const HEADER_BYTES = 16;
+
+/**
+ * A detached, transportable copy of a Count-Min Sketch's state — the counter table plus the total
+ * mass added. Produced by {@link CountMinSketch.snapshot} (in-process) or
+ * {@link sketchSnapshotFromBytes} (decoded from the wire), and folded into another sketch with
+ * {@link CountMinSketch.mergeSnapshot}.
+ */
+export interface SketchSnapshot {
+  /** Columns per row. Must match the target sketch to merge. */
+  readonly width: number;
+  /** Rows (independent hashes). Must match the target sketch to merge. */
+  readonly depth: number;
+  /** Total mass added into the source sketch (the `N` in the `epsilon·N` error bound). */
+  readonly total: number;
+  /** A flat `depth*width` counter table — a copy, safe to transfer or own. */
+  readonly counters: Uint32Array;
+}
+
 /**
  * A Count-Min Sketch (CMS) — a sublinear, fixed-memory frequency estimator for data streams.
  *
@@ -138,6 +158,47 @@ export class CountMinSketch {
   clear(): void {
     this.counters.fill(0);
     this.#total = 0;
+  }
+
+  /**
+   * Fold another sketch's counts into this one by element-wise addition. CMS counters are linear, so
+   * for **plain** (non-conservative) sketches that share identical dimensions and hash seeds this is
+   * *exact*: the result is counter-for-counter identical to a single sketch that had processed both
+   * streams. (Conservative-update sketches still merge to a valid never-underestimate sketch, just
+   * without that exactness.) Throws on a dimension mismatch.
+   */
+  mergeSnapshot(snap: SketchSnapshot): void {
+    if (snap.width !== this.width || snap.depth !== this.depth) {
+      throw new Error(
+        `cannot merge a ${snap.width}x${snap.depth} sketch into a ${this.width}x${this.depth} one`,
+      );
+    }
+    const a = this.counters;
+    const b = snap.counters;
+    for (let i = 0; i < a.length; i++) a[i] = (a[i] as number) + (b[i] as number);
+    this.#total += snap.total;
+  }
+
+  /** A detached copy of this sketch's table and total, for transport or in-process merge. */
+  snapshot(): SketchSnapshot {
+    return {
+      width: this.width,
+      depth: this.depth,
+      total: this.#total,
+      counters: this.counters.slice(),
+    };
+  }
+
+  /** Encode {@link CountMinSketch.snapshot} as compact little-endian bytes for cross-node transport. */
+  toBytes(): Uint8Array {
+    const n = this.counters.length;
+    const buf = new ArrayBuffer(HEADER_BYTES + n * 4);
+    const dv = new DataView(buf);
+    dv.setUint32(0, this.width, true);
+    dv.setUint32(4, this.depth, true);
+    dv.setFloat64(8, this.#total, true);
+    new Uint32Array(buf, HEADER_BYTES).set(this.counters);
+    return new Uint8Array(buf);
   }
 }
 
@@ -288,5 +349,96 @@ export function sketchRateLimit(options: SketchRateLimitOptions): SketchRateLimi
       sketch.clear();
       windowStart = Number.NEGATIVE_INFINITY;
     },
+  };
+}
+
+/** Decode bytes produced by {@link MergeableSketch.toBytes} back into a {@link SketchSnapshot}. */
+export function sketchSnapshotFromBytes(bytes: Uint8Array): SketchSnapshot {
+  if (bytes.byteLength < HEADER_BYTES) {
+    throw new Error(`sketch bytes too short: ${bytes.byteLength} < ${HEADER_BYTES}`);
+  }
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = dv.getUint32(0, true);
+  const depth = dv.getUint32(4, true);
+  const total = dv.getFloat64(8, true);
+  const n = width * depth;
+  if (bytes.byteLength !== HEADER_BYTES + n * 4) {
+    throw new Error(`sketch bytes length mismatch: expected ${HEADER_BYTES + n * 4}`);
+  }
+  // Copy counters out element-by-element: `bytes` may be unaligned for a Uint32Array view.
+  const counters = new Uint32Array(n);
+  for (let i = 0; i < n; i++) counters[i] = dv.getUint32(HEADER_BYTES + i * 4, true);
+  return { width, depth, total, counters };
+}
+
+/** Options for {@link mergeableSketch}. */
+export interface MergeableSketchOptions {
+  /**
+   * Additive accuracy: a key's global estimate exceeds its true global count by at most
+   * `epsilon * N` (with `N` the total merged mass) with probability `>= 1 - delta`. Default `0.01`.
+   */
+  epsilon?: number;
+  /** Failure probability for the {@link MergeableSketchOptions.epsilon} bound. Default `0.001`. */
+  delta?: number;
+}
+
+/**
+ * A mergeable, serializable Count-Min Sketch for **cluster-wide** frequency estimation in fixed
+ * memory.
+ */
+export interface MergeableSketch {
+  /** Add `count` (default 1) to `key`'s local tally; returns the new local estimate. */
+  add(key: string, count?: number): number;
+  /** Current estimate for `key` over everything added or merged so far. Never underestimates. */
+  estimate(key: string): number;
+  /** Total mass added/merged so far (the `N` in the `epsilon·N` bound). */
+  readonly total: number;
+  /** Counter count backing the sketch (`depth*width`) — fixed, independent of key count. */
+  readonly capacity: number;
+  /** A detached copy of this sketch's state, to ship to peers or fold in elsewhere. */
+  snapshot(): SketchSnapshot;
+  /** Compact little-endian bytes of {@link MergeableSketch.snapshot}, for cross-node transport. */
+  toBytes(): Uint8Array;
+  /** Fold a peer's snapshot into this sketch (exact element-wise add; throws on dimension mismatch). */
+  merge(snapshot: SketchSnapshot): void;
+  /** Zero the sketch. */
+  reset(): void;
+}
+
+/**
+ * A **mergeable** Count-Min Sketch for cluster-wide heavy-hitter detection.
+ *
+ * Each node keeps its own fixed-memory sketch of the traffic it sees ({@link MergeableSketch.add}).
+ * Because CMS counters are linear, periodically summing the nodes' sketches
+ * ({@link MergeableSketch.merge}, fed by {@link MergeableSketch.snapshot} / {@link MergeableSketch.toBytes}
+ * over whatever transport you already have) yields a sketch of the *union* of all their streams —
+ * a global per-key frequency estimate in the same fixed footprint, regardless of node count or key
+ * cardinality. This sketch is **plain** (non-conservative), so a merge is *exact*: identical to one
+ * sketch that had seen every node's stream. The estimate never underestimates, so threshold shedding
+ * (e.g. "shed any key whose global estimate exceeds X this window") never misses a true heavy hitter.
+ *
+ * **Honest scope.** This is an *eventually-consistent* global **estimator** for detection and
+ * best-effort shedding — each node acts on its most recent merged view. It is **not** a
+ * strongly-consistent global limiter and gives no hard never-over-admit guarantee across the cluster;
+ * for an exact shared limit use {@link rateLimit} over a Redis/Postgres store, or `twoTier`. The
+ * library provides the mergeable data structure and the math, not the merge schedule or transport —
+ * those stay yours (gossip, a periodic push to a coordinator, etc.).
+ */
+export function mergeableSketch(options: MergeableSketchOptions = {}): MergeableSketch {
+  const epsilon = options.epsilon ?? 0.01;
+  const delta = options.delta ?? 0.001;
+  // Plain (non-conservative) CMS: counters are purely additive, so a merge is the exact union.
+  const sketch = new CountMinSketch(epsilon, delta, false);
+  return {
+    add: (key, count = 1) => sketch.add(key, count),
+    estimate: (key) => sketch.estimate(key),
+    get total() {
+      return sketch.total;
+    },
+    capacity: sketch.size,
+    snapshot: () => sketch.snapshot(),
+    toBytes: () => sketch.toBytes(),
+    merge: (snap) => sketch.mergeSnapshot(snap),
+    reset: () => sketch.clear(),
   };
 }

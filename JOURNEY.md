@@ -45,7 +45,15 @@ auto-pipelining clients; threaded through `twoTier` and the analytics/OTel wrapp
 counted too), and the **multi-region story** — which turned out to need *no new engine*: it's
 `twoTier` leased over a shared L2, where the already-proven bound caps worldwide overshoot at
 `Limit + regions·(batch−1)`. Documented with a runnable example (~50 requests served per cross-region
-hop). Remaining on the roadmap: the distributed sketch / CRDT frontier.
+hop).
+
+The frontier item landed too: **`mergeableSketch`** — a Count-Min Sketch for *cluster-wide*
+heavy-hitter detection. CMS counters are linear, so merging per-node sketches (shipped as compact
+bytes) is **exact** — counter-for-counter the union sketch — which means a low-and-slow distributed
+attacker that hides under every single node's threshold is caught once the views merge, all in fixed
+~7.4 KiB per node. Scoped honestly: eventually-consistent *detection* / best-effort shedding, not a
+strongly-consistent global limit (that's what the Redis/Postgres stores and `twoTier` are for). The
+exact-merge property and byte round-trip are unit-proven. That closes the post-0.2.0 ROI roadmap.
 
 ## 2026-05-26 — Past v0.1.0: reach, parity, and a formally-verified frontier
 

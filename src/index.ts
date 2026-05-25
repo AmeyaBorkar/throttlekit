@@ -62,8 +62,14 @@ export type {
   MultiLimiter,
   MultiRateLimitOptions,
 } from "./multi";
-export { sketchRateLimit } from "./sketch";
-export type { SketchRateLimitOptions, SketchRateLimiter } from "./sketch";
+export { sketchRateLimit, mergeableSketch, sketchSnapshotFromBytes } from "./sketch";
+export type {
+  SketchRateLimitOptions,
+  SketchRateLimiter,
+  MergeableSketch,
+  MergeableSketchOptions,
+  SketchSnapshot,
+} from "./sketch";
 export { withAnalytics } from "./analytics";
 export type {
   AnalyticsOptions,

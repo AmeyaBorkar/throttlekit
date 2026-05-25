@@ -15,6 +15,13 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   that pipeline same-tick commands (node-redis, or `ioredis` with `enableAutoPipelining`). Decisions
   are identical to per-key `check`. Available on every limiter, including `twoTier` and the
   `withAnalytics` / OpenTelemetry wrappers (batch checks are counted/instrumented too).
+- **Mergeable sketch** (`mergeableSketch`, `sketchSnapshotFromBytes`) — a Count-Min Sketch for
+  **cluster-wide** heavy-hitter detection in fixed memory. Each node sketches its own traffic and
+  ships a compact snapshot (`snapshot()` / `toBytes()`); because CMS counters are linear, merging
+  them (`merge()`) is **exact** — counter-for-counter identical to one sketch over the union of all
+  streams — so a low-and-slow distributed attacker invisible per node is caught cluster-wide. Never
+  underestimates. Honestly scoped as eventually-consistent *detection* / best-effort shedding, not a
+  strongly-consistent global limit (use Redis/Postgres or `twoTier` for that).
 
 ### Documentation
 
