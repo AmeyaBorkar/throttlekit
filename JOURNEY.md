@@ -5,6 +5,34 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — Feature-complete, measured, and benchmarked
+
+Landed the rest of the surface and proved it: the six strategies (GCRA, token bucket, fixed/
+sliding window, sliding log, leaky-bucket shaper), the **two-tier engine** (strict / cached-deny /
+leased with a property-tested `overshoot ≤ L×batch` bound), **multi-dimensional `all`/`any`** (a
+single fused Lua round trip over k keys, conformance-checked against the atomic memory path),
+**adaptive concurrency** (verified Gradient2 + AIMD with an O(1) monotonic-deque rolling-min),
+Express + fetch/edge adapters, standards-compliant headers, proxy-correct IP with IPv6 /64
+aggregation, OTel instrumentation, the store testkit, and the property/atomicity proofs
+(**N=200 concurrent at K=50 ⇒ exactly 50 allowed**, on memory *and* Redis).
+
+Parallelized aggressively with background agents on disjoint file sets (token bucket + fixed
+window; adaptive concurrency; adapters/IP/headers; testkit/property/atomicity; OTel; README +
+examples), reviewing each against the verified math. Kept ownership disjoint and re-ran the full
+gate after each merge.
+
+**The benchmark earned its keep.** Running `npm run bench` surfaced a real GCRA/leaky Lua
+robustness bug: with an extreme limit the emission interval falls below the ULP of a large
+epoch-ms `now`, so `new_tat − now` rounds to 0 and `SET … PX 0` errors. Guarded `ttl ≥ 1` on both
+the JS and Lua persists (decisions are unaffected, so conformance still holds). Also optimized the
+synchronous hot path (reuse one transform, skip the Lua-invocation allocation a sync store never
+uses): `checkSync` went 955k → **3.13M ops/s (319 ns/op, ~5 B/op)** — sub-microsecond, essentially
+allocation-free. Upgraded MemoryStore eviction from FIFO to a correct CLOCK (second-chance)
+approximate-LRU with proper tombstone handling.
+
+**Status:** every SCOREBOARD budget met and measured; coverage 96.8% lines; CI green on node
+20/22/24 with a Redis service. Remaining: publish hygiene (package validation) and final polish.
+
 ## 2026-05-25 — Dual-path proven end-to-end
 
 The central thesis is now demonstrated, not just claimed. Built the vertical slice
