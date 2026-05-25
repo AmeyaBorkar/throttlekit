@@ -49,7 +49,9 @@ before commit.
 
 **Status:** every gate green — **355 tests**, 96.9% lines / 86.4% branch, lint + strict types
 clean, build emits all 10 subpaths (ESM + CJS + types), `publint` clean. All work pushed in many
-small bisectable commits. Candidate for a **0.2.0** release.
+small bisectable commits. **Released as `throttlekit@0.2.0`** — live on npm (`dist-tags.latest =
+0.2.0`), 601 KB unpacked / 52 files (sourcemaps trimmed), published with provenance via the
+tag-triggered Release workflow.
 
 ## 2026-05-26 — Published v0.1.0 to npm
 
