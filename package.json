@@ -1,0 +1,101 @@
+{
+  "name": "throttlekit",
+  "version": "0.1.0",
+  "description": "Pluggable, framework-agnostic rate limiting for Node and the web: GCRA by default, isomorphic JS/Lua dual-path, two-tier token leasing, multi-dimensional single-round-trip checks, and adaptive concurrency.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Ameya Borkar",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AmeyaBorkar/throttlekit.git"
+  },
+  "homepage": "https://github.com/AmeyaBorkar/throttlekit#readme",
+  "bugs": {
+    "url": "https://github.com/AmeyaBorkar/throttlekit/issues"
+  },
+  "keywords": [
+    "rate-limit",
+    "rate-limiter",
+    "ratelimit",
+    "gcra",
+    "token-bucket",
+    "leaky-bucket",
+    "sliding-window",
+    "fixed-window",
+    "redis",
+    "lua",
+    "throttle",
+    "backpressure",
+    "adaptive-concurrency",
+    "express",
+    "fetch",
+    "edge",
+    "cloudflare-workers",
+    "ddos"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:cov": "vitest run --coverage",
+    "bench": "tsx bench/run.ts",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "check": "npm run lint && npm run typecheck && npm run test",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@opentelemetry/api": "^1.9.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^3.0.5",
+    "express": "^4.21.2",
+    "fast-check": "^3.23.1",
+    "ioredis": "^5.4.2",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": ">=1.7.0",
+    "express": ">=4",
+    "ioredis": ">=5"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "express": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    }
+  }
+}
