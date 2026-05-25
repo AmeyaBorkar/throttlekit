@@ -11,3 +11,8 @@ coverage/
 .vitest/
 .tsup/
 tmp/
+
+# TLA+ / TLC model-checker artifacts (the spec is tracked; the jar and scratch are not)
+tla2tools.jar
+states/
+*.st
