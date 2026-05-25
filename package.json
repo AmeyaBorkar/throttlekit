@@ -58,6 +58,26 @@
         "default": "./dist/redis.cjs"
       }
     },
+    "./express": {
+      "import": {
+        "types": "./dist/express.d.ts",
+        "default": "./dist/express.js"
+      },
+      "require": {
+        "types": "./dist/express.d.cts",
+        "default": "./dist/express.cjs"
+      }
+    },
+    "./fetch": {
+      "import": {
+        "types": "./dist/fetch.d.ts",
+        "default": "./dist/fetch.js"
+      },
+      "require": {
+        "types": "./dist/fetch.d.cts",
+        "default": "./dist/fetch.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "main": "./dist/index.cjs",

@@ -4,6 +4,8 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     redis: "src/redis/index.ts",
+    express: "src/adapters/express.ts",
+    fetch: "src/adapters/fetch.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
