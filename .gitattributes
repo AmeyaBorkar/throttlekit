@@ -1,0 +1,10 @@
+# Normalize line endings to LF in the repository for cross-platform consistency.
+* text=auto eol=lf
+
+*.lua text eol=lf
+*.json text eol=lf
+*.ts text eol=lf
+*.md text eol=lf
+
+# Lockfiles and generated artifacts
+package-lock.json -diff
