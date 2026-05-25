@@ -62,3 +62,5 @@ export type {
   MultiLimiter,
   MultiRateLimitOptions,
 } from "./multi";
+export { sketchRateLimit } from "./sketch";
+export type { SketchRateLimitOptions, SketchRateLimiter } from "./sketch";
