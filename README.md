@@ -404,6 +404,8 @@ if (!d.allowed) return reject(429);
 
 The guarantee: because the sketch never *under*counts, **`allowed` implies the true admitted count is ≤ `limit` — it never over-admits** (a hard, non-probabilistic property). Its only error is the safe direction — it may deny a key slightly early once hash collisions inflate its estimate, bounded by `ε·N` with probability `≥ 1−δ` ([Cormode & Muthukrishnan 2005](http://dimacs.rutgers.edu/~graham/pubs/papers/cmencyc.pdf); conservative-update from Estan & Varghese). Over-denying rather than over-admitting is exactly the right bias for abuse protection. Tune the memory/accuracy trade with `epsilon`/`delta`.
 
+**Cluster-wide (`mergeableSketch`).** A low-and-slow distributed attacker can stay under every single node's threshold while flooding the fleet. Because Count-Min counters are linear, each node can keep its own fixed-memory sketch, ship it as compact bytes (`snapshot()` / `toBytes()`), and `merge()` peers' sketches — the sum is *exactly* the sketch of the whole cluster's traffic, so the global heavy hitter becomes visible everywhere. Honestly scoped: this is eventually-consistent **detection** (each node acts on its latest merged view), not a strongly-consistent global limit — for that use a Redis/Postgres store or `twoTier`. See [`examples/distributed-sketch.ts`](./examples/distributed-sketch.ts).
+
 ---
 
 ## Overload & fairness (`adaptiveThrottle`, `fairShare`)

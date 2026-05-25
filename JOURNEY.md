@@ -37,8 +37,9 @@ A `pg.Pool` is accepted directly (structurally typed — no adapter); `pg` is an
 Isolation note for future me: tests use a dedicated **`tk-postgres` on 5433**, never the unrelated
 `sarva-postgres` on 5432 (mirrors the `tk-redis` 6380 vs `sarva-redis` 6379 split).
 
-**Status:** every gate green — **373 tests**, lint + strict types clean, build emits **11 subpaths**
-(added `/postgres`), `publint` clean, all pushed in small commits. Two more roadmap items landed the
+**Status:** every gate green — **379 tests** (95.2% lines), lint + strict types clean, build emits
+**11 subpaths** (added `/postgres`), `publint` clean, all pushed in small commits. Two more roadmap
+items landed the
 same day: **`checkMany` / `checkManySync`** (batch checks at one consistent timestamp; an ordered
 loop with no per-key promise on a sync store, concurrent on async stores → one round trip on
 auto-pipelining clients; threaded through `twoTier` and the analytics/OTel wrappers so batches are
