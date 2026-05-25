@@ -439,6 +439,28 @@ instrumentGuard(guard, meter);                       // concurrency.limit / .inf
 
 ---
 
+## Resilience (what happens when Redis is down)
+
+The in-process `MemoryStore` never fails. A distributed store can: if Redis is unreachable, `limiter.check()` rejects (`StoreUnavailableError`). **You decide what that means** — every adapter takes a `fail` policy and fires an `onError` hook before applying it:
+
+| `fail` | On a store outage | Use when |
+|---|---|---|
+| `"open"` *(default)* | Allow the request (the limiter gets out of the way) | Availability matters more than the cap — most public APIs |
+| `"closed"` | Reject with `503 { error: "rate limiter unavailable" }` | The cap is a hard guarantee — billing, abuse-critical paths |
+
+```ts
+expressRateLimit({
+  strategy: gcra({ limit: 100, periodMs: 60_000 }),
+  store: redisStore,
+  fail: "closed",                       // deny if the limiter can't be consulted
+  onError: (_req, _res, err) => log.warn({ err }, "rate limiter store down"),
+});
+```
+
+Two extra hedges against transient outages: **`twoTier` in `leased` mode** keeps serving from the local lease while L2 is briefly unreachable, and the Redis path uses a single atomic round trip (no read-then-write window to be interrupted). Fail-open and fail-closed are covered by tests on every adapter.
+
+---
+
 ## How it's tested
 
 ThrottleKit is engineered to be *provably* correct:
