@@ -64,3 +64,10 @@ export type {
 } from "./multi";
 export { sketchRateLimit } from "./sketch";
 export type { SketchRateLimitOptions, SketchRateLimiter } from "./sketch";
+export { withAnalytics } from "./analytics";
+export type {
+  AnalyticsOptions,
+  AnalyticsLimiter,
+  AnalyticsSnapshot,
+  HeavyHitter,
+} from "./analytics";
