@@ -59,18 +59,21 @@ endpoint and can't be benchmarked locally on equal footing.
 
 **PostgreSQL (loopback, identical `pg.Pool` / server / DB):**
 
-| Library | Algorithm | Round trips | ops/s | p50 | p99 |
-|---|---|---|---|---|---|
-| throttlekit `PostgresStore` | GCRA | ~5 (txn) | 121 | 8.0 ms | 11.3 ms |
-| **rate-limiter-flexible** | fixed-window | 1 (upsert) | **358** | **2.6 ms** | 4.3 ms |
+| Library | Algorithm | Round trips | ops/s | p50 / avg |
+|---|---|---|---|---|
+| throttlekit `PostgresStore` | GCRA | ~5 (txn) | 123 | 7.8 ms |
+| **rate-limiter-flexible** | fixed-window | 1 (upsert) | **366** | **2.6 ms** |
+| **throttlekit `twoTier(leased)`** | GCRA | 1 per **100** reqs | **12.6k** | **79.7 µs** |
 
-Here **rate-limiter-flexible wins per-op (~3×)** — honestly. It expresses its counter as a single
-atomic `INSERT … ON CONFLICT DO UPDATE`, while `PostgresStore` runs a generic read-modify-write
-**transaction** (advisory lock → read → write → commit) so the *same proven transform* drives every
-strategy and backend; that generality costs round trips. The production answer is the same lever as
-Redis: front it with `twoTier({ mode: "leased" })`, which does **one transaction per batch** (≈
-batch-fold fewer round trips), amortizing the per-request cost below the single-statement counter —
-and rate-limiter-flexible has no equivalent. (Per-op latency here is also loopback-Docker-on-Windows.)
+Two honest, opposite results. **Per single op, rate-limiter-flexible wins ~3×** — it expresses its
+counter as one atomic `INSERT … ON CONFLICT DO UPDATE`, while `PostgresStore` runs a generic
+read-modify-write **transaction** (advisory lock → read → write → commit) so the *same proven
+transform* drives every strategy and backend; that generality costs round trips. **At throughput,
+`twoTier(leased)` over Postgres wins ~34×** (12.6k vs 366 ops/s; 79.7 µs vs 2.6 ms/op) — one
+transaction per `batch`, a lever rate-limiter-flexible has no equivalent for. So: reach for leased on
+hot keys; the bare single-op path trails on latency by design. (A single-round-trip per-op win is
+possible via a server-side PL/pgSQL function — a third execution path — but isn't shipped.) Per-op
+latency here is loopback-Docker-on-Windows.
 
 ## Correctness guarantees (§12)
 

@@ -19,7 +19,9 @@
 import { fixedWindow } from "../src/algorithms/fixed-window";
 import { gcra } from "../src/algorithms/gcra";
 import { rateLimit } from "../src/core/limiter";
+import type { Store, Transform } from "../src/core/types";
 import { MemoryStore } from "../src/stores/memory";
+import { twoTier } from "../src/twotier";
 
 import { MemoryStore as ExpressMemoryStore } from "express-rate-limit";
 import { RateLimiterMemory } from "rate-limiter-flexible";
@@ -389,8 +391,36 @@ async function postgresSection(): Promise<void> {
     "   proven transform across every strategy; rate-limiter-flexible specializes the counter into one atomic",
   );
   console.log(
-    "   UPSERT. Fewer round trips ⇒ lower per-op latency there; front it with twoTier(leased) to amortize.",
+    "   UPSERT. Fewer round trips ⇒ lower per-op latency there — but the throughput lever below has no",
   );
+  console.log("   rate-limiter-flexible equivalent:");
+
+  // The win: front PostgresStore with twoTier(leased) — one transaction per `batch` requests.
+  await pool.query("TRUNCATE tk_bench").catch(() => {});
+  const leasedBase = new PostgresStore({ pool, table: "tk_bench", sweepIntervalMs: 0 });
+  let txns = 0;
+  const counting: Store = {
+    apply<S, R>(k: string, t: Transform<S, R>): Promise<R> {
+      txns++;
+      return leasedBase.apply(k, t);
+    },
+    reset: (k: string) => leasedBase.reset(k),
+  };
+  const leased = twoTier({
+    strategy: gcra({ limit: 2_000_000_000, periodMs: 60_000 }),
+    l2: counting,
+    mode: "leased",
+    lease: { batch: 100 },
+  });
+  for (let i = 0; i < 100; i++) await leased.check("lk"); // warm
+  txns = 0;
+  const lt0 = process.hrtime.bigint();
+  for (let i = 0; i < PG_ITERS; i++) await leased.check("lk");
+  const lns = Number(process.hrtime.bigint() - lt0);
+  console.log(
+    `  throttlekit twoTier(leased)  GCRA          batch 100  ${fmt((PG_ITERS / lns) * 1e9).padStart(7)}  ${`${(lns / PG_ITERS / 1000).toFixed(1)}µs/op`.padStart(10)}  (${(PG_ITERS / txns).toFixed(0)} reqs / transaction)`,
+  );
+  await leasedBase.close();
 
   await pool.query("TRUNCATE tk_bench").catch(() => {});
   await pool.query('TRUNCATE "rlflx_bench"').catch(() => {});
