@@ -97,6 +97,6 @@ can't be benchmarked locally on equal footing.
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **96.9% lines**, 95.2% funcs, 86.4% branch (285 tests) |
+| Test coverage on `src` | ✅ **96.9% lines**, 95.2% funcs, 86.4% branch (355 tests) |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) | ✅ |
 | Build emits valid ESM + CJS + types (10 subpaths) | ✅ |

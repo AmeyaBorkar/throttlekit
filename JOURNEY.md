@@ -5,6 +5,52 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — Past v0.1.0: reach, parity, and a formally-verified frontier
+
+A second push after the publish, aimed at "the go-to package, eyes closed" and then beyond SOTA.
+Two threads of background research first (competitive landscape + the algorithmic frontier),
+sourced and verified, then execution — ROI-ordered, each feature parallelized to a background agent
+on a disjoint file set, reviewed against the code, and gated (lint + strict types + tests + build)
+before commit.
+
+**Reach & parity (so it drops into anyone's stack):**
+
+- **Any Redis client.** The store was `ioredis`-only; added `fromNodeRedis` / `fromUpstash` /
+  `fromIoredis` adapters, so it now runs on the official node-redis client and the **Upstash REST**
+  client — the serverless/edge audience (Cloudflare, Vercel, Deno, Bun) it previously couldn't reach.
+  Proven bit-identical to the JS path on a live server via node-redis.
+- **Four framework adapters** on a shared core (extracted from Express/fetch): **Hono, Next.js,
+  Fastify, Koa** — ten subpath exports now, each an npm-search entry point.
+- **Comparative benchmark** vs `rate-limiter-flexible` and `express-rate-limit` on one fair harness.
+  It earned its keep immediately: it surfaced that async `check()` ran ~5× slower than `checkSync`
+  for no structural reason on an in-memory store. Fixed it (a synchronous-store fast path that
+  skips the async store frame + per-call closure) — **596.9k → 1.64M ops/s, a 2.7× win** — keeping
+  `checkSync` allocation-free at ~3.2M. We own the sync path, tie on Redis, and report the async
+  numbers honestly (the counter libs are faster there; we run GCRA over a bounded-memory store).
+- **Trust + DX:** SECURITY policy, code of conduct, issue/PR templates, a resilience guide, a
+  comparison table, migration guides (from the incumbents), and recipes.
+
+**Beyond SOTA (the things no Node rate limiter ships):**
+
+- **`sketchRateLimit`** — a Count-Min Sketch limiter that caps an *unbounded* key universe in
+  **~7.4 KB total** (independent of key count), for DDoS / huge-cardinality shedding where per-key
+  state is itself the exhaustion vector. Check-before-add over a never-underestimating sketch gives
+  a *hard* never-over-admit guarantee; error is bounded early denial (`ε·N` w.p. ≥ `1−δ`).
+- **`withAnalytics`** — zero-config, dependency-free allow/deny stats + bounded-memory top-K heavy
+  hitters (Space-Saving), without an OTel backend.
+- **`adaptiveThrottle` + `fairShare`** — Google-SRE client-side adaptive load-shedding (with
+  priority) and an honest equal-share cross-tenant fairness splitter (its real limitations spelled
+  out, not overstated).
+- **A formally-verified leasing bound.** The two-tier `leased` overshoot bound went from
+  property-tested to *proven*: a **TLA⁺ spec model-checked with TLC** (invariant holds across the
+  full reachable state space; a counterexample shows it's *exact* at `Limit + N·(Batch−1)`), plus a
+  Java-free exhaustive checker that reproduces it in CI — independently finding the same state
+  counts. The spec models the real `src/twotier/index.ts` line-for-line.
+
+**Status:** every gate green — **355 tests**, 96.9% lines / 86.4% branch, lint + strict types
+clean, build emits all 10 subpaths (ESM + CJS + types), `publint` clean. All work pushed in many
+small bisectable commits. Candidate for a **0.2.0** release.
+
 ## 2026-05-26 — Published v0.1.0 to npm
 
 `throttlekit@0.1.0` is live on npm (`dist-tags.latest = 0.1.0`), published by the tag-triggered
