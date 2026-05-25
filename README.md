@@ -346,6 +346,23 @@ try {
 
 ---
 
+## Huge cardinality / DDoS (`sketchRateLimit`)
+
+The per-key stores keep one record per active key — which, under a flood of *millions of distinct* keys (every source IP in a volumetric attack), makes that per-key state itself the memory-exhaustion vector. `sketchRateLimit` limits an **unbounded key universe in fixed memory** using a Count-Min Sketch: ~**7.4 KB total**, regardless of how many keys it sees.
+
+```ts
+import { sketchRateLimit } from "throttlekit";
+
+const shield = sketchRateLimit({ limit: 100, windowMs: 60_000 }); // ε=0.01, δ=0.001 by default
+
+const d = shield.checkSync(clientIp); // sync or async (check)
+if (!d.allowed) return reject(429);
+```
+
+The guarantee: because the sketch never *under*counts, **`allowed` implies the true admitted count is ≤ `limit` — it never over-admits** (a hard, non-probabilistic property). Its only error is the safe direction — it may deny a key slightly early once hash collisions inflate its estimate, bounded by `ε·N` with probability `≥ 1−δ` ([Cormode & Muthukrishnan 2005](http://dimacs.rutgers.edu/~graham/pubs/papers/cmencyc.pdf); conservative-update from Estan & Varghese). Over-denying rather than over-admitting is exactly the right bias for abuse protection. Tune the memory/accuracy trade with `epsilon`/`delta`.
+
+---
+
 ## Determinism with `ManualClock`
 
 Time is injected everywhere — no `Date.now()` hides inside an algorithm — so every limit is reproducible to the millisecond.

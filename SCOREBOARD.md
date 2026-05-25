@@ -80,6 +80,7 @@ can't be benchmarked locally on equal footing.
 | Two-tier local cache (strict / cached-deny / leased) | ✅ |
 | Token leasing (network-light) | ✅ |
 | Multi-dimensional, 1 fused round trip (`all`/`any`) | ✅ |
+| Huge-cardinality / DDoS sketch (`sketchRateLimit`) — bounded memory, provably never over-admits | ✅ |
 | Adapters: Express · Web `fetch`/edge · Hono · Next.js · Fastify · Koa | ✅ |
 | Injectable clock / determinism (`ManualClock`) | ✅ |
 | OpenTelemetry metrics + gauges | ✅ |
