@@ -33,6 +33,8 @@ const ASYNC_WARMUP = 10_000;
 const REDIS_ITERS = 3_000;
 const REDIS_WARMUP = 200;
 const REDIS_DB = 11;
+const PG_ITERS = 1_500;
+const PG_WARMUP = 100;
 
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
@@ -293,6 +295,108 @@ async function redisSection(): Promise<void> {
   await Promise.all([tkClient.quit(), rlfClient.quit()]);
 }
 
+async function postgresSection(): Promise<void> {
+  const url = process.env.THROTTLEKIT_TEST_POSTGRES;
+  if (!url) {
+    console.log(
+      "\n== POSTGRES == skipped (set THROTTLEKIT_TEST_POSTGRES=postgres://user:pass@localhost:5433/db to enable)",
+    );
+    return;
+  }
+
+  const { Pool } = await import("pg");
+  const { PostgresStore } = await import("../src/postgres/store");
+  const { RateLimiterPostgres } = await import("rate-limiter-flexible");
+
+  const pool = new Pool({ connectionString: url, max: 10 });
+  try {
+    await pool.query("SELECT 1");
+  } catch (err) {
+    console.log(`\n== POSTGRES == skipped — could not reach ${url} (${(err as Error).message}).`);
+    await pool.end();
+    return;
+  }
+
+  console.log(`\n== POSTGRES (${url}) — single hot key, ALLOW path ==`);
+  console.log("   Same pg.Pool, same server/DB, same warmup + iteration count for both.");
+
+  // ThrottleKit: GCRA over a generic transactional read-modify-write (advisory lock + read + write).
+  const tk = rateLimit({
+    strategy: gcra({ limit: 2_000_000_000, periodMs: 60_000 }),
+    store: new PostgresStore({ pool, table: "tk_bench", sweepIntervalMs: 0 }),
+    prefix: "tk",
+  });
+
+  // rate-limiter-flexible: a fixed-window counter expressed as one atomic UPSERT. Its table is
+  // created asynchronously; the constructor callback fires when it is ready.
+  let rlf!: InstanceType<typeof RateLimiterPostgres>;
+  await new Promise<void>((resolve, reject) => {
+    rlf = new RateLimiterPostgres(
+      { storeClient: pool, points: 2_000_000_000, duration: 60, tableName: "rlflx_bench" },
+      (err?: Error) => (err ? reject(err) : resolve()),
+    );
+  });
+
+  interface PgRow {
+    name: string;
+    algo: string;
+    rt: string;
+    opsPerSec: number;
+    p50: number;
+    p99: number;
+    p999: number;
+  }
+
+  async function measure(
+    name: string,
+    algo: string,
+    rt: string,
+    once: () => Promise<unknown>,
+  ): Promise<PgRow> {
+    for (let i = 0; i < PG_WARMUP; i++) await once(); // warm up + create tables
+    const samples: number[] = [];
+    for (let i = 0; i < PG_ITERS; i++) {
+      const t0 = process.hrtime.bigint();
+      await once();
+      samples.push(Number(process.hrtime.bigint() - t0));
+    }
+    const total = samples.reduce((a, b) => a + b, 0);
+    return { name, algo, rt, opsPerSec: (PG_ITERS / total) * 1e9, ...percentiles(samples) };
+  }
+
+  const rows: PgRow[] = [];
+  rows.push(await measure("throttlekit PostgresStore", "GCRA", "~5 (txn)", () => tk.check("k")));
+  rows.push(
+    await measure("rate-limiter-flexible", "fixed-window", "1 (upsert)", () => rlf.consume("k")),
+  );
+
+  const nameW = Math.max(...rows.map((r) => r.name.length), 9);
+  console.log(
+    `  ${"contender".padEnd(nameW)}  ${"algorithm".padEnd(12)}  ${"round trips".padStart(11)}  ${"ops/s".padStart(7)}  ${"p50".padStart(8)}  ${"p99".padStart(8)}`,
+  );
+  console.log(
+    `  ${"-".repeat(nameW)}  ${"-".repeat(12)}  ${"-".repeat(11)}  ${"-".repeat(7)}  ${"-".repeat(8)}  ${"-".repeat(8)}`,
+  );
+  for (const r of rows) {
+    console.log(
+      `  ${r.name.padEnd(nameW)}  ${r.algo.padEnd(12)}  ${r.rt.padStart(11)}  ${fmt(r.opsPerSec).padStart(7)}  ${`${(r.p50 / 1000).toFixed(1)}µs`.padStart(8)}  ${`${(r.p99 / 1000).toFixed(1)}µs`.padStart(8)}`,
+    );
+  }
+  console.log(
+    "   ThrottleKit runs a generic RMW transaction (advisory lock + read + write + commit) to reuse the same",
+  );
+  console.log(
+    "   proven transform across every strategy; rate-limiter-flexible specializes the counter into one atomic",
+  );
+  console.log(
+    "   UPSERT. Fewer round trips ⇒ lower per-op latency there; front it with twoTier(leased) to amortize.",
+  );
+
+  await pool.query("TRUNCATE tk_bench").catch(() => {});
+  await pool.query('TRUNCATE "rlflx_bench"').catch(() => {});
+  await pool.end();
+}
+
 async function main(): Promise<void> {
   console.log("ThrottleKit comparative benchmarks (vs rate-limiter-flexible, express-rate-limit)");
   console.log(
@@ -304,6 +408,7 @@ async function main(): Promise<void> {
 
   await memorySection();
   await redisSection();
+  await postgresSection();
 }
 
 main().catch((err) => {
