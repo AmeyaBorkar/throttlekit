@@ -88,6 +88,16 @@
         "default": "./dist/otel.cjs"
       }
     },
+    "./testkit": {
+      "import": {
+        "types": "./dist/testkit.d.ts",
+        "default": "./dist/testkit.js"
+      },
+      "require": {
+        "types": "./dist/testkit.d.cts",
+        "default": "./dist/testkit.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "main": "./dist/index.cjs",
