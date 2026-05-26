@@ -1,9 +1,14 @@
 # The rate-limiting trilemma — a lower bound
 
-*The capstone theory result. The zero-coordination bound below is proved here and machine-checked
-exhaustively in `test/gale/trilemma.test.ts`. It formalises, for the first time (per our three
-surveys), the three-way tension among **overshoot**, **coordination**, and **utilisation-under-skew**
-that every distributed rate limiter negotiates.*
+*The capstone **framing** result. The zero-coordination bound below is an elementary, general-`N`
+averaging argument — proved here in closed form, and machine-checked exhaustively for `N ∈ {2,3,4}` in
+`test/gale/trilemma.test.ts` as corroboration (not the proof's ceiling). Its value is not depth (the
+proof is one line) but the **design-space framing** — the three-way tension among **overshoot**,
+**coordination**, and **utilisation-under-skew** that every distributed rate limiter negotiates — and
+the **achievability**: GALE's window-coupling reaches the good corner with bounded coordination. To our
+knowledge the tradeoff has not been stated in this form for rate limiting; it is **complementary to,
+not subsumed by**, the distributed-monitoring communication bounds (see "How much coordination?")
+that price the coordination axis.*
 
 ## Model
 
@@ -73,8 +78,9 @@ functional-monitoring literature: maintaining an exact shared count forces a per
 bottleneck (**Wattenhofer & Widmayer, JPDC 1998**), and continuously tracking whether a distributed
 sum crosses a threshold to within `(1±ε)` costs `Θ̃(k/ε)` communication (**Cormode, Muthukrishnan &
 Yi, SODA 2008**; **Woodruff & Zhang, STOC 2012**) — diverging as `ε → 0` (exactness). Together: the
-`Δ–U` edge is the new bound above; the `Δ–C` edge is those counting bounds; GALE is the scheme that
-spends bounded `C` to hold `Δ = 0` and `U ≈ 0` simultaneously, which no `C = 0` protocol can.
+`Δ–U` edge is the **elementary** bound above (it is *not* implied by — nor does it imply — those
+counting bounds; the two price orthogonal axes); the `Δ–C` edge is the counting bounds; GALE is the
+scheme that spends bounded `C` to hold `Δ = 0` and `U ≈ 0` simultaneously, which no `C = 0` protocol can.
 
 ## Scope / honesty
 - The theorem is a **single-window, deterministic, hard-worst-case** bound — clean and tight.

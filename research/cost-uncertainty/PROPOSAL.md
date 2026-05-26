@@ -7,7 +7,7 @@ title acronym **TALE** (Temporally-Accounted Learned Escrow) is a placeholder.*
 > serving breaks that: the binding limit is **tokens-per-minute (TPM)**, and the dominant cost —
 > *output* tokens — is revealed only *during/after* generation. We treat token-budget rate limiting as
 > **escrow under cost uncertainty**: reserve a cost at admission, reconcile when the truth is revealed.
-> We give the first scheme with a **tight, provable overshoot bound independent of `max_tokens`** —
+> We give what is, to our knowledge, the first scheme with a **tight, provable overshoot bound independent of `max_tokens`** —
 > via a *streaming meter* that is the cost-axis analog of GALE's window-coupling — plus an online
 > learned reservation and a predictions-with-safety layer that reuses GALE's machinery.
 
@@ -36,7 +36,7 @@ straight from production gateways:
 2. **Admit, then count.** Debit the actual cost once the response returns. Full utilization — but the
    same docs concede that *"concurrent requests can temporarily exceed the configured token limit"*:
    `C` requests admitted near the boundary can each run to `max_tokens`, so overshoot is **`≈ C ·
-   max_tokens`, unbounded in `max_tokens`**, with no stated bound.
+   max_tokens`, unbounded in `max_tokens`**, with no stated bound. This is not hypothetical: LiteLLM's TPM limiter was **measured at 6.6×** under 5 concurrent requests (issue #18730, whose proposed "reserve-then-refund" fix ships no bound), and Zuplo documents that *the request that pushes you over the budget completes successfully* — every production token limiter sits at one of these two corners.
 
 **No deployed or published token-budget limiter has a tight, all-time bound on overshoot under post-hoc
 costs.** That is the gap — the cost-axis twin of the gap GALE closed for distributed leasing.
@@ -105,8 +105,8 @@ Per-request output-length **predictions** exist and work: exact length is infeas
 reservation, arbitrated by a Hedge meta-learner over {follow-prediction, robust-quantile} — GALE's
 Pillar 3 verbatim. **Consistency** (good predictions ⇒ near-clairvoyant admission/utilization),
 **robustness** (adversarial predictions ⇒ the no-regret quantile), and **safety unconditional** (the
-streaming meter holds `Δ ≤ g−1` no matter how wrong the predictor is — the *first*
-predictions-with-safety result for token budgets).
+streaming meter holds `Δ ≤ g−1` no matter how wrong the predictor is — to our knowledge the first
+predictions-with-safety result for token *budgets*, instantiating the known newsvendor / predictions-with-safety machinery (§5) on the cost axis).
 
 **Implemented + measured** (`test/cost/predicted-reservation.ts`). The predictor is modelled on the
 LtR reality: it recovers output-length *rank* (with tunable noise) and maps ranks back through the
@@ -150,20 +150,20 @@ window-coupled token budget is *byte-identical* to GALE's request-granular `simu
 - **Primary: SIGMETRICS / POMACS or NSDI/OSDI** (systems-measurement; LLM serving is a hot track).
   Theory-lead alternative: the cost-axis trilemma at PODC/SODA. ML-systems: MLSys.
 - **Must-cite / must-beat.** *Production:* Azure APIM `llm-token-limit` (reserve-max + credit-back),
-  LiteLLM dynamic TPM/RPM, Portkey / agentgateway (after-count, admits the overshoot). *Scheduling
+  LiteLLM dynamic TPM/RPM, Kong / Zuplo / Portkey / agentgateway (admit-then-count, overshoot conceded, no bound). LiteLLM was **measured at 6.6× overshoot** (issue #18730); Zuplo states *the request that pushes you over the budget completes successfully*; Azure `llm-token-limit` is explicitly *non-aggregating across gateways*. Every one sits at corner 1 (reserve-max) or corner 2 (admit-then-count, unbounded). *Scheduling
   under unknown length:* Fu et al., **Efficient LLM Scheduling by Learning to Rank**, NeurIPS'24 (the
-  predictor; they optimise *latency* via SJF, we optimise *budget overshoot* — complementary). *Theory:*
+  predictor; they optimise *latency* via SJF, we optimise *budget overshoot* — complementary). Adjacent scheduling-under-unknown-length work — reorders for latency/SLO, does **not** bound a token budget: **Scheduling the Unschedulable** (arXiv 2604.06970), **Argus** (2512.22925), Uncertainty-Aware Output-Length scheduling (2604.00499). *Theory:*
   Bandits-with-Knapsacks (Badanidiyuru et al.; adversarial BwK, JACM'22), Online Knapsack with
-  Departures, anytime-knapsack (2025); Yang et al. Replenishable Budgets (SIGMETRICS'24). *Framework:*
+  Departures, anytime-knapsack (2025); **the newsvendor-with-predictions / online-allocation-with-predictions machinery that L2/L3 instantiate (cite, not claim):** An, Li, Moseley & Ravi, *The Nonstationary Newsvendor with (and without) Predictions* (arXiv 2305.07993 — newsvendor + predictions-with-safety, the joint framework behind L2+L3); *Best of Many in Both Worlds* online allocation with predictions (2402.13530); *Capacity-Constrained Online Learning with Delays* (2503.19856, COLT'25); Yang et al. Replenishable Budgets (SIGMETRICS'24). *Framework:*
   GALE (this repo) and the escrow lineage (O'Neil; Balegas bounded counters).
 - **Distinction.** Scheduling work reorders a fixed budget for latency; we *bound the budget overshoot*
   under post-hoc costs with a tight, `max_tokens`-independent guarantee — and make it safe under any
-  predictor. No prior work states such a bound.
+  predictor. **Honest scope:** L2 (newsvendor critical-fractile via OGD) and L3 (Hedge predictions-with-safety) are *known machinery applied to the cost axis* — we cite the newsvendor / online-allocation-with-predictions line above and claim only the token-streaming-reconciliation instantiation plus its unconditional-safety coupling to L1. The load-bearing novelty is **L1's tight, `max_tokens`-independent overshoot bound** (and its byte-identical reduction to GALE leasing). We are aware of no prior work — system or paper — that states such a bound.
 
 ## 6. Why now
 
 TPM budgets are the real operational constraint for every LLM gateway in production (2024–2026), and
-they are enforced today by exactly the two corner heuristics above. A provable, learned, prediction-
+they are enforced today by exactly the two corner heuristics above. A May-2026 position paper — *LLM Serving Needs Mathematical Optimization and Algorithmic Foundations* (arXiv 2605.01280) — argues precisely this: deployed serving leans on heuristics that ignore the unknown-output-length structure and lack provable guarantees. A provable, learned, prediction-
 augmented alternative — reusing a framework we've already machine-checked — is both timely and a clean
 second paper. **Status:** all three layers *plus the distributed instantiation* are implemented,
 proven, and gated under `test/cost/` (the measured results above; the multi-gateway meter reduces
