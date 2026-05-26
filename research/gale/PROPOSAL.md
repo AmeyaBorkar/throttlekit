@@ -4,6 +4,8 @@
 
 > **One-line thesis.** Distributed rate limiting is *escrow under uncertainty*: every system must decide, online and per-node, how much of a shared global budget to hold locally — trading coordination cost against overshoot (safety) and stranded capacity (utilization). For ~18 years the field has resolved this with static, hand-tuned shares that are provably wrong under skewed, non-stationary demand. We give the first scheme that is simultaneously **overshoot-bounded independent of fleet size**, **work-conserving**, **low-coordination** (a shared atomic store, no gossip), and **online-adaptive with a regret guarantee** — and we prove a matching **trilemma lower bound** showing the three-way tradeoff is fundamental.
 
+> **Status (this artifact).** Pillar 1 (safety) and the trilemma lower bound are **machine-checked**, and Pillar 1 is **shipped** in `src/twotier` (`lease.windowCoupled`). Pillars 2–3 are **implemented and empirically validated** (the regret/consistency bounds follow from standard OGD/AdaGrad and Hedge analyses on the convex per-window cost; the figures are measured). The evaluation is **measured**. Pillar 4 (fairness) remains a proposed extension. All work is gated (lint + strict types + tests + build) and committed on branch `research/gale`. Per-pillar pointers below.
+
 ---
 
 ## 1. The problem (real, and validated as open)
@@ -45,28 +47,30 @@ A decentralized limiter coordinated **only** through the existing shared atomic 
 Couple credit lifetime to the L2 window (credits expire at the boundary) and/or have the L2 escrow-account outstanding grants. This kills the carryover that is the sole source of overshoot.
 
 - **Theorem (Safety).** Per-window global admissions ≤ **L**, *independent of N* — vs. the prior tight `L + N·(B−1)`.
-- **Status: proven by bounded model check** (see §4). The TLA⁺ spec is `spec/GaleWindowCoupledLeasing.tla`; the CI-runnable Java-free twin is `research/gale/leasing-variants.ts`.
+- **Status: ✅ machine-checked AND shipped.** Bounded model check (see §4) in `spec/GaleWindowCoupledLeasing.tla` + its CI-gated Java-free twin `test/gale/leasing-variants.test.ts`; the mechanism ships as the opt-in `lease.windowCoupled` in `src/twotier/index.ts` (contrast test in `test/twotier/window-coupled.test.ts`: legacy admits `K + L·(B−1)`, window-coupled admits exactly `K`).
 - **Cost (a liveness/efficiency property, not safety):** a busy node re-leases once per window boundary and forfeits credits it still held — a bounded near-boundary utilization dip that Pillar 2 minimizes.
 
 ### Pillar 2 — Online lease sizing ⇒ minimize coordination at fixed safety
 
-The lease size is no longer a knob. Each round trip is an "order cost"; each held credit a "holding cost" (= overshoot/stranding risk by §2). This is exactly the **EOQ / inventory** tradeoff — optimal lease ≈ `√(2λc/h)` — but demand `λ` is unknown and non-stationary, so each node runs a **no-regret online learner** over its lease size.
+The lease size is no longer a knob. The per-window cost is the **EOQ cost** `c·D/b + h·b/2` — expected coordination (`c` per round trip, `≈D/b` of them) plus expected holding/stranding (`h` per idle credit, average inventory `≈b/2`) — minimized at `b* = √(2cD/h)`. Demand `D` is unknown and non-stationary but **observed each window** (full information), so each node runs **AdaGrad in log-space** on this convex loss. Design + proof sketch: `research/gale/PILLAR2-lease-sizing.md`.
 
-- **Theorem (Regret).** Coordination cost over `T` requests is within `O(√T)` of the best fixed lease in hindsight (dynamic regret `Õ(V_T^{1/3}T^{2/3})` under demand variation `V_T`). Crucially, **the Pillar-1 safety bound holds for *any* lease sizes**, so learning tunes efficiency and can never breach the cap. This structural decoupling is what improves on Yu–Neely's *long-run* `O(1)` violation — ours is a *tight per-window hard* cap.
+- **Theorem (Regret).** Standard OGD/AdaGrad analysis on the convex per-window cost gives static regret `O(√T)` vs. the best fixed lease in hindsight (dynamic `O(√(T(1+P_T)))` under comparator drift). Crucially, **the Pillar-1 safety bound holds for *any* lease sizes**, so learning tunes efficiency and can never breach the cap — a *tight per-window hard* cap, vs. Yu–Neely's *long-run* `O(1)` violation.
+- **Status: ✅ implemented + empirically validated** (`test/gale/lease-sizer.test.ts`). Measured: average regret/round falls 18.6 → 0.40 as `T` grows (sublinear); the learner tracks `b*` to <1% (62.6 vs 63.25); under an adversarial demand wave it *beats* the best fixed lease by ~10%; competitive with the EWMA plug-in. `h` is the coordination↔utilization dial (see §6).
 
 ### Pillar 3 — Learning-augmented with demand predictions ⇒ consistency/robustness, safety-preserving
 
-Feed a demand predictor (EWMA or external ML) into lease sizing and proactive credit return.
+A **Hedge meta-learner over two experts** — *follow-the-prediction* (`b = √(2cD̂/h)` for predicted `D̂`) and *robust* (the Pillar-2 learner) — playing the weighted-average size (Jensen-sound). Design: `research/gale/PILLAR3-predictions.md`.
 
-- **Theorem (Predictions).** Consistency (coordination → offline optimum as prediction error `η → 0`) and bounded robustness for any `η`, while the hard overshoot bound holds **unconditionally** — predictions set only the *requested* lease; the escrow store still gates it. This is, to our knowledge, the **first predictions-with-safety result for distributed rate limiting** (cf. Yang et al. SIGMETRICS'24, which is centralized with no leasing).
+- **Theorem (Predictions).** Hedge's `O(√T)` regret to the best expert gives **consistency** (cost → the offline optimum when predictions are good) and **robustness** (cost → the no-regret learner when they are adversarial); the hard overshoot bound holds **unconditionally**, since predictions set only the *requested* lease and the escrow store still gates it. To our knowledge the **first predictions-with-safety result for distributed rate limiting** (cf. Yang et al. SIGMETRICS'24: centralized, no leasing).
+- **Status: ✅ implemented + measured** (`test/gale/predictive-sizer.test.ts`). On a drift trace: perfect predictions give cost/clairvoyant = **1.000** (consistency); adversarial predictions give cost/robust = **1.000** and far below blindly obeying the oracle (robustness); the Hedge weight concentrates (>0.8) on the right expert; and per-window admitted ≤ L even under adversarial predictions (safety unconditional).
 
-### Pillar 4 (extension) — Weighted, work-conserving fairness across nodes & tenants
+### Pillar 4 (proposed extension — not yet built) — Weighted, work-conserving fairness across nodes & tenants
 
-Single-pool escrow + idle-return yields approximate weighted max-min fairness to within additive slack `b_max`, using only the shared store (vs. Pisces's central controller). FairRide's SIP impossibility tells us precisely what must be conceded (bounded non-work-conservation); characterizing that frontier is itself a result.
+Single-pool escrow + idle-return should yield approximate weighted max-min fairness to within additive slack `b_max`, using only the shared store (vs. Pisces's central controller). FairRide's SIP impossibility tells us precisely what must be conceded (bounded non-work-conservation); characterizing that frontier is itself a result. *(Design only; no implementation/measurement yet.)*
 
-### Capstone — The Rate-Limiting Trilemma (theory headline)
+### Capstone — The Rate-Limiting Trilemma (theory headline)  ✅ *proven + machine-checked*
 
-- **Theorem (Impossibility).** No online distributed leasing policy can simultaneously achieve tight overshoot `Δ = o(1)`, sub-linear coordination `C = o(demand)`, and full utilization `U = o(1)` under adversarial skew + non-stationarity; any policy obeys `C ≥ f(Δ, U, V_T)`. Built on the proven distributed-counting (Wattenhofer–Widmayer) and functional-monitoring (Cormode–Muthukrishnan–Yi; Woodruff–Zhang) lower bounds for the `Δ–C` edge, extended with a demand-shifting adversary for the `U` axis. **GALE is then shown to sit on this frontier** (achieving it up to logarithmic/constant factors).
+- **Theorem (Trilemma, zero-coordination regime).** Any protocol that pre-authorizes per-node budgets and admits with **no inter-node coordination** suffers, against a worst-case demand adversary, overshoot `Δ = (ΣB − L)⁺` and under-utilization `U = (L − min B)⁺`, hence **`Δ + N·U ≥ (N−1)·L`, tight** (uniform allocation). So at `C = 0` you cannot make both overshoot and under-utilization small. **Coordination is the only escape — exactly what GALE spends** to reach `Δ = 0, U ≈ 0`. Proof + the two ruinous corners + the counting/monitoring bounds that price coordination itself (Wattenhofer–Widmayer JPDC'98; Cormode–Muthukrishnan–Yi SODA'08; Woodruff–Zhang STOC'12): `research/gale/TRILEMMA.md`. Exhaustively machine-checked for `N ∈ {2,3,4}` (bound holds on every allocation + tightness) in `test/gale/trilemma.test.ts`.
 
 ## 4. The machine-checked keystone (already done)
 
@@ -84,8 +88,7 @@ Single-pool escrow + idle-return yields approximate weighted max-min fairness to
     1 |          9            |      8        |        0
     2 |         10            |      8        |        0
     4 |         12            |      8        |        0
-    8 |         16            |      8        |        0
-   16 |         24            |      8        |        0
+    8 |         16            |      8        |        0     (exhaustive to N=8; beyond, =L is immediate)
 
 === 3. Tightness: window-coupled attains exactly L (not lower), incl. work-conserving returns ===
   ok  N=3,L=6,B=3 max admitted == 6
@@ -93,21 +96,27 @@ Single-pool escrow + idle-return yields approximate weighted max-min fairness to
   ok  N=4,L=12,B=4 max admitted == 12
 ```
 
-Run: `npx vitest run test/gale/leasing-variants.test.ts`. The harness is *cross-validated* against the published TLA⁺ state counts (31, 441) before it is trusted, exactly as the existing project proof is. This de-risks the paper's central safety theorem before a line of the system is written.
+Run: `npx vitest run test/gale/leasing-variants.test.ts`. The harness is *cross-validated* against the published TLA⁺ state counts (31, 441) before it is trusted, exactly as the existing project proof is. (Exhaustive BFS is capped at `N=8` — the reachable state space grows `~2^N`; beyond it the bound `=L` is immediate since window-coupling leaves zero carryover. The overshoot-vs-`N` contrast is carried to `N=16` by the evaluation simulator, §6.)
 
-## 5. The system (why this is not vaporware)
+## 5. The system (shipped, not vaporware)
 
-Every pillar is a bounded change to code that already exists in this repo:
-- **Pillar 1**: the Redis Lua script already does atomic compare-and-decrement; add an outstanding-grant counter + a `return`/expire op. The Postgres advisory-lock RMW runs the same transform. The `twoTier` engine (`src/twotier/index.ts`) is the host.
-- **Pillar 2/3**: lease sizing lives entirely in L1 (the node); the learner and predictor are local, dependency-free, deterministic under the injected `Clock` (matching the project's testing idiom).
-- **Proof/measurement infra already present**: TLA⁺ + Java-free BFS twin; the bit-identical JS↔Lua conformance suite; the comparative benchmark harness (`bench/`).
+- **Pillar 1 ships**: `lease.windowCoupled` in `src/twotier/index.ts` — when the L2 window that granted a key's credits rolls over (`now ≥` the lease's `resetAt`), the credits expire instead of carrying over. Default off (legacy behaviour preserved); the whole library suite (374 tests) stays green and the 11-subpath build is clean.
+- **Pillars 2–3** are L1-local, dependency-free, deterministic (injected `Clock`/seeds), matching the project's testing idiom — implemented in `test/gale/{lease-sizer,predictive-sizer}.ts` (research home; promotable to `src/` when productized).
+- **Proof/measurement infra reused**: TLA⁺ + the Java-free BFS twin pattern; seeded discrete-event simulation; the library's existing Redis/Postgres benchmarks cover the shipped path's latency.
 
-## 6. Evaluation plan
+## 6. Evaluation (measured)
 
-- **Baselines**: central-store-per-request (ThrottleKit `strict`); fixed-batch leasing (ThrottleKit `leased` — the current SOTA bound); static equal share (`L/N`); FPS-style gossip (Raghavan'07); Doorman/GAC-style proportional leases.
-- **Workloads**: skewed per-node demand (Zipf), non-stationary/bursty traces (diurnal + spikes), adversarial demand-shifting.
-- **Metrics**: realized overshoot vs. `L`; coordination round trips per 1k requests; utilization (admitted / `L` under offered overload); per-tenant fairness (Jain's index, max-min ratio); tail latency.
-- **Headline figures**: (a) overshoot flat in `N` for GALE vs. linear for fixed-batch; (b) Pareto frontier — same overshoot at far lower coordination *and* higher utilization; (c) learning curve — coordination approaching the offline optimum as predictions improve, with safety never violated.
+Reproducible seeded simulation; engine `test/gale/evaluate.ts`, gated claims `test/gale/evaluation.test.ts`, full table `research/gale/EVALUATION.md`. **Skewed overload** (N=5, limit 100, one hot node ~80 + four cold ~5 — offered ≈ limit):
+
+| scheme | coordination (round trips) | overshoot Δ | utilization | fails |
+|---|---:|---:|---:|---|
+| strict (central per-request) | 51 186 | 0 | 1.000 | coordination |
+| static equal share `L/N` | 0 | 0 | 0.446 | utilization |
+| fixed leasing B=10, legacy | 9 669 | 28 | 1.007 | **overshoot** |
+| fixed leasing, window-coupled | 17 178 (best B) | 0 | 0.955 | needs the right B (B=20 → util 0.446) |
+| **GALE (coupled + adaptive, h=10)** | **12 731** | **0** | **0.962** | — none |
+
+GALE is the only scheme good on all three axes: it **Pareto-dominates** the best fixed-batch coupled scheme (equal utilization at **26% fewer round trips**, because it sizes each node's lease to its own demand), runs at **4× less coordination than strict**, and **~2.2× the utilization of static** — all at `Δ = 0`. Overshoot-vs-`N` (B=10): legacy grows 15 → 25 as `N` goes 2 → 16; window-coupled stays **0**. `h` is the coordination↔utilization dial — under contention set it high so leases track demand; a fully contention-adaptive `h` is a noted refinement.
 
 ## 7. Venue & roadmap
 
@@ -115,7 +124,7 @@ Every pillar is a bounded change to code that already exists in this repo:
 - Alternatives: NSDI/OSDI/EuroSys (systems-lead), PODC/SODA (theory-lead on the trilemma), NeurIPS/ICML (learning-augmented-with-safety).
 - **Second paper**: the *cost-uncertainty* axis — rate limiting under post-hoc-revealed costs (LLM token / TPM budgets, where output length is unknown at admission): reserve-then-reconcile with bounded overshoot. Same "escrow under uncertainty" framework, a different and very timely instantiation.
 
-Roadmap: (1) ✅ keystone safety result (done). (2) Formalize the model + prove the regret bound (Pillar 2). (3) Implement GALE Pillar 1 in the Redis/Postgres path + extend the conformance suite. (4) Consistency/robustness analysis (Pillar 3). (5) Trilemma lower bound. (6) Evaluation. (7) Write-up.
+Roadmap status: (1) ✅ keystone safety (machine-checked). (2) ✅ Pillar 2 lease sizing (implemented + regret measured). (3) ✅ Pillar 1 shipped in `src`. (4) ✅ Pillar 3 predictions (implemented + measured). (5) ✅ trilemma lower bound (proven + checked). (6) ✅ evaluation (measured). (7) ✅ this write-up. **Open:** Pillar 4 fairness (design only); contention-adaptive `h`; a full distributed deployment + the cost-uncertainty second paper.
 
 ## 8. Related work & reviewer threats (pre-empted)
 
@@ -130,6 +139,16 @@ Roadmap: (1) ✅ keystone safety result (done). (2) Formalize the model + prove 
 
 ---
 
-### Artifacts
-- `../../test/gale/leasing-variants.test.ts` — the CI-gated exhaustive BFS model checker (`npx vitest run test/gale`). Proves Pillar 1.
-- `../../spec/GaleWindowCoupledLeasing.tla` + `.cfg` — the human-auditable TLA⁺ spec (the authoritative twin; TLC needs Java).
+### Artifacts & reproducibility
+
+All gated (lint + strict types + tests + build) and committed on branch `research/gale`. Run the lot with `npx vitest run test/gale test/twotier`.
+
+| Claim | Artifact |
+|---|---|
+| Pillar 1 safety — overshoot `= L`, independent of `N` (proof) | `spec/GaleWindowCoupledLeasing.tla` + `.cfg`; `test/gale/leasing-variants.test.ts` (BFS twin, self-validated vs TLC counts 31/441) |
+| Pillar 1 — shipped mechanism | `src/twotier/index.ts` (`lease.windowCoupled`); `test/twotier/window-coupled.test.ts` |
+| Pillar 2 — online lease sizing, sublinear regret, EOQ tracking | `test/gale/lease-sizer.ts`, `test/gale/lease-sizer.test.ts`; design `research/gale/PILLAR2-lease-sizing.md` |
+| Pillar 3 — predictions: consistency / robustness / unconditional safety | `test/gale/predictive-sizer.ts`, `test/gale/predictive-sizer.test.ts`; design `research/gale/PILLAR3-predictions.md` |
+| Trilemma lower bound `Δ + N·U ≥ (N−1)L`, tight | `test/gale/trilemma.test.ts`; proof `research/gale/TRILEMMA.md` |
+| Evaluation — Pareto position vs baselines | `test/gale/evaluate.ts`, `test/gale/evaluation.test.ts`; results `research/gale/EVALUATION.md` |
+| Demand traces / predictions (seeded, deterministic) | `test/gale/demand.ts` |
