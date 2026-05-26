@@ -68,3 +68,19 @@ export function makeAdversarial(
     return sample(rng, high ? hi : lo, cv);
   });
 }
+
+/** A perfect (clairvoyant) prediction: the realised demand itself. */
+export function predictPerfect(trace: readonly number[]): number[] {
+  return trace.slice();
+}
+
+/** A good-but-imperfect prediction: each true demand perturbed by multiplicative noise (cv). */
+export function predictNoisy(trace: readonly number[], cv: number, seed: number): number[] {
+  const rng = mulberry32(seed);
+  return trace.map((d) => Math.max(0, Math.round(d * (1 + cv * gaussian(rng)))));
+}
+
+/** An adversarial prediction that ignores reality — a deliberately useless oracle (constant value). */
+export function predictConstant(trace: readonly number[], value: number): number[] {
+  return trace.map(() => value);
+}

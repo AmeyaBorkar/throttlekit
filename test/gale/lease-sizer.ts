@@ -47,9 +47,13 @@ export function eoqOptimum(orderCost: number, strandPenalty: number, demand: num
 }
 
 /**
- * True integer per-window cost of using lease size `size` under demand `demand`:
- * leases * orderCost + stranded * strandPenalty, where leases = ceil(demand/size) and the last
- * partial lease strands `leases*size - demand` credits (which window-coupling forfeits).
+ * Amortised per-window cost of using lease size `size` under demand `demand`:
+ *   orderCost · demand / size   +   strandPenalty · size / 2
+ * the expected coordination (≈ demand/size leases, each a round trip) plus the expected holding /
+ * stranding opportunity cost (average idle leased inventory ≈ size/2 — capacity checked out of L2
+ * that other nodes cannot use). This is the classic EOQ cost, minimised at b* = sqrt(2·c·D/h); it
+ * captures mid-window hoarding, not merely end-of-window forfeiture, so it is the faithful objective
+ * the learner both minimises and is measured against (no model/metric mismatch).
  */
 export function windowCost(
   size: number,
@@ -58,9 +62,7 @@ export function windowCost(
   strandPenalty: number,
 ): number {
   if (demand <= 0) return 0;
-  const leases = Math.ceil(demand / size);
-  const stranded = leases * size - demand;
-  return leases * orderCost + stranded * strandPenalty;
+  return (orderCost * demand) / size + (strandPenalty * size) / 2;
 }
 
 /** The AdaGrad-in-log-space online lease sizer (the GALE policy). */
@@ -164,4 +166,27 @@ export function bestFixedCost(
     }
   }
   return { cost: best, size: bestSize };
+}
+
+/**
+ * The offline (clairvoyant) optimum: for each window, the cost of the size that is best for *that*
+ * window's demand — a lower bound no online or fixed policy can beat. Used to measure consistency.
+ */
+export function clairvoyantCost(
+  trace: readonly number[],
+  orderCost: number,
+  strandPenalty: number,
+  candidateSizes: readonly number[],
+): number {
+  let total = 0;
+  for (const demand of trace) {
+    if (demand <= 0) continue;
+    let best = Number.POSITIVE_INFINITY;
+    for (const b of candidateSizes) {
+      const cost = windowCost(b, demand, orderCost, strandPenalty);
+      if (cost < best) best = cost;
+    }
+    total += best;
+  }
+  return total;
 }

@@ -28,11 +28,12 @@ describe("GALE Pillar 2 — cost model", () => {
     expect(eoqOptimum(20, 1, 0)).toBe(0);
   });
 
-  it("windowCost charges leases + stranded credits", () => {
-    expect(windowCost(50, 100, C, H)).toBe(2 * 20 + 0); // 2 exact leases, nothing stranded
-    expect(windowCost(50, 120, C, H)).toBe(3 * 20 + (150 - 120) * 1); // 3 leases, 30 stranded
+  it("windowCost is the amortised EOQ cost c·D/b + h·b/2", () => {
+    expect(windowCost(50, 100, C, H)).toBe((20 * 100) / 50 + (1 * 50) / 2); // 40 + 25 = 65
+    expect(windowCost(100, 100, C, H)).toBe(20 + 50); // 70
     expect(windowCost(50, 0, C, H)).toBe(0); // no demand, no cost
-    expect(windowCost(1, 100, C, H)).toBe(100 * 20); // size 1: a lease per request, no stranding
+    // Minimised at the EOQ size, where the cost equals sqrt(2·c·D·h).
+    expect(windowCost(eoqOptimum(C, H, 100), 100, C, H)).toBeCloseTo(Math.sqrt(2 * C * 100 * H), 6);
   });
 });
 
