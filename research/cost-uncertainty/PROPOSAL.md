@@ -11,9 +11,11 @@ title acronym **TALE** (Temporally-Accounted Learned Escrow) is a placeholder.*
 > via a *streaming meter* that is the cost-axis analog of GALE's window-coupling — plus an online
 > learned reservation and a predictions-with-safety layer that reuses GALE's machinery.
 
-> **Status.** Design + validated-open. The streaming-meter bound and the baseline contrasts are
-> specified here and slated for a machine-checked + measured kernel (`test/cost/`), mirroring the GALE
-> pillars. Nothing implemented yet — this is the scoping artifact.
+> **Status.** Design + validated-open. **Layer 1 (the streaming-meter bound) is implemented + measured**
+> and gated (`test/cost/token-budget.ts` + `.test.ts`): streaming holds overshoot `0` at full
+> utilisation across *every* `max_tokens`, where reserve-max's utilisation collapses to `0` (at `m ≥ L`)
+> and admit-then-count's overshoot grows to `≈ C·m`. Layers 2–3 (learned reservation, predictions)
+> reuse GALE's machinery and are next.
 
 ---
 
@@ -59,13 +61,19 @@ Debit the shared budget `L` per produced token (amortised every `g` tokens — t
 granularity*); admit a new request only while budget remains; when it is exhausted, stop in-flight
 streams at their next chunk boundary and reject new ones.
 
-- **Theorem (Safety).** Worst-case overshoot `≤ C · (g − 1)`, where `C` is the max concurrent in-flight
-  streams — **independent of `max_tokens`**. Per-token metering (`g = 1`) ⇒ overshoot `0`; chunked
-  metering trades a small bounded overshoot for fewer budget round trips. Utilization `→ 1` (no
-  reservation is sterilised).
-- **Contrast (the two corners).** *Reserve-max:* overshoot `0`, utilization `E[c]/max_tokens` (≈5% on
-  heavy-tailed traces). *Admit-then-count:* utilization `1`, overshoot `≤ C·(max_tokens−1)` (unbounded
-  in `max_tokens`). Streaming dominates both: `Δ = C·(g−1)`, util `→ 1`.
+- **Theorem (Safety).** With an *atomic* per-chunk meter (single gateway), worst-case overshoot
+  `≤ g − 1` — **independent of `max_tokens` *and* of concurrency**; per-token metering (`g = 1`) ⇒
+  overshoot `0`. With a *distributed* meter across `C` gateways sharing one budget (each commits a
+  chunk before observing the others — exactly GALE's coordination regime), `≤ C·g`. Either way the
+  bound is independent of `max_tokens`, and utilization `→ 1` (nothing is sterilised). The distributed
+  case *is* a GALE leased budget with tokens as the unit — so multi-gateway TPM sharing inherits the
+  window-coupled, fleet-size-independent bound.
+- **Contrast + measured** (`L = 1000`, `C = 4`; heavy-tailed and cap-hitting traces; numbers gated in
+  `test/cost/token-budget.test.ts`). *Reserve-max:* overshoot `0`, but utilisation **collapses
+  `0.77 → 0.50 → 0`** as `m` grows `256 → 512 → 1024` (at `m ≥ L` it cannot admit one request).
+  *Admit-then-count:* utilisation `1`, but worst-case overshoot **grows `24 → 1048 → 3096 → 7192`** as
+  `m` grows `256 → 2048` (within `C·(m−1)`). *Streaming (`g = 1`):* overshoot **`0`** and utilisation
+  **`1`** at *every* `m` — the only scheme good on both axes, and the gap *widens* with `max_tokens`.
 
 ### Layer 2 — Learned reservation ⇒ admit-time decisions without over-reserving
 
