@@ -8,7 +8,9 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
-## [0.4.0] — 2026-05-26
+## [0.4.1] — 2026-05-26
+
+_Supersedes 0.4.0, which was tagged but never published — a GitHub Actions outage blocked its release._
 
 ### Added
 
@@ -18,6 +20,11 @@ _Nothing yet._
   of the number of nodes*, versus the carryover bound `Limit + N·(Batch−1)`. Default off (existing
   behaviour preserved). Machine-checked (TLA⁺ spec + exhaustive checker). It is the shipped piece of
   the GALE research track (`research/gale/`); see SCOREBOARD “Research track”.
+
+### Documentation
+
+- README rewritten to lead with the provable distributed-leasing story (the window-coupled overshoot
+  bound + the GALE research track) and trimmed ~13%.
 
 ## [0.3.0] — 2026-05-26
 

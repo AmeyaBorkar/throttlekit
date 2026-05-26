@@ -5,20 +5,25 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
-## 2026-05-26 — Released 0.4.0 (window-coupled leasing)
+## 2026-05-26 — 0.4.1 release (rolled forward through a GitHub Actions outage)
 
-Cut **`throttlekit@0.4.0`** — a minor bump for the one shipped public-API addition since 0.3.0:
-`lease.windowCoupled`, the opt-in that makes the two-tier `leased` overshoot bound *independent of
-fleet size*. It's the shipped piece of the GALE research track; everything else under `research/`,
-`test/gale/`, and `spec/` is research, not packaged (the published `files` are `dist` +
-README/CHANGELOG/LICENSE — verified the tarball is clean: 11 subpaths, no source/tests/sourcemaps).
-Released the usual way — tag `v0.4.0` → the Release workflow runs the gate + build and
-`npm publish --provenance` (OIDC), then opens a GitHub Release from the CHANGELOG section.
+Cut **`throttlekit@0.4.1`** as the first published version since 0.3.0. It carries the one shipped
+public-API addition — `lease.windowCoupled`, the opt-in that makes the two-tier `leased` overshoot
+bound *independent of fleet size* — plus the README rewrite. Everything else under `research/`,
+`test/gale/`, and `spec/` is research, not packaged (published `files` are `dist` +
+README/CHANGELOG/LICENSE; tarball verified clean — 11 subpaths, no source/tests/sourcemaps).
 
-Caught a latent bug in that release step on the way: the CHANGELOG note-extraction matched on a
-`\[`-escaped regex that gawk mis-parses as a character class (so the curated notes silently fell back
-to auto-generated). Rewrote it `index()`-based — regex-free and portable across awk implementations —
-and verified it extracts the 0.4.0 section exactly.
+**Why 0.4.1, not 0.4.0:** I tagged `v0.4.0` first, but a **GitHub Actions major outage** (from 10:57
+UTC) meant tag pushes created *no* workflow runs — the pushes landed, Actions just wasn't
+orchestrating — so 0.4.0 never published. Rather than leave a dangling, never-published 0.4.0 tag, I
+deleted it and rolled forward to **0.4.1**, which bundles windowCoupled + the README and publishes
+cleanly once Actions recovers (a tag-watcher re-emits `v0.4.1` until the run fires). npm goes
+0.3.0 → 0.4.1.
+
+Caught a latent bug in the release step on the way: the CHANGELOG note-extraction matched on a
+`\[`-escaped regex that gawk mis-parses as a character class (curated notes silently fell back to
+auto-generated). Rewrote it `index()`-based — regex-free, portable across awk — and verified it
+extracts the 0.4.1 section exactly.
 
 ## 2026-05-26 — GALE lands on main; Pillar 4 (weighted fairness) proven
 
