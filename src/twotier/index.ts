@@ -19,6 +19,16 @@ export interface LeaseOptions {
   lowWater?: number;
   /** Drop a key's idle local credits after this many ms. Capacity self-heals via L2 refill. */
   returnIdleAfterMs?: number;
+  /**
+   * Couple leased-credit lifetime to the L2 window: when the L2 window that granted a key's local
+   * credits has rolled over (i.e. `now >= the lease's resetAt`), discard those credits instead of
+   * carrying them across the boundary. Cross-window carryover is the *sole* source of leased
+   * overshoot, so this tightens the global per-window bound from `Limit + L×(batch−1)` to exactly
+   * `Limit` — independent of the node count `L` — at the cost of one re-lease per node just after
+   * each boundary. Intended for a fixed-window L2 strategy (the case the bound is proven for, in
+   * `spec/GaleWindowCoupledLeasing.tla`). Default false (credits carry over — the legacy behaviour).
+   */
+  windowCoupled?: boolean;
 }
 
 export interface L1Options {
@@ -149,6 +159,7 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
   }
   const lowWater = lease.lowWater ?? 0;
   const returnIdleAfterMs = lease.returnIdleAfterMs;
+  const windowCoupled = lease.windowCoupled ?? false;
 
   const credits = new Map<string, number>();
   const lastDecision = new Map<string, Decision>();
@@ -210,6 +221,15 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
     const fk = keyFor(key);
     const now = clock.now();
     lastUse.set(fk, now);
+
+    if (windowCoupled) {
+      // Once the L2 window that granted these credits has rolled over, they expire rather than
+      // carrying across the boundary — removing the sole source of cross-window overshoot.
+      const last = lastDecision.get(fk);
+      if (last !== undefined && now >= last.resetAt && (credits.get(fk) ?? 0) > 0) {
+        credits.set(fk, 0);
+      }
+    }
 
     const have = credits.get(fk) ?? 0;
     if (have >= cost) {
