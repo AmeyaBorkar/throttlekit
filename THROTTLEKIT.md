@@ -1,8 +1,9 @@
 # ThrottleKit — Design & Architecture
 
 > A pluggable, framework-agnostic rate-limiting toolkit for Node and the web that is
-> correct by construction, distributed without a network call on the hot path, and the
-> fastest option in its class — without sacrificing accuracy or developer ergonomics.
+> correct by construction — with a *formally-verified*, fleet-size-independent overshoot
+> bound on its distributed path — distributed without a network call on the hot path, and
+> the fastest option in its class, without sacrificing accuracy or developer ergonomics.
 
 ThrottleKit treats rate limiting as three cleanly separated concerns: **algorithms** (pure
 functions of time), **storage** (one atomic primitive), and **adapters** (thin glue to your
@@ -79,7 +80,8 @@ that primitive — not a different library.
    distributed tier (L2) with selectable semantics: `strict` (exact, one round trip per request),
    `cached-deny` (denials cached locally so an attacker can't make you hammer Redis), and `leased`
    (each node leases token *batches* and serves them locally, driving steady-state network cost
-   toward zero with a mathematically bounded global overshoot).
+   toward zero with a mathematically bounded global overshoot — opt into window-coupling and that
+   bound becomes *independent of fleet size*).
 
 3. **GCRA as the default.** The Generic Cell Rate Algorithm stores a *single timestamp* per key,
    paces traffic smoothly, supports bursts, and costs O(1) memory and CPU — yet it is rare in the
@@ -103,6 +105,13 @@ that primitive — not a different library.
 
 8. **Deterministic and fully testable.** Time is injected everywhere. No `Date.now()` hides inside an
    algorithm. Every limit is reproducible in a unit test down to the millisecond.
+
+9. **Provable distributed leasing (research track).** The leasing bound anchors an ongoing research
+   program — *GALE* — that makes overshoot **independent of fleet size** (shipped as
+   `lease.windowCoupled`), sizes leases online with an `O(√T)`-regret guarantee (online EOQ), adds
+   **weighted work-conserving fairness** across tenants, and proves a **trilemma** lower bound tying
+   overshoot, coordination, and utilization. Each result is machine-checked or measured; see
+   [`research/gale/`](./research/gale). (Research modules; not public API beyond `lease.windowCoupled`.)
 
 ---
 

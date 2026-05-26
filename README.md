@@ -6,11 +6,11 @@
 [![node: >=18](https://img.shields.io/node/v/throttlekit.svg)](https://www.npmjs.com/package/throttlekit)
 [![license: MIT](https://img.shields.io/npm/l/throttlekit.svg)](./LICENSE)
 
-**Rate limiting for Node and the web — one small core that scales from a single process to a distributed fleet.**
+**Rate limiting for Node and the web — one small core, from a sub-microsecond in-process check to a distributed fleet with a _proven_ overshoot bound.**
 
 Pick an algorithm, a backend (in-memory, Redis, or Postgres), and your framework — the limiting logic stays the same. ThrottleKit is built on three small ideas: **algorithms** are pure functions of time, **storage** is one atomic primitive, and **adapters** are thin glue. That separation is what lets the *same* configuration run as a sub-microsecond in-process check or atomically across a cluster.
 
-It's young — currently `0.x` — but heavily tested: 379 tests, a dual-path (JS↔Lua) conformance suite, and a formally-verified leasing bound. The benchmarks below are reproducible on your own hardware, and they include the cases where ThrottleKit *loses*.
+It's young — currently `0.x` — but heavily tested: 389 tests, a dual-path (JS↔Lua) conformance suite, and a leasing overshoot bound that is **formally verified** — and, with window-coupling, provably **independent of fleet size**. The distributed path isn't "a Redis counter and hope": it's a model-checked design with a stated, tight bound. The benchmarks below are reproducible on your own hardware, and they include the cases where ThrottleKit *loses*.
 
 ---
 
@@ -20,7 +20,7 @@ It's young — currently `0.x` — but heavily tested: 379 tests, a dual-path (J
 - **Seven strategies.** GCRA, token bucket, fixed & sliding window, sliding-window log, leaky-bucket shaping, and adaptive concurrency.
 - **Three backends, identical decisions.** In-memory, Redis (one atomic Lua round trip), and Postgres (no Redis required) — proven bit-identical by the conformance suite.
 - **Six frameworks + the edge.** Express, Web `fetch` (Cloudflare/Deno/Bun/Next edge), Hono, Next.js, Fastify, Koa — each its own subpath.
-- **Scales out honestly.** Two-tier token leasing and multi-region share one engine with a *formally-verified* overshoot bound (TLA⁺/TLC model-checked).
+- **Scales out honestly.** Two-tier token leasing and multi-region share one engine with a *formally-verified* overshoot bound (TLA⁺/TLC model-checked) — opt into `lease.windowCoupled` and that bound becomes **independent of fleet size**.
 - **A synchronous API.** `checkSync` — uncommon among JS limiters — for hot paths that don't want an `await`.
 - **Operable.** Standards headers (IETF draft + RFC 9651 + legacy), proxy-correct IP keys, IPv6 aggregation, HMAC key hashing, OpenTelemetry, and zero-config analytics.
 - **TypeScript-first.** ESM + CJS, 11 entry points, strict types, and all peer deps optional.
@@ -651,9 +651,10 @@ ThrottleKit is built to be checkable, not just claimed:
 - **Property tests** (fast-check) — invariants like "`remaining` never negative", "never allow above limit + documented overshoot", and "leased overshoot ≤ L × B" under randomized inputs.
 - **Atomicity** — fire N simultaneous checks at a limit of K and assert exactly K are allowed, for the MemoryStore and (env-gated) a real Redis and Postgres.
 - **Formal model** — the leasing protocol is model-checked with TLA⁺/TLC and re-checked by an exhaustive JS checker in CI ([`docs/FORMAL-MODEL.md`](./docs/FORMAL-MODEL.md)).
+- **Research track (GALE)** — that shipped bound is the foundation of an ongoing research program: window-coupled overshoot *independent of fleet size*, learned (online-EOQ) lease sizing, weighted work-conserving fairness, and a proved rate-limiting *trilemma* lower bound — each machine-checked or measured under [`research/gale/`](./research/gale). (Research modules; not public API beyond `lease.windowCoupled`.)
 - **Store conformance kit** — `runStoreConformance` from `throttlekit/testkit` runs any custom store through the same atomicity / TTL / concurrency suite the built-ins pass.
 
-All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **379 tests, 95.2% line coverage**, CI green across Node 20/22/24 — tracked in [SCOREBOARD.md](./SCOREBOARD.md).
+All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **389 tests, 95.2% line coverage**, CI green across Node 20/22/24 — tracked in [SCOREBOARD.md](./SCOREBOARD.md).
 
 ---
 
@@ -662,6 +663,7 @@ All time-dependent tests use `ManualClock`, so the suite is deterministic. Curre
 - [THROTTLEKIT.md](./THROTTLEKIT.md) — full design and architecture.
 - [SCOREBOARD.md](./SCOREBOARD.md) — benchmarks, correctness guarantees, and the feature matrix.
 - [docs/FORMAL-MODEL.md](./docs/FORMAL-MODEL.md) — the formally-verified leasing bound.
+- [research/gale/](./research/gale) — the GALE research track: provable distributed leasing (overshoot independent of fleet size, learned lease sizing, weighted fairness, the trilemma lower bound).
 - [CHANGELOG.md](./CHANGELOG.md) — release history.
 - [`examples/`](./examples) — a runnable file for every section above.
 

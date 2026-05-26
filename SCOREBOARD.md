@@ -138,6 +138,6 @@ lease sizing and weighted fairness. Proven/measured and gated under `test/gale/`
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (379 tests; Postgres/Redis error paths gated) |
+| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (389 tests; Postgres/Redis error paths gated) |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) | ✅ |
 | Build emits valid ESM + CJS + types (11 subpaths) | ✅ |
