@@ -5,6 +5,21 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — Released 0.4.0 (window-coupled leasing)
+
+Cut **`throttlekit@0.4.0`** — a minor bump for the one shipped public-API addition since 0.3.0:
+`lease.windowCoupled`, the opt-in that makes the two-tier `leased` overshoot bound *independent of
+fleet size*. It's the shipped piece of the GALE research track; everything else under `research/`,
+`test/gale/`, and `spec/` is research, not packaged (the published `files` are `dist` +
+README/CHANGELOG/LICENSE — verified the tarball is clean: 11 subpaths, no source/tests/sourcemaps).
+Released the usual way — tag `v0.4.0` → the Release workflow runs the gate + build and
+`npm publish --provenance` (OIDC), then opens a GitHub Release from the CHANGELOG section.
+
+Caught a latent bug in that release step on the way: the CHANGELOG note-extraction matched on a
+`\[`-escaped regex that gawk mis-parses as a character class (so the curated notes silently fell back
+to auto-generated). Rewrote it `index()`-based — regex-free and portable across awk implementations —
+and verified it extracts the 0.4.0 section exactly.
+
 ## 2026-05-26 — GALE lands on main; Pillar 4 (weighted fairness) proven
 
 Merged the **GALE** research program (`research/gale/`, `test/gale/`, `spec/`) to `main` — the
