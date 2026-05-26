@@ -6,7 +6,14 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Documentation
+
+- README rewritten leaner (~600 → ~220 lines), leading with the differentiators — the
+  formally-verified, fleet-size-independent overshoot bound; one transform across every backend,
+  proven bit-identical; the synchronous API; and the GALE/TALE research tracks. The per-feature
+  walkthroughs moved to a new GitHub **Wiki** (Getting Started, Strategies, Frameworks & the Edge,
+  Distributed & Provable, Advanced Limiting, Overload/Fairness/DDoS, Operations, Performance,
+  Migrating, Research). Corrected the stale test count in the README (389 → 430).
 
 ## [0.5.0] — 2026-05-26
 
