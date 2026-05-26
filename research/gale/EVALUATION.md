@@ -54,6 +54,34 @@ limit `L = 100`, batch `B = 10`, 200 windows, total demand ≈ 150 split across 
 Legacy overshoot grows with the fleet (toward the proven `L + N·(B−1)` envelope); window-coupling
 holds it at exactly **0 regardless of N** — the Pillar-1 result, measured.
 
+## Workload C — weighted multi-tenant fairness (Pillar 4)
+
+*Engine `test/gale/fair-escrow.ts`; gated in `test/gale/fair-escrow.test.ts`. Where Workloads A–B
+exercise the **total** (overshoot/coordination/utilisation), this one exercises the **split**: who gets
+the contended budget.* `N = 4` tenants, limit `L = 70`, 400 windows. One high-priority tenant **H**
+(weight 4) is steady ~40/window but **idle every 5th window**; three low-priority flooders (weight 1
+each) demand ~100/window. `W = 7`, so H's guaranteed share is 40 and each flooder's is 10.
+
+| split policy | overshoot Δ | utilisation | share violations | norm. spread | verdict |
+|---|---:|---:|---:|---:|---|
+| static weighted share `⌊wᵢ/W·L⌋` | 0 | **0.876** | 0.000 | 0.00 | fair, **not work-conserving** |
+| weight-blind leasing (GALE P1–2) | 0 | 1.000 | **0.211** | **13.50** | work-conserving, **unfair** |
+| **WFE (Pillar 4)** | 0 | **1.000** | **0.000** | **1.00** | **good on every axis** |
+
+- **share violations** — fraction of (window, backlogged-tenant) pairs served below their guaranteed
+  share. **norm. spread** — worst-case gap in normalised service `aᵢ/wᵢ` among backlogged tenants
+  (0 = perfectly fair; the lease quantum bounds it, Theorem T4).
+- **Static is fair but strands capacity:** in H's idle windows its 40-credit share cannot be used by
+  the flooders → utilisation falls to **0.876**.
+- **Weight-blind leasing is work-conserving but ignores priority:** it splits the contended budget
+  *equally* (unweighted max-min), so H — entitled to `4/7·L = 40` — is squeezed to ~18 and falls below
+  its guaranteed share in **21%** of backlogged windows; the normalised-service spread is **13.5**
+  (H gets 18/4 = 4.5 per weight-unit while a flooder gets 18/1 = 18).
+- **WFE matches static on fairness (0 violations) and weight-blind on utilisation (1.000), beating each
+  on the axis it fails** — at the **same coordination** as weight-blind leasing (28 000 round trips for
+  both; the fair split is *free*). Its `Δ` stays 0 (the split never changes the total — Theorem T1) and
+  its residual spread is exactly **1.00**, the single-credit DRR quantum (T4).
+
 ## Honest scope
 - `h` is a knob: under tight contention set it high (leases ≈ demand, protecting utilisation); under
   light load set it low (big leases, minimal coordination). A fully **contention-adaptive `h`** (driven
@@ -63,3 +91,9 @@ holds it at exactly **0 regardless of N** — the Pillar-1 result, measured.
   it measures the algorithmic quantities (round trips, overshoot, utilisation), not wall-clock latency.
   The latency/throughput characteristics of the shipped `lease.windowCoupled` path are covered by the
   library's existing Redis/Postgres benchmarks.
+- WFE (Workload C) is **not strategy-proof** — under the share guarantee, FairRide's impossibility
+  (NSDI'16) precludes also being strategy-proof and work-conserving; WFE takes the
+  sharing-incentive + work-conserving corner. Window-coupling bounds the gain from over-declaring
+  demand (inflated credits strand and expire). The simulator computes the split via the water-filling
+  fixed point; it does not model an in-window request-reordering adversary. WFE is a research module,
+  not yet shipped in `src/twotier`.
