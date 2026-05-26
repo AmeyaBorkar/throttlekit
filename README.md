@@ -8,9 +8,11 @@
 
 **Rate limiting for Node and the web — one small core, from a sub-microsecond in-process check to a distributed fleet with a _proven_ overshoot bound.**
 
-Pick an algorithm, a backend (in-memory, Redis, or Postgres), and your framework — the limiting logic stays the same. ThrottleKit is built on three small ideas: **algorithms** are pure functions of time, **storage** is one atomic primitive, and **adapters** are thin glue. That separation is what lets the *same* configuration run as a sub-microsecond in-process check or atomically across a cluster.
+Pick an algorithm, a backend (in-memory, Redis, or Postgres), and your framework — the limiting logic stays the same. ThrottleKit rests on three ideas: **algorithms** are pure functions of time, **storage** is one atomic primitive, and **adapters** are thin glue. That separation is what lets the *same* config run as an allocation-free in-process check or atomically across a cluster.
 
-It's young — currently `0.x` — but heavily tested: 389 tests, a dual-path (JS↔Lua) conformance suite, and a leasing overshoot bound that is **formally verified** — and, with window-coupling, provably **independent of fleet size**. The distributed path isn't "a Redis counter and hope": it's a model-checked design with a stated, tight bound. The benchmarks below are reproducible on your own hardware, and they include the cases where ThrottleKit *loses*.
+What sets it apart is the distributed story: it isn't "a Redis counter and hope." The two-tier leasing path has a **formally-verified overshoot bound** that, with window-coupling, is **independent of fleet size** — model-checked, not asserted. It's young (`0.x`) but heavily tested: 389 tests, a dual-path (JS↔Lua) conformance suite, and a TLA⁺-checked protocol. The benchmarks below are reproducible on your hardware, and include the cases where ThrottleKit *loses*.
+
+**Jump to:** [Install](#install) · [Quick start](#quick-start) · [Strategies](#choosing-a-strategy) · [Frameworks](#frameworks-and-the-edge) · [Distributed & provable](#going-distributed) · [Multi-dimensional](#limiting-on-several-axes) · [Backpressure](#backpressure-and-shaping) · [DDoS](#surviving-a-flood) · [Fairness](#overload-and-fairness) · [Performance](#performance) · [Migrating](#migrating) · [How it's tested](#how-its-tested)
 
 ---
 
@@ -20,12 +22,10 @@ It's young — currently `0.x` — but heavily tested: 389 tests, a dual-path (J
 - **Seven strategies.** GCRA, token bucket, fixed & sliding window, sliding-window log, leaky-bucket shaping, and adaptive concurrency.
 - **Three backends, identical decisions.** In-memory, Redis (one atomic Lua round trip), and Postgres (no Redis required) — proven bit-identical by the conformance suite.
 - **Six frameworks + the edge.** Express, Web `fetch` (Cloudflare/Deno/Bun/Next edge), Hono, Next.js, Fastify, Koa — each its own subpath.
-- **Scales out honestly.** Two-tier token leasing and multi-region share one engine with a *formally-verified* overshoot bound (TLA⁺/TLC model-checked) — opt into `lease.windowCoupled` and that bound becomes **independent of fleet size**.
+- **Provably scales out.** Two-tier token leasing and multi-region share one engine with a *formally-verified* overshoot bound (TLA⁺/TLC); opt into `lease.windowCoupled` and that bound becomes **independent of fleet size**.
 - **A synchronous API.** `checkSync` — uncommon among JS limiters — for hot paths that don't want an `await`.
 - **Operable.** Standards headers (IETF draft + RFC 9651 + legacy), proxy-correct IP keys, IPv6 aggregation, HMAC key hashing, OpenTelemetry, and zero-config analytics.
-- **TypeScript-first.** ESM + CJS, 11 entry points, strict types, and all peer deps optional.
-
-**Jump to:** [Install](#install) · [Quick start](#quick-start) · [Strategies](#choosing-a-strategy) · [Frameworks](#frameworks-and-the-edge) · [Distributed](#going-distributed) · [Multi-dimensional](#limiting-on-several-axes) · [Backpressure](#backpressure-and-shaping) · [DDoS](#surviving-a-flood) · [Performance](#performance) · [Migrating](#migrating) · [How it's tested](#how-its-tested)
+- **TypeScript-first.** ESM + CJS, 11 entry points, strict types, all peer deps optional.
 
 ---
 
@@ -35,16 +35,7 @@ It's young — currently `0.x` — but heavily tested: 389 tests, a dual-path (J
 npm i throttlekit
 ```
 
-Peer dependencies are **optional** — install only the ones for the adapters you actually use:
-
-```sh
-npm i ioredis              # for throttlekit/redis
-npm i pg                   # for throttlekit/postgres
-npm i express              # for throttlekit/express
-npm i @opentelemetry/api   # for throttlekit/otel
-```
-
-The Web `fetch` adapter (`throttlekit/fetch`) has no peer dependencies — it uses the global `Request`/`Response`/`Headers` (Node 18+, Cloudflare Workers, Deno, Bun).
+Peer dependencies are **optional** — install only the ones for the adapters you use (`ioredis` for `throttlekit/redis`, `pg` for `throttlekit/postgres`, `express`, `@opentelemetry/api`, …). The Web `fetch` adapter (`throttlekit/fetch`) needs none — it uses the global `Request`/`Response` (Node 18+, Cloudflare Workers, Deno, Bun).
 
 ---
 
@@ -80,26 +71,21 @@ interface Decision {
 }
 ```
 
-With the in-memory store you also get a synchronous, zero-`await` fast path:
+With the in-memory store you also get a synchronous, zero-`await` fast path, and a `cost` for weighting:
 
 ```ts
 const d = limiter.checkSync(userId); // MemoryStore only; throws on async stores
+await limiter.check(userId, 5);      // this request costs 5 units
 ```
 
-Pass a `cost` to spend more than one unit per request:
-
-```ts
-await limiter.check(userId, 5); // this request costs 5 units
-```
-
-Check **many keys at once** — each evaluated at one consistent timestamp, returned in order:
+Check **many keys at once** — each at one consistent timestamp, returned in order:
 
 ```ts
 const decisions = await limiter.checkMany([ip, userId, apiKey]); // Decision[] in input order
 const all = limiter.checkManySync(keys);                         // MemoryStore: one loop, no promises
 ```
 
-On an async store the checks fire concurrently — and collapse to a single round trip on clients that pipeline same-tick commands (node-redis, or `ioredis` with `enableAutoPipelining`). Intended for distinct keys. See [`examples/basic-memory.ts`](./examples/basic-memory.ts).
+On an async store the checks fire concurrently — and collapse to a single round trip on clients that pipeline same-tick commands (node-redis, or `ioredis` with `enableAutoPipelining`). Runnable versions of every section below live in [`examples/`](./examples).
 
 ---
 
@@ -117,13 +103,9 @@ Pick one and pass it to `rateLimit({ strategy })`:
 | Shape/queue outbound calls to a fixed rate (delays, doesn't reject) | `leakyBucket({ ratePerSec, maxQueueMs })` |
 | Protect a service from overload when the right rate is unknown | `adaptiveConcurrency({ ... })` |
 
-- `gcra` — `burst` defaults to `limit`. Stores a single number (the theoretical arrival time).
-- `slidingWindow` — `buckets` defaults to 10; error is bounded by ~1/buckets of the window. `buckets: 1` recovers the classic single-previous-window estimator.
-- `slidingWindowLog` — exact, but O(limit) memory per key. Use for things like "5 password resets / hour".
-- `leakyBucket` builds a `Shaper` (not a `Limiter`); see [Backpressure and shaping](#backpressure-and-shaping).
-- `adaptiveConcurrency` builds a concurrency guard (not a `Limiter`); see [Backpressure and shaping](#backpressure-and-shaping).
-
-Runnable versions of every section below live in [`examples/`](./examples).
+- `gcra` stores a single number (the theoretical arrival time); `burst` defaults to `limit`.
+- `slidingWindow` — `buckets` defaults to 10 (error ≈ 1/buckets of the window); `buckets: 1` is the classic estimator. `slidingWindowLog` is exact but O(limit) memory/key.
+- `leakyBucket` and `adaptiveConcurrency` build a `Shaper` / concurrency guard, not a `Limiter` — see [Backpressure and shaping](#backpressure-and-shaping).
 
 ---
 
@@ -148,48 +130,42 @@ app.use(
 );
 ```
 
-On a denial the middleware responds `429` with `Retry-After`. Pass `handler` to fully own the `429` response, or `limiter` instead of `strategy` to share a prebuilt limiter. See [`examples/express.ts`](./examples/express.ts).
+On a denial the middleware responds `429` with `Retry-After`. Pass `handler` to own the `429`, or `limiter` instead of `strategy` to share a prebuilt limiter. See [`examples/express.ts`](./examples/express.ts).
 
 ### Web / edge (`fetch`)
 
-Runs on Cloudflare Workers, Deno, Bun, and Next.js edge. The default key tries `cf-connecting-ip`, then `x-forwarded-for` (resolved through the trusted-proxy policy), then `"anon"`.
+Runs on Cloudflare Workers, Deno, Bun, and Next.js edge. The default key tries `cf-connecting-ip`, then `x-forwarded-for` (via the trusted-proxy policy), then `"anon"`.
 
 ```ts
 import { withRateLimit } from "throttlekit/fetch";
 import { gcra } from "throttlekit";
 
-const handler = (req: Request): Response =>
-  new Response(`hello ${new URL(req.url).pathname}`);
-
 export default {
-  fetch: withRateLimit(handler, {
-    strategy: gcra({ limit: 30, periodMs: 10_000 }),
-    emit: { draft: true },
-  }),
+  fetch: withRateLimit(
+    (req: Request) => new Response(`hello ${new URL(req.url).pathname}`),
+    { strategy: gcra({ limit: 30, periodMs: 10_000 }), emit: { draft: true } },
+  ),
 };
 ```
 
-On allow it forwards to your handler and copies the rate-limit headers onto the response; on deny it returns `429` with `Retry-After`. See [`examples/fetch-edge.ts`](./examples/fetch-edge.ts).
+On allow it forwards to your handler and copies the rate-limit headers onto the response; on deny it returns `429`. See [`examples/fetch-edge.ts`](./examples/fetch-edge.ts).
 
 ### Hono, Next.js, Fastify, Koa
 
-Every adapter shares the same options (`strategy`/`limiter`, `store`, `key`, `cost`, `fail`, `emit`, `onLimited`, `handler`, trusted-proxy config) and the same standards headers — only the binding differs. Each is its own subpath, so you pull in only the framework you use.
+Every adapter shares the same options (`strategy`/`limiter`, `store`, `key`, `cost`, `fail`, `emit`, `onLimited`, `handler`, trusted-proxy config) and the same standards headers — only the binding differs, and each is its own subpath.
 
 ```ts
-// Hono (edge-first) — throttlekit/hono
-import { honoRateLimit } from "throttlekit/hono";
+import { honoRateLimit } from "throttlekit/hono";       // edge-first
 app.use("*", honoRateLimit({ strategy: gcra({ limit: 30, periodMs: 10_000 }) }));
 
-// Fastify v5 — throttlekit/fastify
-import { fastifyRateLimit } from "throttlekit/fastify";
+import { fastifyRateLimit } from "throttlekit/fastify";  // Fastify v5
 fastify.addHook("onRequest", fastifyRateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
 
-// Koa v3 — throttlekit/koa
-import { koaRateLimit } from "throttlekit/koa";
+import { koaRateLimit } from "throttlekit/koa";          // Koa v3
 app.use(koaRateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
 ```
 
-**Next.js** middleware is dependency-free (no `next` import — `NextRequest`/`NextResponse` are Web `Request`/`Response`). Call the limiter, then branch:
+**Next.js** middleware is dependency-free (`NextRequest`/`NextResponse` are Web `Request`/`Response`) — call the limiter, then branch:
 
 ```ts
 // middleware.ts
@@ -208,7 +184,7 @@ export async function middleware(req: NextRequest) {
 }
 ```
 
-For Next.js **route handlers** (`app/.../route.ts`), use `throttlekit/fetch` directly — they're Web `fetch` handlers.
+For Next.js **route handlers**, use `throttlekit/fetch` directly — they're Web `fetch` handlers.
 
 ---
 
@@ -234,28 +210,19 @@ const limiter = rateLimit({
 const d = await limiter.check(userId);
 ```
 
-Built-in strategies run their atomic Lua form in a single `EVALSHA` round trip (with an `EVAL` fallback on `NOSCRIPT`). Custom strategies without a Lua form fall back to optimistic concurrency (`WATCH`/`MULTI`/`EXEC`). `RedisStore` derives `now` from the Redis server clock by default, so node clock skew never corrupts shared state. See [`examples/redis-distributed.ts`](./examples/redis-distributed.ts).
+Built-in strategies run their atomic Lua form in a single `EVALSHA` (with an `EVAL` fallback on `NOSCRIPT`); custom strategies fall back to optimistic concurrency (`WATCH`/`MULTI`/`EXEC`). `RedisStore` derives `now` from the Redis server clock, so node clock skew never corrupts shared state.
 
-**Any Redis client — including serverless / edge.** `RedisStore` speaks the `ioredis` shape directly. For the official **node-redis** client, or the **Upstash REST** client (anywhere a TCP socket isn't allowed), wrap it in the matching adapter:
+**Any Redis client — including serverless / edge.** `RedisStore` speaks the `ioredis` shape directly; for the official **node-redis** client or the **Upstash REST** client (where TCP isn't allowed), wrap it:
 
 ```ts
 import { RedisStore, fromNodeRedis, fromUpstash } from "throttlekit/redis";
 
-// ioredis — pass it straight through
-new RedisStore({ client: new Redis(process.env.REDIS_URL) });
-
-// node-redis (the official `redis` client)
-import { createClient } from "redis";
-const node = createClient({ url: process.env.REDIS_URL });
-await node.connect();
-new RedisStore({ client: fromNodeRedis(node) });
-
-// Upstash REST — serverless / edge, no TCP
-import { Redis as Upstash } from "@upstash/redis";
-new RedisStore({ client: fromUpstash(Upstash.fromEnv()) });
+new RedisStore({ client: new Redis(url) });                  // ioredis — straight through
+new RedisStore({ client: fromNodeRedis(nodeRedisClient) });  // official `redis` client
+new RedisStore({ client: fromUpstash(Upstash.fromEnv()) });  // Upstash REST — serverless/edge
 ```
 
-Every built-in strategy's atomic Lua runs identically across all three — proven bit-identical to the in-process path by the conformance suite (the ioredis and node-redis paths are tested against a live server). The Upstash REST API has no interactive `WATCH`/`MULTI`, so it supports the Lua-backed built-ins only; a custom non-Lua strategy needs `ioredis` or node-redis.
+All three are proven bit-identical to the in-process path by the conformance suite (ioredis and node-redis tested against a live server). Upstash REST has no interactive `WATCH`/`MULTI`, so it supports the Lua-backed built-ins only. See [`examples/redis-distributed.ts`](./examples/redis-distributed.ts).
 
 ### PostgreSQL — no Redis required
 
@@ -266,29 +233,25 @@ import { rateLimit, gcra } from "throttlekit";
 import { PostgresStore } from "throttlekit/postgres";
 import { Pool } from "pg";
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const store = new PostgresStore({ pool, prefix: "api" }); // auto-creates its table on first use
-
+const store = new PostgresStore({ pool: new Pool({ connectionString: process.env.DATABASE_URL }), prefix: "api" });
 const limiter = rateLimit({ strategy: gcra({ limit: 1000, periodMs: 60_000, burst: 100 }), store });
 const d = await limiter.check(userId);
 ```
 
-It runs the **same pure JS transform** the in-memory store runs — there's no Postgres-specific algorithm to keep in sync — inside a transaction serialized per key by a transaction-scoped **advisory lock** (`pg_advisory_xact_lock`, which serializes first-touch keys that `SELECT … FOR UPDATE` cannot lock). So concurrent checks are atomic: N simultaneous checks at limit K admit exactly K, proven against a live server, and decisions are bit-identical to the in-memory and Redis paths (state round-trips as JSON text). Expiry is keyed off the store's clock and reclaimed by a background sweep; because every built-in strategy is idempotent w.r.t. stale state, a slightly-late expiry can't change a decision. Pass a `pg.Pool` directly — no adapter.
-
-Each check is one transaction (a few round trips). For hot keys, use it as the L2 of `twoTier({ mode: "leased" })` to amortize those round trips, exactly as you would over Redis. See [`examples/postgres.ts`](./examples/postgres.ts).
+It runs the **same pure JS transform** the in-memory store runs — no Postgres-specific algorithm to keep in sync — inside a transaction serialized per key by a transaction-scoped **advisory lock** (`pg_advisory_xact_lock`, which serializes first-touch keys that `SELECT … FOR UPDATE` cannot). So concurrent checks are atomic (N simultaneous at limit K admit exactly K, proven on a live server) and decisions are bit-identical to the other backends. Pass a `pg.Pool` directly — no adapter. Each check is one transaction; for hot keys, use it as the L2 of `twoTier({ mode: "leased" })`. See [`examples/postgres.ts`](./examples/postgres.ts).
 
 ### Two-tier — local cache in front of the network
 
-Front the distributed store (L2) with a local in-process tier (L1) and choose the consistency/throughput trade-off:
+Front the distributed store (L2) with a local in-process tier (L1) and pick the consistency/throughput trade-off:
 
 ```ts
 import { twoTier, gcra } from "throttlekit";
 
 const limiter = twoTier({
   strategy: gcra({ limit: 10_000, periodMs: 60_000, burst: 500 }),
-  l2: store,          // a distributed store, e.g. RedisStore
-  mode: "leased",     // "strict" | "cached-deny" | "leased"
-  lease: { batch: 50, lowWater: 10 }, // lease 50 tokens at a time; refill near 10
+  l2: store,                                   // a distributed store, e.g. RedisStore
+  mode: "leased",                              // "strict" | "cached-deny" | "leased"
+  lease: { batch: 50, windowCoupled: true },   // lease 50 at a time; expire at the L2 window
 });
 ```
 
@@ -296,27 +259,31 @@ const limiter = twoTier({
 |---|---|---|---|
 | `strict` | 1 round trip / request | Exact | Hard quotas, billing |
 | `cached-deny` | 1 round trip / *allowed* request | Exact for allows, local for denies | Public APIs under abuse |
-| `leased` | ~1 round trip / `batch` requests | Within `L × batch` | High-throughput internal APIs |
+| `leased` | ~1 round trip / `batch` requests | Bounded overshoot (below) | High-throughput internal APIs |
 
-`leased` requires `lease.batch`. With the default `lowWater: 0`, refill is purely lease-on-demand (tightest overshoot bound, ≤ `L × batch`); set `lowWater > 0` to hide lease latency at a looser bound. `twoTier` returns a `Limiter` whose `check` is async (`checkSync` throws — L2 is asynchronous). See [`examples/two-tier-leased.ts`](./examples/two-tier-leased.ts).
+`leased` trades exactness for throughput, with a **provably bounded** worst-case overshoot you choose:
 
-> **Formally verified.** The leased overshoot bound isn't just claimed — a [TLA⁺ spec](./spec/DistributedLeasing.tla) of the protocol is **model-checked with TLC** (the invariant `admitted ≤ Limit + N·(Batch−1)` holds across the full reachable state space, and a counterexample proves it's *exact*, not loose), and a Java-free [exhaustive checker](./test/twotier/leasing-model.test.ts) reproduces it in CI — independently finding the same state counts. Details in [`docs/FORMAL-MODEL.md`](./docs/FORMAL-MODEL.md).
+- **Default (carryover):** `admitted ≤ Limit + N·(Batch−1)` — tight, but grows with the fleet size `N`.
+- **`windowCoupled: true`:** credits expire at the L2 window boundary, so `admitted ≤ Limit` — **independent of `N`**. Opt-in; default off preserves legacy behaviour. `twoTier`'s `check` is async (`checkSync` throws — L2 is asynchronous).
+
+> **Formally verified — and independent of fleet size.** These bounds are proven, not claimed. A [TLA⁺ spec](./spec/DistributedLeasing.tla) is **model-checked with TLC** — carryover overshoot is *exactly* `Limit + N·(Batch−1)` (a counterexample shows it's tight, not loose) — and window-coupling tightens it to **exactly `Limit`, independent of N** ([second spec](./spec/GaleWindowCoupledLeasing.tla) + a Java-free [exhaustive checker](./test/gale/leasing-variants.test.ts) reproducing both in CI). This is the shipped core of **GALE**, a research program on provable distributed leasing — adding learned (online-EOQ) lease sizing, weighted work-conserving fairness, and a proved overshoot/coordination/utilization **trilemma** lower bound, each machine-checked or measured under [`research/gale/`](./research/gale). Details: [`docs/FORMAL-MODEL.md`](./docs/FORMAL-MODEL.md).
 
 ### Multi-region
 
-A global limit across regions is the leased model with the **regions as the leasing nodes** and one shared L2 (a global Redis/Postgres, or one region's store). Each region serves the bulk of its traffic from a local lease — region-local latency, no per-request cross-region hop — and the *same* formally-verified bound caps the **worldwide** overshoot:
+A global limit across regions is the leased model with the **regions as the leasing nodes** and one shared L2. Each region serves the bulk of its traffic from a local lease — region-local latency, no per-request cross-region hop — and the *same* verified bound caps the **worldwide** overshoot:
 
 ```text
-global admitted per window  ≤  Limit + regions × (batch − 1)
+global admitted per window  ≤  Limit + regions × (batch − 1)   (carryover)
+                            ≤  Limit                            (windowCoupled — any number of regions)
 ```
 
-So 4 regions leasing `batch: 50` against a global `limit: 10_000` admit at most `10_000 + 4×49 = 10_196` worldwide — under 2% overshoot for roughly one cross-region round trip per 50 requests. Smaller `batch` tightens the bound; larger `batch` cuts cross-region hops. There's **no separate multi-region engine to trust** — it's `twoTier` leased pointed at a shared store, and the bound is exactly the one proven in [`docs/FORMAL-MODEL.md`](./docs/FORMAL-MODEL.md). For a hard per-region cap with *zero* cross-region traffic, give each region its own limiter at `limit / regions` instead. See [`examples/multi-region.ts`](./examples/multi-region.ts).
+So 4 regions leasing `batch: 50` against a global `limit: 10_000` admit at most `10_196` worldwide under carryover (< 2% overshoot for ~1 cross-region hop per 50 requests) — or **exactly `10_000` with `windowCoupled`, no matter how many regions**. There's no separate multi-region engine to trust — it's `twoTier` leased at a shared store. See [`examples/multi-region.ts`](./examples/multi-region.ts).
 
 ---
 
 ## Limiting on several axes
 
-Limit on per-IP **and** per-user **and** per-route at once. `all({...})` allows only if **every** dimension allows, and consumes nothing unless all allow (no partial-consume). `any({...})` allows if any dimension permits. Pass the result to **`multiRateLimit`** (not `rateLimit`):
+Limit on per-IP **and** per-user **and** per-route at once. `all({...})` allows only if **every** dimension allows, and consumes nothing unless all allow (no partial-consume). `any({...})` allows if any permits. Pass the result to **`multiRateLimit`** (not `rateLimit`):
 
 ```ts
 import { all, gcra, fixedWindow, multiRateLimit } from "throttlekit";
@@ -324,7 +291,7 @@ import { all, gcra, fixedWindow, multiRateLimit } from "throttlekit";
 interface Ctx { ip: string; userId: string; route: string }
 
 const limiter = multiRateLimit<Ctx>({
-  store, // on Redis, all dimensions are fused into one atomic Lua round trip
+  store, // on Redis, all dimensions fuse into one atomic Lua round trip
   strategy: all<Ctx>({
     ip:    { key: (c) => c.ip,     strategy: gcra({ limit: 100, periodMs: 60_000 }) },
     user:  { key: (c) => c.userId, strategy: gcra({ limit: 1000, periodMs: 60_000 }) },
@@ -335,7 +302,7 @@ const limiter = multiRateLimit<Ctx>({
 const d = await limiter.check({ ip, userId, route: "/search" });
 ```
 
-The returned `Decision` reflects the binding constraint (the denying dimension, or the smallest `remaining` when allowed). Dimensions support per-dimension weighted costs via `cost: (ctx) => number`. On a Redis store, multi-dimensional checks support `gcra`, `tokenBucket`, and `fixedWindow` dimensions. See [`examples/multi-dimensional.ts`](./examples/multi-dimensional.ts).
+The returned `Decision` reflects the binding constraint (the denying dimension, or the smallest `remaining` when allowed). Dimensions support per-dimension `cost`. On Redis, multi-dimensional checks support `gcra`, `tokenBucket`, and `fixedWindow`. See [`examples/multi-dimensional.ts`](./examples/multi-dimensional.ts).
 
 ---
 
@@ -351,19 +318,15 @@ import { adaptiveConcurrency } from "throttlekit";
 const guard = adaptiveConcurrency({ minLimit: 4, maxLimit: 512, algorithm: "gradient2" });
 
 const lease = guard.acquire();
-if (!lease.ok) {
-  // Over the inferred ceiling — shed load (e.g. 503).
-  return;
-}
+if (!lease.ok) return; // over the inferred ceiling — shed load (e.g. 503)
 try {
   await handle(request);
 } finally {
-  lease.release();              // latency is measured automatically
-  // lease.release({ dropped: true }); // for a failed/timed-out request (overload signal)
+  lease.release(); // latency measured automatically; pass { dropped: true } on a failure/timeout
 }
 ```
 
-Introspect with `guard.limit`, `guard.inflight`, and `guard.stats()`. Algorithms: `"gradient2"` (default) or `"aimd"`. See [`examples/adaptive-concurrency.ts`](./examples/adaptive-concurrency.ts).
+Introspect with `guard.limit`, `guard.inflight`, `guard.stats()`. Algorithms: `"gradient2"` (default) or `"aimd"`. See [`examples/adaptive-concurrency.ts`](./examples/adaptive-concurrency.ts).
 
 ### Leaky-bucket scheduling
 
@@ -373,38 +336,32 @@ Introspect with `guard.limit`, `guard.inflight`, and `guard.stats()`. Algorithms
 import { leakyBucket, QueueFullError } from "throttlekit";
 
 const shaper = leakyBucket({ ratePerSec: 5, maxQueueMs: 2_000 });
-
 try {
   await shaper.schedule("upstream-api"); // resolves after the paced delay
   await callUpstream();
 } catch (err) {
-  if (err instanceof QueueFullError) {
-    // The wait would exceed maxQueueMs; shed instead of queuing forever.
-    console.warn("queue full, retry in", err.retryAfterMs, "ms");
-  }
+  if (err instanceof QueueFullError) console.warn("queue full, retry in", err.retryAfterMs, "ms");
 }
 ```
 
-`reserve(key, cost?)` returns a `Reservation` (`{ accepted, delayMs }`) without sleeping; `schedule(key, cost?)` waits the paced delay or throws `QueueFullError`. `reserveSync` is available with a synchronous store. See [`examples/leaky-bucket.ts`](./examples/leaky-bucket.ts).
+`reserve(key, cost?)` returns a `Reservation` (`{ accepted, delayMs }`) without sleeping; `schedule` waits or throws `QueueFullError`. `reserveSync` is available on a sync store. See [`examples/leaky-bucket.ts`](./examples/leaky-bucket.ts).
 
 ---
 
 ## Surviving a flood
 
-The per-key stores keep one record per active key — which, under a flood of *millions of distinct* keys (every source IP in a volumetric attack), makes that per-key state itself the memory-exhaustion vector. `sketchRateLimit` limits an **unbounded key universe in fixed memory** using a Count-Min Sketch: ~**7.4 KB total**, regardless of how many keys it sees.
+Per-key stores keep one record per active key — which, under a flood of *millions of distinct* keys (every source IP in a volumetric attack), makes that state itself the memory-exhaustion vector. `sketchRateLimit` limits an **unbounded key universe in fixed memory** with a Count-Min Sketch: ~**7.4 KB total**, regardless of how many keys it sees.
 
 ```ts
 import { sketchRateLimit } from "throttlekit";
 
 const shield = sketchRateLimit({ limit: 100, windowMs: 60_000 }); // ε=0.01, δ=0.001 by default
-
-const d = shield.checkSync(clientIp); // sync or async (check)
-if (!d.allowed) return reject(429);
+if (!shield.checkSync(clientIp).allowed) return reject(429);       // sync or async (check)
 ```
 
-The guarantee: because the sketch never *under*counts, `allowed` implies the true admitted count is ≤ `limit` — it never over-admits (a hard, non-probabilistic property). Its only error is the safe direction — it may deny a key slightly early once hash collisions inflate its estimate, bounded by `ε·N` with probability `≥ 1−δ` ([Cormode & Muthukrishnan 2005](http://dimacs.rutgers.edu/~graham/pubs/papers/cmencyc.pdf); conservative-update from Estan & Varghese). Over-denying rather than over-admitting is the right bias for abuse protection. Tune the memory/accuracy trade with `epsilon`/`delta`.
+Because the sketch never *under*counts, `allowed` implies the true admitted count is ≤ `limit` — it never over-admits (a hard, non-probabilistic property). Its only error is the safe direction: it may deny a key slightly early once collisions inflate its estimate, bounded by `ε·N` w.p. `≥ 1−δ` ([Cormode & Muthukrishnan 2005](http://dimacs.rutgers.edu/~graham/pubs/papers/cmencyc.pdf); conservative-update from Estan & Varghese).
 
-**Cluster-wide (`mergeableSketch`).** A low-and-slow distributed attacker can stay under every single node's threshold while flooding the fleet. Because Count-Min counters are linear, each node keeps its own fixed-memory sketch, ships it as compact bytes (`snapshot()` / `toBytes()`), and `merge()`s peers' sketches — the sum is *exactly* the sketch of the whole cluster's traffic, so the global heavy hitter becomes visible everywhere. Honestly scoped: this is eventually-consistent **detection** (each node acts on its latest merged view), not a strongly-consistent global limit — for that, use a Redis/Postgres store or `twoTier`. See [`examples/distributed-sketch.ts`](./examples/distributed-sketch.ts).
+**Cluster-wide (`mergeableSketch`).** A low-and-slow distributed attacker can stay under every node's threshold while flooding the fleet. Because CMS counters are linear, each node keeps its own fixed-memory sketch, ships it as compact bytes (`snapshot()` / `toBytes()`), and `merge()`s peers' — the sum is *exactly* the sketch of the whole cluster's traffic, so the global heavy hitter becomes visible everywhere. Honestly scoped as eventually-consistent **detection**, not a strongly-consistent global limit. See [`examples/distributed-sketch.ts`](./examples/distributed-sketch.ts).
 
 ---
 
@@ -412,7 +369,7 @@ The guarantee: because the sketch never *under*counts, `allowed` implies the tru
 
 Two admission-control primitives that sit *upstream* of the per-key limiters.
 
-**`adaptiveThrottle`** — Google-SRE [client-side adaptive throttling](https://sre.google/sre-book/handling-overload/). A client that keeps hammering an overloaded backend only deepens the overload; this sheds a growing fraction of requests *locally* based on the backend's recent accept rate, so callers back off automatically:
+**`adaptiveThrottle`** — Google-SRE [client-side adaptive throttling](https://sre.google/sre-book/handling-overload/). A client that keeps hammering an overloaded backend only deepens the overload; this sheds a growing fraction *locally* based on the backend's recent accept rate:
 
 ```ts
 import { adaptiveThrottle } from "throttlekit";
@@ -423,9 +380,9 @@ try { const res = await callBackend(); throttle.record(res.ok); }
 catch { throttle.record(false); }            // feed outcomes back so it self-corrects
 ```
 
-`p = max(0, (requests − K·accepts) / (requests + 1))` over a smooth rolling window; `request(priority)` protects critical traffic (`priority: 1` is never shed).
+`p = max(0, (requests − K·accepts) / (requests + 1))` over a rolling window; `request(priority)` protects critical traffic.
 
-**`fairShare`** — split one global per-window budget across tenants so a greedy tenant can't starve the others (each active tenant is guaranteed ≥ `limit/N`, and the global total never exceeds `limit`):
+**`fairShare`** — split one global per-window budget across tenants so a greedy tenant can't starve the others (each active tenant guaranteed ≥ `limit/N`, global total ≤ `limit`):
 
 ```ts
 import { fairShare } from "throttlekit";
@@ -433,7 +390,7 @@ const fair = fairShare({ limit: 1000, windowMs: 60_000 });
 const d = fair.checkSync(tenantId); // d.limit is this tenant's current fair cap
 ```
 
-It's an honest *online equal-share approximation*, not work-conserving max-min — the [reference docs](./src/admission/index.ts) spell out exactly what it does and doesn't guarantee.
+The shipped primitive is an honest *online equal-share approximation*. The stronger guarantee — **weighted, work-conserving max-min** fairness (idle tenants' share flows to busy ones, by priority, with the same hard overshoot bound) — is designed, proven, and measured as *Weighted Fair Escrow* in the [research track](./research/gale/PILLAR4-fairness.md); not yet a shipped primitive.
 
 ---
 
@@ -458,36 +415,15 @@ clock.advance(500);                 // one emission interval (1000/2) later
 (await limiter.check("k")).allowed; // true
 ```
 
-`ManualClock` exposes `.advance(ms)`, `.set(ms)`, and `.now()`. See [`examples/basic-memory.ts`](./examples/basic-memory.ts).
+`ManualClock` exposes `.advance(ms)`, `.set(ms)`, `.now()`. See [`examples/basic-memory.ts`](./examples/basic-memory.ts).
 
 ---
 
 ## Headers, IPs, and PII
 
-### Standards-compliant headers
+**Standards-compliant headers.** `buildRateLimitHeaders(decision, opts)` produces a plain `Record<string, string>` (the adapters call it for you), in three families via `emit`: **`draft`** *(default)* — the IETF `RateLimit-Limit`/`-Remaining`/`-Reset` triple; **`structured`** — RFC 9651 `RateLimit` + `RateLimit-Policy`; **`legacy`** — the `X-RateLimit-*` triple. On a denial a `Retry-After` (delta-seconds, min 1) is always added, and all time math derives from the injected `now`.
 
-`buildRateLimitHeaders(decision, opts)` produces a plain `Record<string, string>` you can set on any response; the adapters call it for you. Three families, selectable via `emit`:
-
-- **`draft`** *(default)* — the IETF triple `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` (reset is delta-seconds).
-- **`structured`** — the RFC 9651 structured `RateLimit` + `RateLimit-Policy` fields.
-- **`legacy`** — the `X-RateLimit-*` triple (reset is epoch-seconds).
-
-On a denial a `Retry-After` header (delta-seconds, rounded up, min 1) is always added. All time math derives from the injected `now`, so output is deterministic in tests.
-
-```ts
-import { buildRateLimitHeaders } from "throttlekit";
-
-const headers = buildRateLimitHeaders(decision, {
-  now: Date.now(),
-  policyName: "api",
-  windowSeconds: 60,
-  emit: { draft: true, legacy: true },
-});
-```
-
-### Trusted proxy & IPv6 aggregation
-
-Trusting `X-Forwarded-For` blindly is the classic rate-limit bypass. `clientIp` refuses to do that: the default is `trustProxy: false` (use the socket peer), and trust is opt-in as a hop count or a CIDR/IP allowlist. It also aggregates IPv6 to a configurable prefix (`/64` by default), so one customer can't rotate through billions of addresses.
+**Trusted proxy & IPv6 aggregation.** Trusting `X-Forwarded-For` blindly is the classic bypass. `clientIp` refuses to: the default is `trustProxy: false` (use the socket peer), trust is opt-in as a hop count or CIDR allowlist, and it aggregates IPv6 to a configurable prefix (`/64` default) so one customer can't rotate through billions of addresses.
 
 ```ts
 import { clientIp } from "throttlekit";
@@ -498,24 +434,21 @@ const key = clientIp(
 );
 ```
 
-The Express and `fetch` adapters accept `trustProxy` and `ipv6Prefix` directly and derive this key by default.
+The Express and `fetch` adapters accept `trustProxy`/`ipv6Prefix` directly and derive this key by default.
 
-### PII-safe keys (HMAC)
-
-Hash raw identifiers with a server secret before they reach the store, so a shared Redis never holds the raw value:
+**PII-safe keys (HMAC).** Hash raw identifiers with a server secret before they reach the store, so a shared Redis never holds the raw value:
 
 ```ts
-import { hmacKeyer, hashKey } from "throttlekit";
-
+import { hmacKeyer } from "throttlekit";
 const keyer = hmacKeyer(process.env.RL_SECRET ?? "");
-await limiter.check(keyer(rawUserId)); // or: hashKey(rawUserId, secret)
+await limiter.check(keyer(rawUserId));
 ```
 
 ---
 
 ## Observability
 
-Every `Decision` is a plain object suitable for logging. For metrics, the optional OpenTelemetry layer (`throttlekit/otel`) wraps a limiter or guard with your own configured `Meter`:
+Every `Decision` is a plain, loggable object. For metrics, the optional OpenTelemetry layer (`throttlekit/otel`) wraps a limiter or guard with your own `Meter`:
 
 ```ts
 import { instrumentLimiter, instrumentGuard } from "throttlekit/otel";
@@ -526,62 +459,56 @@ const observed = instrumentLimiter(limiter, meter); // throttlekit.checks / .rem
 instrumentGuard(guard, meter);                       // concurrency.limit / .inflight / .rtt_noload
 ```
 
-`instrumentLimiter` returns a drop-in `Limiter`; `instrumentGuard` returns the same guard with observable gauges attached. The adapters also expose `onLimited` and `onError` hooks for custom sinks.
-
-For zero-config insight without a metrics backend, wrap a limiter with **`withAnalytics`** — it tracks allow/deny counts and the **top-K "heavy hitters"** (the keys driving the most traffic and the most denials) in bounded memory:
+For zero-config insight without a metrics backend, wrap a limiter with **`withAnalytics`** — it tracks allow/deny counts and the **top-K heavy hitters** (keys driving the most traffic and denials) in bounded memory via **Space-Saving** (Metwally et al. 2005), so your worst offenders surface even under a flood of unique keys:
 
 ```ts
 import { withAnalytics, rateLimit, gcra } from "throttlekit";
 
 const limiter = withAnalytics(rateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
 await limiter.check(clientIp); // use exactly like any limiter
-
-const a = limiter.analytics();
-// { allowed, denied, total, denyRate, topRequested: [{ key, count }], topDenied: [...] }
+const a = limiter.analytics(); // { allowed, denied, total, denyRate, topRequested: [...], topDenied: [...] }
 ```
-
-Top-K uses **Space-Saving** (Metwally et al. 2005): at most `topK` entries are tracked no matter how many distinct keys appear, so it surfaces your worst offenders even under a flood of unique keys without unbounded memory. Drop-in (`check`/`checkSync`/`reset` pass through); the window resets each `windowMs`.
 
 ---
 
 ## When the backend goes down
 
-The in-process `MemoryStore` never fails. A distributed store can: if Redis is unreachable, `limiter.check()` rejects (`StoreUnavailableError`). **You decide what that means** — every adapter takes a `fail` policy and fires an `onError` hook before applying it:
+The in-process `MemoryStore` never fails. A distributed store can: if Redis is unreachable, `check()` rejects (`StoreUnavailableError`). **You decide what that means** — every adapter takes a `fail` policy and fires `onError` before applying it:
 
 | `fail` | On a store outage | Use when |
 |---|---|---|
-| `"open"` *(default)* | Allow the request (the limiter gets out of the way) | Availability matters more than the cap — most public APIs |
-| `"closed"` | Reject with `503 { error: "rate limiter unavailable" }` | The cap is a hard guarantee — billing, abuse-critical paths |
+| `"open"` *(default)* | Allow the request | Availability > the cap — most public APIs |
+| `"closed"` | Reject with `503` | The cap is a hard guarantee — billing, abuse-critical paths |
 
 ```ts
 expressRateLimit({
   strategy: gcra({ limit: 100, periodMs: 60_000 }),
   store: redisStore,
-  fail: "closed",                       // deny if the limiter can't be consulted
+  fail: "closed",
   onError: (_req, _res, err) => log.warn({ err }, "rate limiter store down"),
 });
 ```
 
-Two extra hedges against transient outages: **`twoTier` in `leased` mode** keeps serving from the local lease while L2 is briefly unreachable, and the Redis path uses a single atomic round trip (no read-then-write window to be interrupted). Fail-open and fail-closed are covered by tests on every adapter.
+Two extra hedges: **`twoTier` leased** keeps serving from the local lease while L2 is briefly unreachable, and the Redis path is a single atomic round trip (no read-then-write window to interrupt). Both fail modes are tested on every adapter.
 
 ---
 
 ## Performance
 
-In-process, single hot key (Node 24, reproducible via `npm run bench`; numbers vary ~±10% run-to-run):
+In-process, single hot key (Node 24, reproducible via `npm run bench`; numbers vary ~±10%):
 
 - **`checkSync` (GCRA): ~3.1M ops/s, ~320 ns/op, allocation-free.**
 - `check` (async, GCRA): **~1.7M ops/s** (~600 ns/op).
 - Redis: exactly **one** `EVALSHA` round trip per check.
 
-**Head-to-head, the honest version** (`npm run bench:compare`, same machine/process/warmup, allow path):
+**Head-to-head, the honest version** (`npm run bench:compare`, same machine/process/warmup):
 
-- **Sync:** ThrottleKit is one of the few JS limiters that offers a synchronous API at all, and it's allocation-free.
-- **Redis:** roughly **tied** with `rate-limiter-flexible` (both one atomic Lua round trip per request), with a somewhat tighter tail latency.
-- **Async in-memory throughput:** the counter-based libraries are **faster** here — `express-rate-limit` and `rate-limiter-flexible` land in the ~2–5M ops/s range vs ThrottleKit's ~1.3–1.7M. That's the cost of running GCRA over a bounded-memory store instead of a plain counter; all are far past real-world per-process need.
-- **Postgres:** a single bare check **trails** `rate-limiter-flexible`'s one-statement upsert (~3×, by design — ThrottleKit runs a generic read-modify-write transaction so every strategy shares one proven code path). Under load, `twoTier(leased)` amortizes that into a large throughput win.
+- **Sync:** one of the few JS limiters with a synchronous API at all, and it's allocation-free.
+- **Redis:** roughly **tied** with `rate-limiter-flexible` (both one atomic Lua round trip), with a tighter tail.
+- **Async in-memory:** the counter-based libraries are **faster** (~2–5M vs ~1.3–1.7M ops/s) — the cost of GCRA over a bounded-memory store vs a plain counter; all far past per-process need.
+- **Postgres:** a single bare check **trails** `rate-limiter-flexible`'s one-statement upsert (~3×, by design — one generic transaction per strategy); under load, `twoTier(leased)` amortizes it into a large throughput win.
 
-The full table — algorithms labelled, methodology, caveats, and every place ThrottleKit loses — is in [SCOREBOARD.md](./SCOREBOARD.md).
+The full table — algorithms labelled, methodology, and every place ThrottleKit loses — is in [SCOREBOARD.md](./SCOREBOARD.md).
 
 ---
 
@@ -591,30 +518,23 @@ The full table — algorithms labelled, methodology, caveats, and every place Th
 
 ```ts
 // before
-import rateLimit from "express-rate-limit";
 app.use(rateLimit({ windowMs: 60_000, limit: 100 }));
-
 // after — GCRA by default (smooth pacing, no 2× boundary burst), same standards headers
 import { expressRateLimit } from "throttlekit/express";
 import { gcra } from "throttlekit";
 app.use(expressRateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
-// want the classic window instead? swap in fixedWindow({ limit: 100, windowMs: 60_000 })
+// want the classic window? swap in fixedWindow({ limit: 100, windowMs: 60_000 })
 ```
 
 **From `rate-limiter-flexible`:**
 
 ```ts
 // before — throws on exhaustion
-const rl = new RateLimiterRedis({ storeClient: redis, points: 100, duration: 60 });
 try { await rl.consume(key); } catch { /* respond 429 */ }
-
 // after — one atomic Lua round trip, a Decision object instead of throw-on-deny
 import { rateLimit, gcra } from "throttlekit";
 import { RedisStore } from "throttlekit/redis";
-const limiter = rateLimit({
-  strategy: gcra({ limit: 100, periodMs: 60_000 }),
-  store: new RedisStore({ client: redis }),
-});
+const limiter = rateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }), store: new RedisStore({ client: redis }) });
 const d = await limiter.check(key);
 if (!d.allowed) { /* respond 429 with d.retryAfterMs */ }
 ```
@@ -623,23 +543,19 @@ if (!d.allowed) { /* respond 429 with d.retryAfterMs */ }
 
 ## Recipes
 
-**Tiered plans (free / pro) by API key** — one store, namespaced per tier:
-
 ```ts
+// Tiered plans (free / pro) by API key — one store, namespaced per tier
 const limiters = {
   free: rateLimit({ strategy: gcra({ limit: 60, periodMs: 60_000 }), store, prefix: "free" }),
-  pro: rateLimit({ strategy: gcra({ limit: 1_000, periodMs: 60_000 }), store, prefix: "pro" }),
+  pro:  rateLimit({ strategy: gcra({ limit: 1_000, periodMs: 60_000 }), store, prefix: "pro" }),
 };
 const d = await limiters[planFor(req)].check(apiKeyOf(req));
+
+// Cost-weighted endpoints — charge expensive routes more from the same budget
+await limiter.check(apiKeyOf(req), routeIsExpensive(req) ? 5 : 1);
 ```
 
-**Cost-weighted endpoints** — charge expensive routes more from the same budget:
-
-```ts
-await limiter.check(apiKeyOf(req), routeIsExpensive(req) ? 5 : 1); // `cost` second arg
-```
-
-**Per-IP *and* per-route in one round trip** — see [Limiting on several axes](#limiting-on-several-axes) (`all({ ip, route })`). **Tiered burst + sustained** — compose two GCRA limiters (e.g. 10/sec *and* 1000/hour) and allow only if both pass.
+**Per-IP *and* per-route in one round trip** — see [Limiting on several axes](#limiting-on-several-axes). **Tiered burst + sustained** — compose two GCRA limiters (e.g. 10/sec *and* 1000/hour) and allow only if both pass.
 
 ---
 
@@ -648,10 +564,10 @@ await limiter.check(apiKeyOf(req), routeIsExpensive(req) ? 5 : 1); // `cost` sec
 ThrottleKit is built to be checkable, not just claimed:
 
 - **Dual-path conformance** — thousands of generated `(arrivals, costs, clock)` timelines run through both the JS and Lua path of each strategy; the two must produce identical decision streams.
-- **Property tests** (fast-check) — invariants like "`remaining` never negative", "never allow above limit + documented overshoot", and "leased overshoot ≤ L × B" under randomized inputs.
-- **Atomicity** — fire N simultaneous checks at a limit of K and assert exactly K are allowed, for the MemoryStore and (env-gated) a real Redis and Postgres.
+- **Property tests** (fast-check) — invariants like "`remaining` never negative" and "leased overshoot ≤ documented bound" under randomized inputs.
+- **Atomicity** — fire N simultaneous checks at limit K and assert exactly K allowed, for MemoryStore and (env-gated) real Redis and Postgres.
 - **Formal model** — the leasing protocol is model-checked with TLA⁺/TLC and re-checked by an exhaustive JS checker in CI ([`docs/FORMAL-MODEL.md`](./docs/FORMAL-MODEL.md)).
-- **Research track (GALE)** — that shipped bound is the foundation of an ongoing research program: window-coupled overshoot *independent of fleet size*, learned (online-EOQ) lease sizing, weighted work-conserving fairness, and a proved rate-limiting *trilemma* lower bound — each machine-checked or measured under [`research/gale/`](./research/gale). (Research modules; not public API beyond `lease.windowCoupled`.)
+- **Research track (GALE)** — that bound is the foundation of an ongoing program: overshoot *independent of fleet size*, learned (online-EOQ) lease sizing, weighted work-conserving fairness, and a proved *trilemma* lower bound — each machine-checked or measured under [`research/gale/`](./research/gale). (Research modules; not public API beyond `lease.windowCoupled`.)
 - **Store conformance kit** — `runStoreConformance` from `throttlekit/testkit` runs any custom store through the same atomicity / TTL / concurrency suite the built-ins pass.
 
 All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **389 tests, 95.2% line coverage**, CI green across Node 20/22/24 — tracked in [SCOREBOARD.md](./SCOREBOARD.md).
@@ -661,7 +577,7 @@ All time-dependent tests use `ManualClock`, so the suite is deterministic. Curre
 ## Design and docs
 
 - [THROTTLEKIT.md](./THROTTLEKIT.md) — full design and architecture.
-- [SCOREBOARD.md](./SCOREBOARD.md) — benchmarks, correctness guarantees, and the feature matrix.
+- [SCOREBOARD.md](./SCOREBOARD.md) — benchmarks, correctness guarantees, feature matrix.
 - [docs/FORMAL-MODEL.md](./docs/FORMAL-MODEL.md) — the formally-verified leasing bound.
 - [research/gale/](./research/gale) — the GALE research track: provable distributed leasing (overshoot independent of fleet size, learned lease sizing, weighted fairness, the trilemma lower bound).
 - [CHANGELOG.md](./CHANGELOG.md) — release history.
@@ -671,11 +587,7 @@ All time-dependent tests use `ManualClock`, so the suite is deterministic. Curre
 
 ## Status
 
-ThrottleKit is `0.x`: feature-complete and heavily tested, but young — the public API may still be refined before a `1.0` that commits to SemVer stability. It's MIT-licensed and developed in the open.
-
-If it saves you from hand-rolling a limiter, a ⭐ on [GitHub](https://github.com/AmeyaBorkar/throttlekit) helps others find it — and issues and PRs are very welcome.
-
----
+ThrottleKit is `0.x`: feature-complete and heavily tested, but young — the public API may still be refined before a `1.0` that commits to SemVer stability. MIT-licensed and developed in the open.
 
 ## License
 
