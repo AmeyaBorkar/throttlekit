@@ -47,9 +47,10 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
           # Pull this version's section out of the CHANGELOG; fall back to auto-generated notes.
-          notes="$(awk -v ver="$version" '
-            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
-            flag && /^## \[/ { exit }
+          # Regex-free (index-based) so it is portable across awk implementations (gawk/mawk).
+          notes="$(awk -v start="## [$version]" '
+            index($0, start)==1 { flag=1; next }
+            flag && index($0, "## [")==1 { exit }
             flag { print }
           ' CHANGELOG.md)"
           if gh release view "$tag" >/dev/null 2>&1; then
