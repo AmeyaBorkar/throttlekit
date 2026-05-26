@@ -84,6 +84,7 @@ latency here is loopback-Docker-on-Windows.
 | JS ↔ Lua dual-path bit-identical decisions | conformance suite (6 strategies + multi-dim, both modes; ioredis + node-redis); Postgres path proven bit-identical vs JS on a live server | ✅ |
 | `remaining` never negative; integer decisions; retryAfter==0 iff allowed | property tests (fast-check) | ✅ |
 | Leased overshoot bound (tight: `Limit + N·(Batch−1)`, implies ≤ L×batch) | **TLA+/TLC model-checked** + Java-free exhaustive JS checker (same state counts) + property test | ✅ |
+| Window-coupled leasing: overshoot `= L`, **independent of N** (`lease.windowCoupled`) | **TLA+ spec + exhaustive BFS twin** (self-validated vs TLC 31/441) + contrast test | ✅ |
 | Clock-jump safety (negative elapsed clamped) | unit tests | ✅ |
 | Defined fail-open / fail-closed on store error | adapter unit tests (all 6 adapters) | ✅ |
 | `ttl ≥ 1` under extreme params (ULP edge) | found by bench, guarded JS+Lua | ✅ |
@@ -115,6 +116,21 @@ latency here is loopback-Docker-on-Windows.
 | Proxy-correct IP + IPv6 /64 aggregation + HMAC keys | ✅ |
 | Store conformance testkit | ✅ |
 | TypeScript-first, ESM + CJS, 11 entry points | ✅ |
+
+## Research track — GALE (provable distributed leasing)
+
+A research program built on the `leased` two-tier path (target venue SIGMETRICS/POMACS): the first
+distributed limiter with a hard, tight overshoot bound **independent of fleet size**, plus learned
+lease sizing and weighted fairness. Proven/measured and gated under `test/gale/`; write-up in
+`research/gale/`. Research modules unless marked shipped. Reproduce with `npx vitest run test/gale`.
+
+| Result | How established | Status |
+|---|---|---|
+| Pillar 1 — window-coupled overshoot `= L`, independent of N | TLA+ + exhaustive BFS twin; **shipped** as `lease.windowCoupled` | ✅ |
+| Pillar 2 — online EOQ lease sizing, `O(√T)` regret | implemented + measured (avg regret/round 18.6 → 0.40) | ✅ |
+| Pillar 3 — learning-augmented (consistency + robustness), safety unconditional | implemented + measured | ✅ |
+| Pillar 4 — weighted fair escrow (work-conserving multi-tenant fairness) | 4 theorems machine-checked on 20k instances + measured (Workload C) | ✅ |
+| Capstone — rate-limiting trilemma `Δ + N·U ≥ (N−1)L`, tight | proven + machine-checked (N ∈ {2,3,4}) | ✅ |
 
 ## Quality gates
 

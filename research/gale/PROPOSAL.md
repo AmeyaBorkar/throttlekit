@@ -4,7 +4,7 @@
 
 > **One-line thesis.** Distributed rate limiting is *escrow under uncertainty*: every system must decide, online and per-node, how much of a shared global budget to hold locally — trading coordination cost against overshoot (safety) and stranded capacity (utilization). For ~18 years the field has resolved this with static, hand-tuned shares that are provably wrong under skewed, non-stationary demand. We give the first scheme that is simultaneously **overshoot-bounded independent of fleet size**, **work-conserving**, **low-coordination** (a shared atomic store, no gossip), and **online-adaptive with a regret guarantee** — and we prove a matching **trilemma lower bound** showing the three-way tradeoff is fundamental.
 
-> **Status (this artifact).** Pillar 1 (safety) and the trilemma lower bound are **machine-checked**, and Pillar 1 is **shipped** in `src/twotier` (`lease.windowCoupled`). Pillars 2–3 are **implemented and empirically validated** (the regret/consistency bounds follow from standard OGD/AdaGrad and Hedge analyses on the convex per-window cost; the figures are measured). The evaluation is **measured**. Pillar 4 (fairness) remains a proposed extension. All work is gated (lint + strict types + tests + build) and committed on branch `research/gale`. Per-pillar pointers below.
+> **Status (this artifact).** Pillar 1 (safety) and the trilemma lower bound are **machine-checked**, and Pillar 1 is **shipped** in `src/twotier` (`lease.windowCoupled`). Pillars 2–3 are **implemented and empirically validated** (the regret/consistency bounds follow from standard OGD/AdaGrad and Hedge analyses on the convex per-window cost; the figures are measured). Pillar 4 (fairness) is **implemented, proven, and measured** — four theorems machine-checked on random instances + a measured multi-tenant contrast. The evaluation is **measured**. All work is gated (lint + strict types + tests + build) and merged to `main`. Per-pillar pointers below.
 
 ---
 
@@ -40,7 +40,7 @@ This observation does not appear in the surveyed literature and reframes the who
 
 ## 3. The contribution
 
-A decentralized limiter coordinated **only** through the existing shared atomic store (Redis Lua / Postgres transaction) — **no gossip** — in three provable layers plus a capstone.
+A decentralized limiter coordinated **only** through the existing shared atomic store (Redis Lua / Postgres transaction) — **no gossip** — in four provable layers plus a capstone.
 
 ### Pillar 1 — Window-coupled / escrow-accounted leasing ⇒ overshoot independent of N  ✅ *machine-checked*
 
@@ -64,9 +64,13 @@ A **Hedge meta-learner over two experts** — *follow-the-prediction* (`b = √(
 - **Theorem (Predictions).** Hedge's `O(√T)` regret to the best expert gives **consistency** (cost → the offline optimum when predictions are good) and **robustness** (cost → the no-regret learner when they are adversarial); the hard overshoot bound holds **unconditionally**, since predictions set only the *requested* lease and the escrow store still gates it. To our knowledge the **first predictions-with-safety result for distributed rate limiting** (cf. Yang et al. SIGMETRICS'24: centralized, no leasing).
 - **Status: ✅ implemented + measured** (`test/gale/predictive-sizer.test.ts`). On a drift trace: perfect predictions give cost/clairvoyant = **1.000** (consistency); adversarial predictions give cost/robust = **1.000** and far below blindly obeying the oracle (robustness); the Hedge weight concentrates (>0.8) on the right expert; and per-window admitted ≤ L even under adversarial predictions (safety unconditional).
 
-### Pillar 4 (proposed extension — not yet built) — Weighted, work-conserving fairness across nodes & tenants
+### Pillar 4 — Weighted, work-conserving fairness across tenants (Weighted Fair Escrow)  ✅ *proven + measured*
 
-Single-pool escrow + idle-return should yield approximate weighted max-min fairness to within additive slack `b_max`, using only the shared store (vs. Pisces's central controller). FairRide's SIP impossibility tells us precisely what must be conceded (bounded non-work-conservation); characterizing that frontier is itself a result. *(Design only; no implementation/measurement yet.)*
+Pillars 1–3 fix the *total* credits; they say nothing about the *split* when the budget is contended. Single-pool leasing splits it first-come-first-served — equivalently **unweighted** max-min — so a low-priority flood starves a high-priority tenant below its configured share. **Weighted Fair Escrow (WFE)** makes the split the **weighted max-min fair** allocation (water-filling) with idle-share reclamation, using only the shared store (vs. Pisces's central controller; the core-stateless spirit of CSFQ). Design + proofs: `research/gale/PILLAR4-fairness.md`.
+
+- **Theorems.** *T1 (safety, inherited):* the split never changes the total, so `Σ ≤ L` and `Δ = 0` independent of N. *T2 (sharing incentive):* every backlogged tenant gets ≥ its guaranteed weighted share `⌊wᵢ/W·L⌋` — WFE node-wise dominates the static share. *T3 (work-conservation):* `Σ = min(ΣD, L)` — no budget stranded while a tenant is backlogged. *T4 (bounded unfairness):* normalised service `|aᵢ/wᵢ − aⱼ/wⱼ|` is bounded by the lease quantum (the Shreedhar–Varghese DRR bound). All four **machine-checked on 20 000 random instances** (`test/gale/fair-escrow.test.ts`).
+- **The honest concession (T5).** Under the share guarantee, FairRide's impossibility (NSDI'16) precludes also being strategy-proof and work-conserving; WFE takes the sharing-incentive + work-conserving corner and is **not strategy-proof** (window-coupling bounds the gain from over-declaring demand). Stated, not hidden.
+- **Status: ✅ implemented + measured** (`test/gale/fair-escrow.ts`). Workload C (one weight-4 tenant + three weight-1 flooders, the weight-4 idle every 5th window): WFE is the **only** split good on every axis — utilisation 1.000 (matches weight-blind leasing) and 0 share violations (matches static), beating static's 0.876 utilisation and weight-blind's 21% violations, at the **same coordination** (fairness is free). See §6 / `EVALUATION.md` Workload C.
 
 ### Capstone — The Rate-Limiting Trilemma (theory headline)  ✅ *proven + machine-checked*
 
@@ -118,13 +122,15 @@ Reproducible seeded simulation; engine `test/gale/evaluate.ts`, gated claims `te
 
 GALE is the only scheme good on all three axes: it **Pareto-dominates** the best fixed-batch coupled scheme (equal utilization at **26% fewer round trips**, because it sizes each node's lease to its own demand), runs at **4× less coordination than strict**, and **~2.2× the utilization of static** — all at `Δ = 0`. Overshoot-vs-`N` (B=10): legacy grows 15 → 25 as `N` goes 2 → 16; window-coupled stays **0**. `h` is the coordination↔utilization dial — under contention set it high so leases track demand; a fully contention-adaptive `h` is a noted refinement.
 
+**Fairness (Workload C, Pillar 4)** isolates the *split*: one weight-4 tenant (idle every 5th window) + three weight-1 flooders, limit 70. WFE is the only policy good on every axis — utilization **1.000** with **0** share-guarantee violations — vs. static (utilization **0.876**, strands the idle share) and weight-blind leasing (**21%** violations, splits equally and ignores priority), at **identical coordination**. Full table: `EVALUATION.md` Workload C.
+
 ## 7. Venue & roadmap
 
 - **Primary: SIGMETRICS / POMACS** — rewards exactly this blend of provable performance modeling + a real, measured artifact.
 - Alternatives: NSDI/OSDI/EuroSys (systems-lead), PODC/SODA (theory-lead on the trilemma), NeurIPS/ICML (learning-augmented-with-safety).
 - **Second paper**: the *cost-uncertainty* axis — rate limiting under post-hoc-revealed costs (LLM token / TPM budgets, where output length is unknown at admission): reserve-then-reconcile with bounded overshoot. Same "escrow under uncertainty" framework, a different and very timely instantiation.
 
-Roadmap status: (1) ✅ keystone safety (machine-checked). (2) ✅ Pillar 2 lease sizing (implemented + regret measured). (3) ✅ Pillar 1 shipped in `src`. (4) ✅ Pillar 3 predictions (implemented + measured). (5) ✅ trilemma lower bound (proven + checked). (6) ✅ evaluation (measured). (7) ✅ this write-up. **Open:** Pillar 4 fairness (design only); contention-adaptive `h`; a full distributed deployment + the cost-uncertainty second paper.
+Roadmap status: (1) ✅ keystone safety (machine-checked). (2) ✅ Pillar 2 lease sizing (implemented + regret measured). (3) ✅ Pillar 1 shipped in `src`. (4) ✅ Pillar 3 predictions (implemented + measured). (5) ✅ trilemma lower bound (proven + checked). (6) ✅ evaluation (measured). (7) ✅ Pillar 4 fairness (proven + measured). (8) ✅ this write-up. **Open:** shipping WFE into `src/twotier` (a weighted lease grant); contention-adaptive `h`; a full distributed deployment + the cost-uncertainty second paper.
 
 ## 8. Related work & reviewer threats (pre-empted)
 
@@ -141,7 +147,7 @@ Roadmap status: (1) ✅ keystone safety (machine-checked). (2) ✅ Pillar 2 leas
 
 ### Artifacts & reproducibility
 
-All gated (lint + strict types + tests + build) and committed on branch `research/gale`. Run the lot with `npx vitest run test/gale test/twotier`.
+All gated (lint + strict types + tests + build) and merged to `main`. Run the lot with `npx vitest run test/gale test/twotier`.
 
 | Claim | Artifact |
 |---|---|
@@ -149,6 +155,7 @@ All gated (lint + strict types + tests + build) and committed on branch `researc
 | Pillar 1 — shipped mechanism | `src/twotier/index.ts` (`lease.windowCoupled`); `test/twotier/window-coupled.test.ts` |
 | Pillar 2 — online lease sizing, sublinear regret, EOQ tracking | `test/gale/lease-sizer.ts`, `test/gale/lease-sizer.test.ts`; design `research/gale/PILLAR2-lease-sizing.md` |
 | Pillar 3 — predictions: consistency / robustness / unconditional safety | `test/gale/predictive-sizer.ts`, `test/gale/predictive-sizer.test.ts`; design `research/gale/PILLAR3-predictions.md` |
+| Pillar 4 — weighted fair escrow: safety / sharing-incentive / work-conservation / bounded unfairness | `test/gale/fair-escrow.ts`, `test/gale/fair-escrow.test.ts`; design `research/gale/PILLAR4-fairness.md` |
 | Trilemma lower bound `Δ + N·U ≥ (N−1)L`, tight | `test/gale/trilemma.test.ts`; proof `research/gale/TRILEMMA.md` |
 | Evaluation — Pareto position vs baselines | `test/gale/evaluate.ts`, `test/gale/evaluation.test.ts`; results `research/gale/EVALUATION.md` |
 | Demand traces / predictions (seeded, deterministic) | `test/gale/demand.ts` |

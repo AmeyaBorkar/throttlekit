@@ -5,6 +5,49 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — GALE lands on main; Pillar 4 (weighted fairness) proven
+
+Merged the **GALE** research program (`research/gale/`, `test/gale/`, `spec/`) to `main` — the
+serious research bet built on the `leased` two-tier path. The thesis: distributed rate limiting is
+*escrow under uncertainty*, and the field has no limiter with a hard, tight overshoot bound that
+doesn't blow up with fleet size. The crux insight that reframes it: **stranded capacity *is*
+overshoot debt** — both are held-but-unused credits surviving the L2 window boundary, so killing them
+tightens overshoot and raises utilisation at once. Four provable layers + a capstone lower bound,
+each either machine-checked or measured:
+
+- **P1 (safety, shipped):** window-coupled leasing drops overshoot from `L + N·(B−1)` to exactly `L`,
+  *independent of N* — TLA⁺ + an exhaustive BFS twin (self-validated against the published TLC state
+  counts 31/441), and it ships as `lease.windowCoupled`.
+- **P2 (efficiency):** lease sizing as online EOQ (AdaGrad), `O(√T)` regret.
+- **P3 (predictions):** a Hedge meta-learner — consistency when predictions are good, robustness when
+  adversarial, safety unconditional.
+- **Capstone:** the trilemma `Δ + N·U ≥ (N−1)L`, tight — proved and machine-checked; coordination is
+  the only escape, and it's exactly what GALE spends.
+
+**This session's new work — Pillar 4 (Weighted Fair Escrow).** P1–3 fix the *total* credits; they say
+nothing about the *split* when the budget is contended. I'd left it as "design only." The gap, made
+precise: single-pool leasing splits a contended budget **first-come-first-served — equivalently
+*unweighted* max-min**, so a low-priority flood starves a high-priority tenant below its configured
+share. The two obvious fixes each fail an axis — static shares honour priority but strand an idle
+tenant's slice (not work-conserving); FCFS leasing is work-conserving but weight-blind. WFE makes the
+split the **weighted max-min fair** allocation (water-filling) with idle-share reclamation, using only
+the shared store — the core-stateless spirit of CSFQ, no central arbiter à la Pisces. Four theorems
+(safety inherited, sharing-incentive, work-conservation, DRR-bounded unfairness with the lease size as
+the quantum) **machine-checked on 20 000 random instances**; the measured Workload C says it plainly:
+WFE is the only split that is both work-conserving (util 1.000, matching weight-blind) and weight-fair
+(0 share violations, matching static), at the *same* coordination — fairness is free.
+
+**Two honest calls.** (1) WFE is **not strategy-proof**, and I state it rather than bury it: under the
+share guarantee, FairRide's impossibility (NSDI'16) says you can't also be strategy-proof *and*
+work-conserving, so we take the sharing-incentive + work-conserving corner; window-coupling at least
+makes a demand-inflating tenant strand the credits it can't fill. (2) I kept WFE a **research module**,
+not a shipped `src/twotier` API — Pillar 1's `windowCoupled` is a tiny safety flag that earned its
+place in the store, but a weighted lease grant is a real cross-node mechanism that should prove out in
+research before it touches the production path. Promoting it is noted, not rushed.
+
+**Status:** every gate green; the four-pillar program is proven/measured and on `main`. Docs synced
+(PROPOSAL now four pillars, SCOREBOARD has a research-track table, EVALUATION has Workload C).
+
 ## 2026-05-26 — Benchmark sweep, and a deliberately-declined optimization
 
 Re-measured the full comparative suite (memory / Redis / Postgres) and audited the docs for drift.
