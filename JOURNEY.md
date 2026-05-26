@@ -5,6 +5,27 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — TALE × GALE unified: the distributed token meter *is* GALE leasing
+
+Closed the loop between the two papers. The distributed instantiation of the cost-uncertainty thread
+— one TPM budget `L` shared across `C` gateways, each leasing `B`-token batches from a shared L2 — is
+not merely *like* GALE leasing, it **is** GALE leased two-tier with the token as the unit (a gateway =
+a leasing node, a lease = a batch of token budget, the streaming meter debits leased tokens as the
+model emits them). `simulateDistributedBudget` (`test/cost/distributed-budget.ts`) runs `C` gateways
+round-robin over the shared budget in two modes — window-coupled (leased tokens expire at the TPM
+boundary) vs carryover (they persist):
+
+- **windowCoupled global overshoot = 0 for every `C ∈ {1..32}`** — bounded *independent of fleet size*,
+  at full utilisation. Carryover leaks up to `C·(B−1)`, growing with `C` (mean 32 → 196 as `C` 2 → 32
+  in the un-starved regime) — the fleet penalty window-coupling erases.
+- **The reduction is byte-identical:** windowCoupled `produced` equals GALE's request-granular
+  `simulateWindowCoupled` `admitted` token-for-token (`C ∈ {2,8,32}`). Same mechanism, different unit.
+
+So multi-gateway TPM sharing inherits GALE Pillar 1's fleet-size-independent overshoot bound for free,
+and "escrow under uncertainty" is now a *proven reduction*, not a slogan: GALE escrows across
+*placement*, TALE across *cost*, and the distributed cost meter literally runs GALE's leasing. Suite
+414 → 419.
+
 ## 2026-05-26 — TALE Layers 2–3: learned reservation + predictions-with-safety (cost axis)
 
 Built out the **cost-uncertainty** research thread (`research/cost-uncertainty/`, `test/cost/`) — the

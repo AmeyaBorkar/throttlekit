@@ -126,7 +126,9 @@ reconciliation overhead. We conjecture a lower bound of the GALE form tying the 
 escrow as the Pareto point — and a single **"escrow under uncertainty"** framework subsuming both
 papers: GALE escrows across the **distribution** axis (which node will need budget), TALE across the
 **cost/time** axis (how much a request will spend). Same mechanism (reserve, meter actuals, reconcile
-at the boundary), two uncertainties.
+at the boundary), two uncertainties. This unification is no longer just framing: the distributed
+multi-gateway token meter reduces *byte-identically* to GALE window-coupled leasing (§ 4), so the
+fleet-size-independent overshoot bound carries over to TPM sharing for free.
 
 ## 4. Evaluation plan (to match GALE's measured artifact)
 
@@ -136,8 +138,12 @@ empirically-reported shape), `C` concurrent streams against budget `L`. Schemes:
 overshoot Δ, utilization, 429-rate on admissible traffic, reconcile round trips, and (Layer 3)
 cost-vs-clairvoyant under good/adversarial predictors. Headline: streaming is the only scheme with
 both bounded Δ (independent of `max_tokens`) and utilization ≈ 1; the learned/predicted layers cut the
-429-rate toward clairvoyant. Distributed instantiation: the meter *is* a GALE leased budget whose unit
-is tokens, so multi-gateway TPM sharing inherits the window-coupled fleet-size-independent bound too.
+429-rate toward clairvoyant. **Distributed instantiation — done + machine-checked**
+(`test/cost/distributed-budget.ts`): the meter *is* a GALE leased budget whose unit is tokens, so
+multi-gateway TPM sharing inherits the window-coupled fleet-size-independent bound. Measured across
+`C ∈ {1..32}` gateways sharing one TPM budget — window-coupled global overshoot stays `0` independent
+of `C` (vs carryover's `C·(B−1)`, which grows with the fleet), at full utilisation — and the
+window-coupled token budget is *byte-identical* to GALE's request-granular `simulateWindowCoupled`.
 
 ## 5. Venue & positioning
 
@@ -159,6 +165,6 @@ is tokens, so multi-gateway TPM sharing inherits the window-coupled fleet-size-i
 TPM budgets are the real operational constraint for every LLM gateway in production (2024–2026), and
 they are enforced today by exactly the two corner heuristics above. A provable, learned, prediction-
 augmented alternative — reusing a framework we've already machine-checked — is both timely and a clean
-second paper. **Status:** all three layers are now implemented, proven, and gated under `test/cost/`
-(the per-layer measured results above); the write-up and a distributed multi-gateway evaluation (the
-meter *as* a GALE leased budget with tokens as the unit) are the remaining work.
+second paper. **Status:** all three layers *plus the distributed instantiation* are implemented,
+proven, and gated under `test/cost/` (the measured results above; the multi-gateway meter reduces
+byte-identically to GALE's leased mechanism). The write-up is the remaining work.
