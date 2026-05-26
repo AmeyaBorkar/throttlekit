@@ -132,12 +132,26 @@ lease sizing and weighted fairness. Proven/measured and gated under `test/gale/`
 | Pillar 4 — weighted fair escrow (work-conserving multi-tenant fairness) | 4 theorems machine-checked on 20k instances + measured (Workload C) | ✅ |
 | Capstone — rate-limiting trilemma `Δ + N·U ≥ (N−1)L`, tight | proven + machine-checked (N ∈ {2,3,4}) | ✅ |
 
+## Research track — TALE (escrow under cost uncertainty)
+
+The cost-axis sibling of GALE (target venue SIGMETRICS/NSDI): token-budget rate limiting for LLMs,
+where a request's cost — its *output* tokens — is revealed only as it streams. Reserve-then-reconcile
+escrow in three layers, the streaming meter being **window-coupling on the cost axis**. Proven/measured
+and gated under `test/cost/`; write-up in `research/cost-uncertainty/`. Research modules, not packaged.
+Reproduce with `npx vitest run test/cost`.
+
+| Result | How established | Status |
+|---|---|---|
+| Layer 1 — streaming meter: overshoot `≤ g−1` (0 at g=1), **independent of `max_tokens`** | implemented + measured (vs reserve-max util collapse 0.77→0; admit-then-count Δ 24→7192) | ✅ |
+| Layer 2 — online learned reservation (newsvendor critical fractile), `O(√T)` regret | implemented + measured (avg pinball regret 8.49→2.77; admission util 1.0 + ~4 aborts vs greedy 16 / reserve-max 0.40 util) | ✅ |
+| Layer 3 — predictions-with-safety (rank predictor + Hedge), safety unconditional | implemented + measured (perfect→clairvoyant; adversarial→robust 1.00×; overshoot 0 under *any* predictor) | ✅ |
+
 ## Quality gates
 
 | Gate | Status |
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (389 tests; Postgres/Redis error paths gated) |
+| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (414 tests total; GALE/TALE research suites included; Postgres/Redis error paths gated) |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) | ✅ |
 | Build emits valid ESM + CJS + types (11 subpaths) | ✅ |

@@ -5,6 +5,49 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — TALE Layers 2–3: learned reservation + predictions-with-safety (cost axis)
+
+Built out the **cost-uncertainty** research thread (`research/cost-uncertainty/`, `test/cost/`) — the
+sibling to GALE where the uncertainty is *cost* (an LLM request's output tokens, revealed only as it
+streams) rather than *placement*. Layer 1 — the streaming meter, which is window-coupling on the cost
+axis, with overshoot independent of `max_tokens` — landed earlier this session; this adds Layers 2–3,
+retargeting GALE's Pillar 2/3 machinery onto the new axis.
+
+The reframing that makes L2 distinct from L1: the meter bounds *overshoot* for any reservation, but
+admission still has to commit a per-request **reservation** before the cost is known — and that choice
+trades two evils. Over-reserve (the Azure `max_tokens` corner) and you starve concurrency and 429
+admissible traffic; under-reserve (greedy streaming) and the meter has to abort half-finished
+generations at the budget boundary. The per-request regret of a reservation against the realised cost
+is exactly the **newsvendor / pinball loss**, minimised at the critical-fractile quantile τ = p/(h+p)
+— so the right policy is to *learn that quantile online*.
+
+- **L2 (learned reservation):** projected OGD on the pinball loss. The deliberate departure from
+  Pillar 2: that loss has a **bounded, constant-magnitude subgradient**, which is precisely the case
+  where vanilla OGD with `η_t = D/(G√t)` is regret-optimal — whereas Pillar 2's *unbounded, smooth*
+  EOQ gradient is what earns AdaGrad. (I started with AdaGrad for house-style consistency; a step
+  sweep showed it thrashes on the cold start at full-diameter scale, and the fix it pointed to *was*
+  the Zinkevich step. Right tool for the loss, not cargo-culted.) Measured: avg pinball regret
+  8.49 → 2.77 as T grows (the no-regret signature), converges onto the oracle τ-quantile, beats any
+  fixed reservation by 31% under a distribution shift. In the admission loop (L=1000, C=16) the learned
+  reservation is the only *implementable* policy with **full utilisation AND ~4 aborts** (matching the
+  clairvoyant oracle), where greedy streaming aborts 16 and reserve-max collapses to 0.40 utilisation.
+
+- **L3 (predictions-with-safety):** the realistic LLM predictor predicts output-length *rank*, not
+  magnitude (vLLM Learning-to-Rank, NeurIPS'24), so I modelled it as rank-recovery-with-noise mapped
+  back through a calibrated length distribution. Feed it as one Hedge expert against the L2 quantile;
+  play the weighted-average reservation. Consistency (perfect advice → clairvoyant cost, weight →
+  follow), robustness (adversarial advice → the robust quantile at 1.00×, vs 2.14× if obeyed), and the
+  headline: **safety is unconditional** — under good *or* adversarial predictions, and even when
+  blindly following an anti-correlated predictor, the streaming meter holds overshoot at 0 (g=1) /
+  ≤ g−1 (chunked). No prediction, however wrong, can breach the budget — the first
+  predictions-with-safety result for token budgets.
+
+The unification is the point: GALE escrows across the **placement** axis (which node will spend the
+budget), TALE across the **cost** axis (how much a request will spend) — same mechanism (reserve,
+meter actuals, reconcile at the boundary), and L2/L3 are literally GALE's Pillar 2/3 retargeted. All
+seeded and gated (`npx vitest run test/cost`); calibration records in
+`research/cost-uncertainty/explore-*.ts`. Suite 395 → 414. Still a research artifact, not packaged.
+
 ## 2026-05-26 — 0.4.1 release (rolled forward through a GitHub Actions outage)
 
 Cut **`throttlekit@0.4.1`** as the first published version since 0.3.0. It carries the one shipped
