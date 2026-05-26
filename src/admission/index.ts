@@ -11,8 +11,10 @@ import { requireAtLeast, requirePositive } from "../core/validate";
  *   requests *locally* (before they leave the client) based on the backend's recent accept rate.
  * - {@link fairShare}: an online equal-share approximation of max-min fairness, so one greedy
  *   tenant cannot consume a shared global budget and starve the others.
+ * - {@link weightedMaxMin} + {@link weightedFairShare}: weighted fairness — the exact, work-conserving
+ *   weighted max-min split of a contended budget (batch), and its online streaming limiter.
  *
- * Both are pure JavaScript, dependency-free, and read time only through an injected {@link Clock},
+ * All are pure JavaScript, dependency-free, and read time only through an injected {@link Clock},
  * so every decision is reproducible to the millisecond under {@link ManualClock}.
  */
 
@@ -345,6 +347,253 @@ export function fairShare(options: FairShareOptions): FairShareLimiter {
       if (tenantUsed !== undefined) {
         total -= tenantUsed;
         used.delete(tenant);
+      }
+    },
+  };
+}
+
+// ── Primitive 3: weighted max-min fairness (Weighted Fair Escrow) ──────────────────────────────
+
+const sumOf = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0);
+
+function validateAllocation(
+  demands: readonly number[],
+  weights: readonly number[],
+  limit: number,
+): void {
+  if (demands.length !== weights.length) {
+    throw new RangeError(
+      `weightedMaxMin: demands/weights length mismatch (${demands.length} vs ${weights.length})`,
+    );
+  }
+  requireAtLeast("weightedMaxMin.limit", limit, 0);
+  for (const w of weights) requirePositive("weightedMaxMin.weight", w);
+  for (const d of demands) requireAtLeast("weightedMaxMin.demand", d, 0);
+}
+
+/**
+ * Each tenant's **guaranteed weighted share** `floor(w_i / W * limit)` (`W` = total weight) — the
+ * static slice a weighted max-min split never drops a backlogged tenant below. Sums to `<= limit`.
+ */
+export function guaranteedShare(weights: readonly number[], limit: number): number[] {
+  requireAtLeast("guaranteedShare.limit", limit, 0);
+  for (const w of weights) requirePositive("guaranteedShare.weight", w);
+  const W = sumOf(weights);
+  return weights.map((w) => Math.floor((w / W) * limit));
+}
+
+/** Continuous weighted max-min (water-filling): raise λ, give tenant i `min(d_i, w_i·λ)`. O(n log n). */
+function waterfillContinuous(
+  demands: readonly number[],
+  weights: readonly number[],
+  limit: number,
+): number[] {
+  const n = demands.length;
+  const alloc = new Array<number>(n).fill(0);
+  // Ascending demand-per-weight: the cheapest-to-satisfy tenants saturate first and free their weight.
+  const order = [...Array(n).keys()].sort(
+    (a, b) =>
+      (demands[a] as number) / (weights[a] as number) -
+      (demands[b] as number) / (weights[b] as number),
+  );
+  let rem = limit;
+  let activeWeight = sumOf(weights);
+  for (let k = 0; k < n; k++) {
+    const i = order[k] as number;
+    const w = weights[i] as number;
+    const d = demands[i] as number;
+    const level = activeWeight > 0 ? rem / activeWeight : 0;
+    if (w * level >= d) {
+      alloc[i] = d; // saturates at/below this level
+      rem -= d;
+      activeWeight -= w;
+    } else {
+      for (let j = k; j < n; j++) {
+        const m = order[j] as number;
+        alloc[m] = (weights[m] as number) * level; // level-capped
+      }
+      break;
+    }
+  }
+  return alloc;
+}
+
+/**
+ * **Weighted max-min fair allocation** of an integer `limit` across tenants with per-tenant `demands`
+ * and positive `weights` — the heart of *Weighted Fair Escrow*. Returns the integer credits each
+ * tenant receives:
+ *
+ * - **work-conserving** — sums to exactly `min(Σ demand, floor(limit))`; a tenant demanding below its
+ *   share never strands the remainder, it flows to the backlogged tenants;
+ * - **weight-honoring** — every backlogged tenant gets at least its guaranteed share
+ *   `floor(w_i/W·limit)`, and surplus is split so all backlogged tenants reach a common *weighted*
+ *   service level `a_i / w_i` (perfectly fair up to the ≤ 1-credit integer rounding gap).
+ *
+ * Equal weights reduce it to ordinary (unweighted) max-min. Computed as continuous water-filling
+ * (`O(n log n)`) plus a bounded integer drip of the `< n` rounding remainder, so it is fast even for a
+ * large `limit`. Pure. This is the batch primitive; for streaming admission see {@link weightedFairShare}.
+ */
+export function weightedMaxMin(
+  demands: readonly number[],
+  weights: readonly number[],
+  limit: number,
+): number[] {
+  validateAllocation(demands, weights, limit);
+  const cont = waterfillContinuous(demands, weights, limit);
+  const alloc = cont.map((a) => Math.floor(a));
+  // Distribute the floored-off remainder (< n credits) to the most-deserving backlogged tenants —
+  // smallest normalized service a_i/w_i first — exactly as integer weighted max-min would.
+  let leftover = Math.floor(limit) - sumOf(alloc);
+  while (leftover > 0) {
+    let best = -1;
+    let bestRatio = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < alloc.length; i++) {
+      if ((alloc[i] as number) >= (demands[i] as number)) continue; // fully served
+      const ratio = (alloc[i] as number) / (weights[i] as number);
+      if (ratio < bestRatio) {
+        bestRatio = ratio;
+        best = i;
+      }
+    }
+    if (best === -1) break; // all demand met before the budget ran out
+    alloc[best] = (alloc[best] as number) + 1;
+    leftover--;
+  }
+  return alloc;
+}
+
+/** Options for {@link weightedFairShare}. */
+export interface WeightedFairShareOptions {
+  /** Global admissions budget shared across all tenants per window. */
+  limit: number;
+  /** Window width in ms. Windows are aligned to epoch: `floor(now/windowMs)*windowMs`. */
+  windowMs: number;
+  /** Per-tenant weight (a tenant's share is proportional to it). Default `() => 1` (equal — i.e. fairShare). */
+  weightOf?: (tenant: string) => number;
+  /** Injected clock. Defaults to {@link systemClock}. */
+  clock?: Clock;
+}
+
+/**
+ * A global, fixed-window budget shared across tenants **in proportion to weight**. The
+ * {@link Decision.limit} reported to each tenant is *that tenant's* current weighted fair cap.
+ */
+export interface WeightedFairShareLimiter {
+  /** Synchronous check for `tenant` with `cost` (default 1) and optional per-check `weight` override. */
+  checkSync(tenant: string, cost?: number, weight?: number): Decision;
+  /** Promise-returning form of {@link WeightedFairShareLimiter.checkSync}; resolves synchronously. */
+  check(tenant: string, cost?: number, weight?: number): Promise<Decision>;
+  /** Reset one tenant's usage (it leaves the active set), or — with no argument — the whole window. */
+  reset(tenant?: string): void;
+}
+
+/**
+ * **Weighted** equal-share fairness across tenants — the weighted generalization of {@link fairShare}
+ * (and the streaming face of {@link weightedMaxMin}). One global budget of `limit` admissions per
+ * epoch-aligned window is split so each active tenant's ceiling is proportional to its weight:
+ *
+ * ```text
+ *   fairCap_i = max(1, floor(weight_i / W * limit))      // W = total weight of active tenants
+ * ```
+ *
+ * and a request is admitted iff `total + cost <= limit` **and** `tenantUsed + cost <= fairCap_i`. A
+ * weight-4 tenant thus gets ~4× the share of a weight-1 tenant, and no tenant can be starved below its
+ * weighted floor by a flood from the others.
+ *
+ * **Honest limitations (identical in spirit to {@link fairShare} — read them).** This is an *online
+ * weighted equal-share approximation*, not exact work-conserving weighted max-min:
+ *
+ * 1. **Weighted floor + hard global cap (the guarantee).** Every active tenant may admit at least its
+ *    weighted floor `floor(w_i/W·limit)` (`W` = active weight at the time), and the window total never
+ *    exceeds `limit`.
+ * 2. **Caps shrink as tenants arrive.** `W` only grows within a window, so an early tenant that took
+ *    its full share keeps it even after later arrivals lower everyone's cap (self-corrects next window).
+ * 3. **Surplus is first-come, not redistributed.** Capacity left idle by light tenants is handed out
+ *    first-come up to `limit`, not perfectly reallocated by weight the way true max-min would. When you
+ *    have all tenants' demands at once and want the exact, fully work-conserving weighted split, call
+ *    {@link weightedMaxMin} instead (e.g. to divide a node's leased batch among its local tenants).
+ */
+export function weightedFairShare(options: WeightedFairShareOptions): WeightedFairShareLimiter {
+  requirePositive("weightedFairShare.limit", options.limit);
+  requirePositive("weightedFairShare.windowMs", options.windowMs);
+
+  const limit = Math.floor(options.limit);
+  const windowMs = options.windowMs;
+  const clock = options.clock ?? systemClock;
+  const weightOf = options.weightOf ?? ((): number => 1);
+
+  let windowStart = Number.NEGATIVE_INFINITY;
+  let total = 0;
+  const used = new Map<string, number>();
+  const weights = new Map<string, number>();
+
+  function rollWindow(now: number): void {
+    if (now >= windowStart + windowMs) {
+      windowStart = Math.floor(now / windowMs) * windowMs;
+      total = 0;
+      used.clear();
+      weights.clear();
+    }
+  }
+
+  function checkSync(tenant: string, cost = 1, weight?: number): Decision {
+    requirePositive("weightedFairShare.cost", cost);
+    const w = weight ?? weightOf(tenant);
+    requirePositive("weightedFairShare.weight", w);
+
+    const now = clock.now();
+    rollWindow(now);
+    const resetAt = Math.ceil(windowStart + windowMs);
+
+    if (!used.has(tenant)) used.set(tenant, 0);
+    weights.set(tenant, w); // a tenant's latest weight; also marks it active
+    const tenantUsed = used.get(tenant) ?? 0;
+
+    // Weighted equal split across everyone active so far, floored — but at least 1 so a tenant is
+    // never handed a zero cap. W is the live active-weight sum (grows as tenants appear this window).
+    let activeWeight = 0;
+    for (const wv of weights.values()) activeWeight += wv;
+    const fairCap = Math.max(1, Math.floor((w / activeWeight) * limit));
+
+    const allowed = total + cost <= limit && tenantUsed + cost <= fairCap;
+    if (allowed) {
+      used.set(tenant, tenantUsed + cost);
+      total += cost;
+      return {
+        allowed: true,
+        limit: fairCap,
+        remaining: Math.max(0, Math.floor(fairCap - (tenantUsed + cost))),
+        resetAt,
+        retryAfterMs: 0,
+      };
+    }
+    return {
+      allowed: false,
+      limit: fairCap,
+      remaining: Math.max(0, Math.floor(fairCap - tenantUsed)),
+      resetAt,
+      retryAfterMs: Math.ceil(resetAt - now),
+    };
+  }
+
+  return {
+    checkSync,
+    check(tenant: string, cost = 1, weight?: number): Promise<Decision> {
+      return Promise.resolve(checkSync(tenant, cost, weight));
+    },
+    reset(tenant?: string): void {
+      if (tenant === undefined) {
+        windowStart = Number.NEGATIVE_INFINITY;
+        total = 0;
+        used.clear();
+        weights.clear();
+        return;
+      }
+      const tenantUsed = used.get(tenant);
+      if (tenantUsed !== undefined) {
+        total -= tenantUsed;
+        used.delete(tenant);
+        weights.delete(tenant);
       }
     },
   };

@@ -77,10 +77,18 @@ export type {
   AnalyticsSnapshot,
   HeavyHitter,
 } from "./analytics";
-export { adaptiveThrottle, fairShare } from "./admission";
+export {
+  adaptiveThrottle,
+  fairShare,
+  guaranteedShare,
+  weightedFairShare,
+  weightedMaxMin,
+} from "./admission";
 export type {
   AdaptiveThrottle,
   AdaptiveThrottleOptions,
   FairShareLimiter,
   FairShareOptions,
+  WeightedFairShareLimiter,
+  WeightedFairShareOptions,
 } from "./admission";
