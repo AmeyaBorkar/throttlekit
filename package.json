@@ -1,7 +1,7 @@
 {
   "name": "throttlekit",
-  "version": "0.5.0",
-  "description": "Pluggable, framework-agnostic rate limiting for Node and the web: GCRA by default, isomorphic JS/Lua dual-path, two-tier token leasing, multi-dimensional single-round-trip checks, and adaptive concurrency.",
+  "version": "0.5.1",
+  "description": "Rate limiting for Node and the web: GCRA-default, one transform across in-memory/Redis/Postgres (proven bit-identical), and two-tier token leasing with a formally-verified overshoot bound independent of fleet size. Sync API, multi-dimensional checks, fixed-memory DDoS sketches.",
   "type": "module",
   "license": "MIT",
   "author": "Ameya Borkar",

@@ -5,6 +5,23 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — 0.5.1: lean README + a GitHub wiki
+
+Refit the public face. The README had grown to ~600 lines of reference; rewrote it to ~220 that lead
+with what's *provably* different — the formally-verified, fleet-size-independent overshoot bound; one
+transform across in-memory/Redis/Postgres proven bit-identical; the sync API; and the GALE/TALE
+tracks — keeping the honest "here's where it loses" voice, which for a correctness library *is* the
+credibility. The per-feature walkthroughs moved into a new **GitHub wiki** (10 guides + Home/sidebar/
+footer), so nothing was lost, only relocated.
+
+One snag worth recording: GitHub's wiki has no content API and the `.wiki.git` repo is created lazily
+on the *first* page saved through the web UI — so a push to an "enabled but never opened" wiki returns
+*Repository not found*. Initialising it took one manual UI click; the 13 pages then force-pushed from
+a local clone over the throwaway init page.
+
+Cut **`throttlekit@0.5.1`** to refresh the npm package page with the new README (and a matching
+one-line description leading with the proven bound). Docs-only — no code or API change.
+
 ## 2026-05-26 — 0.5.0: Weighted Fair Escrow ships
 
 Promoted GALE Pillar 4 from research into the published library and cut **`throttlekit@0.5.0`**. The

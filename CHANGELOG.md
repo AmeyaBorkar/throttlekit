@@ -6,6 +6,10 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.5.1] — 2026-05-26
+
 ### Documentation
 
 - README rewritten leaner (~600 → ~220 lines), leading with the differentiators — the
@@ -14,6 +18,8 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   walkthroughs moved to a new GitHub **Wiki** (Getting Started, Strategies, Frameworks & the Edge,
   Distributed & Provable, Advanced Limiting, Overload/Fairness/DDoS, Operations, Performance,
   Migrating, Research). Corrected the stale test count in the README (389 → 430).
+- Package description refreshed to match the README — leads with the proven, fleet-size-independent
+  overshoot bound and the single-transform in-memory/Redis/Postgres story.
 
 ## [0.5.0] — 2026-05-26
 
@@ -184,7 +190,8 @@ bit-identical by a dual-path conformance suite.
 - Tested with Vitest (unit, boundary, property via fast-check, dual-path conformance, and
   exactly-K concurrency/atomicity on memory and Redis); CI on Node 20/22/24 with a Redis service.
 
-[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.3.0...v0.4.1
 [0.3.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.2.0...v0.3.0
