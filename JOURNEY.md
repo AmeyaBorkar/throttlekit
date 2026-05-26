@@ -59,9 +59,18 @@ README/CHANGELOG/LICENSE; tarball verified clean — 11 subpaths, no source/test
 **Why 0.4.1, not 0.4.0:** I tagged `v0.4.0` first, but a **GitHub Actions major outage** (from 10:57
 UTC) meant tag pushes created *no* workflow runs — the pushes landed, Actions just wasn't
 orchestrating — so 0.4.0 never published. Rather than leave a dangling, never-published 0.4.0 tag, I
-deleted it and rolled forward to **0.4.1**, which bundles windowCoupled + the README and publishes
-cleanly once Actions recovers (a tag-watcher re-emits `v0.4.1` until the run fires). npm goes
+deleted it and rolled forward to **0.4.1**, which bundles windowCoupled + the README. npm goes
 0.3.0 → 0.4.1.
+
+**Resolution — published.** Once Actions started processing the `v0.4.1` tag, the run still failed —
+but not from the outage and not from our config: it died at `actions/checkout` with a 403, *"Your
+account is suspended"*. The account-status flag, not a workflow fault, was the binding blocker
+(`NPM_TOKEN` was set and `permissions: contents/id-token: write` were correct all along; the job just
+never got past step 1, so the publish never ran — which is why npm sat at 0.3.0). The suspension was
+transient; once it cleared, **re-running the release went green end-to-end** — checkout → gate → build
+→ **`npm publish --provenance`** → GitHub Release. `throttlekit@0.4.1` is now on npm with provenance
+(`latest`; versions 0.1.0/0.2.0/0.3.0/0.4.1 — 0.4.0 correctly never shipped). Lesson: a failed release
+run's *first failing step* is the real story — "Actions outage" was at most half of it.
 
 Caught a latent bug in the release step on the way: the CHANGELOG note-extraction matched on a
 `\[`-escaped regex that gawk mis-parses as a character class (curated notes silently fell back to
