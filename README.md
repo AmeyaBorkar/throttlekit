@@ -390,7 +390,15 @@ const fair = fairShare({ limit: 1000, windowMs: 60_000 });
 const d = fair.checkSync(tenantId); // d.limit is this tenant's current fair cap
 ```
 
-The shipped primitive is an honest *online equal-share approximation*. The stronger guarantee — **weighted, work-conserving max-min** fairness (idle tenants' share flows to busy ones, by priority, with the same hard overshoot bound) — is designed, proven, and measured as *Weighted Fair Escrow* in the [research track](./research/gale/PILLAR4-fairness.md); not yet a shipped primitive.
+**`weightedFairShare` / `weightedMaxMin`** — weighted fairness (*Weighted Fair Escrow*). Give tenants priority weights and the budget splits in proportion; `weightedMaxMin` is the exact, **work-conserving** weighted max-min split (an idle tenant's share flows to the backlogged ones; every backlogged tenant gets at least its weighted floor):
+
+```ts
+import { weightedFairShare, weightedMaxMin } from "throttlekit";
+const fair = weightedFairShare({ limit: 1000, windowMs: 60_000, weightOf: (t) => t === "pro" ? 4 : 1 });
+weightedMaxMin([100, 100, 100, 100], [4, 1, 1, 1], 100); // → [57, 15, 14, 14]: weighted, sums to the budget
+```
+
+`weightedFairShare` is the online streaming limiter (weighted caps, honest online caveats); `weightedMaxMin` is the proven batch allocator (use it to divide, e.g., a `twoTier` node's leased batch among local tenants). Both are the shipped piece of *Weighted Fair Escrow*; its four fairness properties are machine-checked in the [research track](./research/gale/PILLAR4-fairness.md). Fully-distributed weighted *leasing* (weighted L2 grants across nodes) remains research.
 
 ---
 

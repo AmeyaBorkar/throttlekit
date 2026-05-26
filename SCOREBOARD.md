@@ -99,6 +99,7 @@ latency here is loopback-Docker-on-Windows.
 | Leaky bucket / queueing (`schedule`/`reserve`) | ✅ |
 | Adaptive concurrency (gradient2 + aimd) | ✅ |
 | Adaptive load-shedding (`adaptiveThrottle`, SRE) + cross-tenant fairness (`fairShare`) | ✅ |
+| Weighted fairness — `weightedMaxMin` (exact work-conserving weighted max-min) + `weightedFairShare` | ✅ |
 | MemoryStore (timing wheel + CLOCK approx-LRU) | ✅ |
 | RedisStore (atomic Lua, 1 RTT, OCC fallback) — ioredis · node-redis · Upstash REST | ✅ |
 | PostgresStore (atomic advisory-lock RMW, no Redis required) — pass a `pg.Pool` directly | ✅ |
@@ -129,7 +130,7 @@ lease sizing and weighted fairness. Proven/measured and gated under `test/gale/`
 | Pillar 1 — window-coupled overshoot `= L`, independent of N | TLA+ + exhaustive BFS twin; **shipped** as `lease.windowCoupled` | ✅ |
 | Pillar 2 — online EOQ lease sizing, `O(√T)` regret | implemented + measured (avg regret/round 18.6 → 0.40) | ✅ |
 | Pillar 3 — learning-augmented (consistency + robustness), safety unconditional | implemented + measured | ✅ |
-| Pillar 4 — weighted fair escrow (work-conserving multi-tenant fairness) | 4 theorems machine-checked on 20k instances + measured (Workload C) | ✅ |
+| Pillar 4 — weighted fair escrow (work-conserving multi-tenant fairness) | 4 theorems machine-checked on 20k instances + measured (Workload C); **shipped** as `weightedMaxMin` / `weightedFairShare` | ✅ |
 | Capstone — rate-limiting trilemma `Δ + N·U ≥ (N−1)L`, tight | proven + machine-checked (N ∈ {2,3,4}) | ✅ |
 
 ## Research track — TALE (escrow under cost uncertainty)
@@ -153,6 +154,6 @@ Reproduce with `npx vitest run test/cost`.
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (419 tests total; GALE/TALE research suites included; Postgres/Redis error paths gated) |
+| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (430 tests total; GALE/TALE research suites included; Postgres/Redis error paths gated) |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) | ✅ |
 | Build emits valid ESM + CJS + types (11 subpaths) | ✅ |

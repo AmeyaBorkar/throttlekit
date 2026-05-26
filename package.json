@@ -1,6 +1,6 @@
 {
   "name": "throttlekit",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Pluggable, framework-agnostic rate limiting for Node and the web: GCRA by default, isomorphic JS/Lua dual-path, two-tier token leasing, multi-dimensional single-round-trip checks, and adaptive concurrency.",
   "type": "module",
   "license": "MIT",

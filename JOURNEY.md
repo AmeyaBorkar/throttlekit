@@ -5,6 +5,31 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-26 — 0.5.0: Weighted Fair Escrow ships
+
+Promoted GALE Pillar 4 from research into the published library and cut **`throttlekit@0.5.0`**. The
+proven weighted max-min allocator is now a public primitive:
+
+- **`weightedMaxMin(demands, weights, limit)`** — exact integer weighted max-min: work-conserving
+  (sums to `min(Σ demand, limit)`; an idle tenant's share flows to the backlogged) and weight-honoring
+  (a common weighted service level `a_i/w_i`, ≥ each tenant's floor `⌊w_i/W·L⌋`). Computed as
+  continuous water-filling + a bounded integer drip of the `< n`-credit remainder — `O(n log n)`, not
+  the research kernel's `O(limit·N)` unit-drip, so it's fast for large budgets. The four Pillar-4
+  theorems are re-checked on 5k random instances against the *shipped* code.
+- **`weightedFairShare`** — the online streaming limiter: `fairShare` with weighted caps and the same
+  honest online caveats.
+
+**The scoping call.** The original note said "ship WFE into `src/twotier` (weighted lease grant)." But
+on reading the code, the leased path is per-key and the L2 grant is FCFS; making it weighted *across
+tenants* needs a global demand view — the core-stateless / no-central-arbiter problem the research
+itself flags as open. So the honest, right-sized ship is the in-process primitive (its natural home,
+next to `fairShare`), which *composes* with `twoTier` — split a node's leased batch among its local
+tenants via `weightedMaxMin`. Distributed weighted *leasing* stays a tracked follow-up, not a rushed
+release. (Asked, and the steer was "do what's best" — this is it.)
+
+Also bumped the CI/release workflows to `actions/checkout@v5` + `setup-node@v5` (Node 24 — Node 20
+actions are being retired from GitHub runners on June 2). Suite → 430 tests; npm 0.4.1 → 0.5.0.
+
 ## 2026-05-26 — TALE × GALE unified: the distributed token meter *is* GALE leasing
 
 Closed the loop between the two papers. The distributed instantiation of the cost-uncertainty thread

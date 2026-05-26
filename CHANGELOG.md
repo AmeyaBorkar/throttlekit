@@ -8,6 +8,29 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.5.0] — 2026-05-26
+
+### Added
+
+- **Weighted Fair Escrow** (`weightedMaxMin`, `weightedFairShare`, `guaranteedShare`) — weighted
+  fairness for a contended budget, the weighted siblings of `fairShare`. `weightedMaxMin(demands,
+  weights, limit)` is the exact integer **weighted max-min fair allocation**: work-conserving (sums to
+  `min(Σ demand, limit)` — an idle tenant's share flows to the backlogged ones) and weight-honoring
+  (every backlogged tenant reaches a common weighted service level and gets at least its guaranteed
+  floor `⌊w_i/W·limit⌋`); equal weights reduce to ordinary max-min. Computed as continuous
+  water-filling (`O(n log n)`) plus a bounded integer drip of the `< n`-credit remainder, so it stays
+  fast for large limits. Its four properties (safety / weighted-floor / work-conservation / bounded
+  unfairness) are machine-checked on random instances. `weightedFairShare({limit, windowMs, weightOf})`
+  is the online streaming limiter — `fairShare` with per-tenant caps proportional to weight, same
+  honest online caveats. This is the shipped piece of the GALE research track's Pillar 4
+  (`research/gale/PILLAR4-fairness.md`); use `weightedMaxMin` to split, e.g., a `twoTier` node's leased
+  batch among its local tenants.
+
+### Changed
+
+- CI/release workflows bumped to `actions/checkout@v5` + `actions/setup-node@v5` (Node 24 runtime;
+  Node 20 actions are being retired from GitHub-hosted runners).
+
 ## [0.4.1] — 2026-05-26
 
 _Supersedes 0.4.0, which was tagged but never published — a GitHub Actions outage blocked its release._
@@ -154,7 +177,9 @@ bit-identical by a dual-path conformance suite.
 - Tested with Vitest (unit, boundary, property via fast-check, dual-path conformance, and
   exactly-K concurrency/atomicity on memory and Redis); CI on Node 20/22/24 with a Redis service.
 
-[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.3.0...v0.4.1
 [0.3.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AmeyaBorkar/throttlekit/releases/tag/v0.1.0
