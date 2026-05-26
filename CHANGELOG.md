@@ -6,7 +6,14 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Window-coupled leasing** (`lease.windowCoupled`, opt-in on `twoTier` `leased` mode) — expires a
+  node's leased credits when the shared L2 window that granted them rolls over, instead of carrying
+  them into the next window. This makes worst-case global overshoot exactly **`Limit`**, *independent
+  of the number of nodes*, versus the carryover bound `Limit + N·(Batch−1)`. Default off (existing
+  behaviour preserved). Machine-checked (TLA⁺ spec + exhaustive checker). It is the shipped piece of
+  the GALE research track (`research/gale/`); see SCOREBOARD “Research track”.
 
 ## [0.3.0] — 2026-05-26
 
