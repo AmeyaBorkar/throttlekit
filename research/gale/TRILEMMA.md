@@ -120,16 +120,56 @@ even **one** dynamic fetch defeats the single-hot-node adversary that pins `U` a
 simply leases more), whereas in the static model one link merely merges two groups (one `L` off the
 floor). This is the honest reason GALE reaches `Δ = 0, U ≈ 0` with *bounded* coordination while the
 static interpolation needs `C = N−1`: it is the **demand-driven** *use* of coordination, not merely its
-quantity, that breaks the trilemma cheaply. A tight lower bound for the *dynamic* `≤ C`-message model —
-where one message may redirect a bounded batch `B` — is **open**; the static-partition bound is the
-clean, provable anchor between the `C = 0` theorem and the `Δ–C` counting bounds.
+quantity, that breaks the trilemma cheaply. The dynamic `≤ C`-message model — where one message
+redirects a bounded batch `B` — is **characterised next**; the static-partition bound is the clean
+anchor on the structural side, between the `C = 0` theorem and the `Δ–C` counting bounds.
+
+## Dynamic coordination: the `≤ C`-message leasing bound
+
+GALE's coordination is **dynamic**: a protocol pre-authorises a local budget `b_n` per node, holds the
+rest in a shared pool, and spends up to `C` lease round-trips, each granting a batch of up to `B` to
+whichever node is hot *now*. windowCoupling makes this **overshoot-free** (`Δ = 0`: admitted ≤
+`Σ b_n + pool = L`), so the question is the residual under-utilisation `U`.
+
+**Theorem (dynamic `≤ C` bound).** For every protocol in this model,
+```
+        Δ + N · U ≥ (N − 1) · (L − C·B) ,
+```
+and it is **tight at unit granularity `B = 1`**.
+
+**Proof (single-hot-node adversary).** The protocol commits `b_n` (`Σ b_n ≤ L`) and may lease ≤ `C`
+batches of ≤ `B` reactively from the pool `L − Σ b_n`. The adversary makes the **minimum**-pre-auth
+node the sole hot node (demand `L`), the rest idle. That node admits its `b_min` plus what it can lease
+— at most `C` leases of `B`, capped by the pool — so admitted `≤ b_min + min(C·B, L − Σb)`, giving
+`U ≥ L − b_min − min(C·B, L − Σb)`. Since `b_min ≤ (Σb)/N`, optimising the split over both regimes
+(pool `≥ C·B` or not) yields `U ≥ (N−1)(L − C·B)/N`, i.e. `Δ + N·U ≥ (N−1)(L − C·B)`. ∎
+
+**At `B = 1` (fine-grained, lossless leasing) it is tight and clean:** `U* = (N−1)(L − C)/N`, attained
+by uniform pre-auth `b = (L−C)/N` with unit leasing. **Each unit of dynamic coordination buys back
+`(N−1)` from the static floor**, sliding it from `(N−1)L` at `C = 0` to `0` at `C = L`. This is the
+precise sense in which demand-driven coordination defeats the trilemma: the floor trades not against the
+number of groups (static) but against the **reach `C·B`** — round-trips times batch.
+
+**Batched leasing (`B > 1`) pays a stranding penalty — and there the tight bound is open.** With
+batches larger than one, a *"barely-hot-then-starve"* adversary baits a node into leasing a full batch
+`B`, lets it consume one token, and moves on — stranding `B − 1` of that lease (windowCoupled expiry)
+and burning one of the `C` round-trips. Spread across nodes, this exhausts the budget while admitting
+little, so the true `U*` **exceeds** the single-hot bound above. The exhaustive solver
+(`test/gale/dynamic-coordination.ts`, gated by `dynamic-coordination.test.ts`; swept by
+`research/gale/explore-dynamic-coordination.ts`) computes the exact frontier: e.g. at `N=3, L=9, B=3`
+the bound predicts `U ≥ 4, 2, 0` for `C = 1, 2, 3`, while the true optimum is `4, 4, 4` — the single
+lease at `C = 1` is tight, but the gap opens once `C ≥ 2` admits the spread-strand attack (worst demand
+`[2,2,5]`). So the theorem is tight for `B = 1` (any `C`) and for `C = 1` at small `B`; a tight closed
+form for the batched regime (`B > 1, C ≥ 2`) is the remaining open problem — a genuine online-stranding
+lower bound. Uniform pre-auth is optimal throughout (machine-verified).
 
 ## Scope / honesty
 - The theorem is a **single-window, deterministic, hard-worst-case** bound — clean and tight.
   Amortised/randomised/multi-window relaxations (where overshoot is averaged or probabilistic) are a
   natural extension, noted not modelled. The `C = 0` abstraction (pre-authorised budgets) is the
-  standard one for "no communication"; partial coordination (`0 < C < N`) is characterised above in the
-  **static-partition** model (tight, machine-checked), and a tight bound for the *dynamic* `≤ C`-message
-  model is the open question.
+  standard one for "no communication"; partial coordination (`0 < C < N`) is characterised above in
+  **both** the static-partition model (tight) and the dynamic leasing model
+  (`Δ + N·U ≥ (N−1)(L − C·B)`, tight at `B = 1`), all machine-checked — the one piece still open is the
+  tight closed form for *batched* dynamic leasing (`B > 1, C ≥ 2`), where stranding opens a gap.
 - This bound concerns the *allocation* tension; it complements, and does not replace, the counting
   lower bounds that price `C`.

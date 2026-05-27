@@ -229,7 +229,7 @@ online-learning bounds, and not a new impossibility.
 
 LLM token-per-minute budgets make the cost axis both urgent and, in production, unsolved — the framing is
 timely and its baselines are live. Three things are open and honestly out of scope here: the
-a tight lower bound for *dynamic* partial coordination — the *static-partition* interpolation `Δ + (N−C)·U ≥ (N−C−1)·L` is settled (tight, machine-checked), but the dynamic `≤C`-message case, which demand-driven leasing exploits, is open (the real theory depth);
+the tight closed form for *batched* dynamic coordination — the static-partition interpolation `Δ + (N−C)·U ≥ (N−C−1)·L` and the dynamic leasing bound `Δ + N·U ≥ (N−1)(L − C·B)` (tight at `B=1`) are both settled and machine-checked, but batched leasing (`B>1`, where a barely-hot-then-starve adversary strands `B−1` per lease) leaves a gap;
 a distributed evaluation at scale on real LLM-serving traces (the systems depth); and a cost-axis
 trilemma to match the placement one (conjectured). Each is a full-paper contribution; this paper's claim
 is the unification and the shared bound.

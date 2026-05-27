@@ -5,6 +5,29 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-27 — the dynamic `≤C`-message trilemma bound (the last open theory piece)
+
+Closed the dynamic counterpart to the static-partition interpolation — coordination as *demand-driven
+leasing* capped at `C` round-trips of batch `B` (the GALE model), windowCoupled so `Δ=0`. Ran it
+Stage-1-first: an exhaustive solver (`test/gale/dynamic-coordination.ts`) computes `U* = min over
+pre-auth of max over demand` of under-utilisation, exactly, for small `(N,L,B,C)`. The data drove the
+proof.
+
+Result: **`Δ + N·U ≥ (N−1)(L − C·B)`** (single-hot-node adversary), **tight at unit batch `B=1`**, where
+`U* = (N−1)(L−C)/N` — each unit of dynamic coordination buys back `(N−1)` from the static floor, so the
+floor trades against the *reach* `C·B`, not the number of groups. That is the precise reason
+demand-driven leasing breaks the trilemma where static partitioning can't.
+
+The honest open piece, which the solver pinned down rather than hid: for **batched** leasing
+(`B>1, C≥2`) a *"barely-hot-then-starve"* adversary baits a node into leasing a full batch, uses one
+token, moves on — stranding `B−1` and burning a round-trip. So `U*` exceeds the single-hot bound
+(`N=3,L=9,B=3`: bound predicts `4,2,0` for `C=1,2,3`; truth is `4,4,4` — tight at the single lease, gap
+opens at `C≥2`). The tight closed form there is the remaining open problem (a genuine online-stranding
+lower bound); uniform pre-auth is optimal throughout (machine-verified). Resisted forcing a clean
+general formula — `B=1` is genuinely tight and proven, `B>1` is genuinely open, and saying exactly that
+is the result. Gated in `dynamic-coordination.test.ts`; TRILEMMA.md + PROPOSAL/DRAFT/OUTLINE/SCOREBOARD
+updated.
+
 ## 2026-05-27 — 0.6.0: `tokenBudget` ships + a provability rebrand
 
 Cut **`throttlekit@0.6.0`** — the first release carrying the TALE Layer-1 meter as a public primitive
