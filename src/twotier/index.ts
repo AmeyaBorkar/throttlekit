@@ -207,14 +207,15 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
       .finally(() => refilling.delete(fk));
   };
 
+  let idleTimer: ReturnType<typeof setInterval> | undefined;
   if (returnIdleAfterMs !== undefined && returnIdleAfterMs > 0) {
-    const timer = setInterval(() => {
+    idleTimer = setInterval(() => {
       const now = clock.now();
       for (const [k, t] of lastUse) {
         if (now - t > returnIdleAfterMs) forget(k);
       }
     }, returnIdleAfterMs);
-    (timer as { unref?(): void }).unref?.();
+    (idleTimer as { unref?(): void }).unref?.();
   }
 
   const check = async (key: string, cost = 1): Promise<Decision> => {
@@ -262,6 +263,15 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
       const fk = keyFor(key);
       forget(fk);
       await l2.reset(fk);
+    },
+
+    async close(): Promise<void> {
+      // Release the idle-return timer this limiter owns. The L2 store was provided by the caller, so
+      // it is theirs to close — we never close it here.
+      if (idleTimer !== undefined) {
+        clearInterval(idleTimer);
+        idleTimer = undefined;
+      }
     },
   };
 }

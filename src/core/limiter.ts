@@ -28,6 +28,8 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
   const clock = options.clock ?? systemClock;
   const store: Store =
     options.store ?? new MemoryStore(options.clock !== undefined ? { clock: options.clock } : {});
+  // We own (and so will close) the store only when we defaulted it; a caller's store is theirs.
+  const ownsStore = options.store === undefined;
 
   const keyFor = prefixer(options.prefix);
 
@@ -120,6 +122,11 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
 
     async reset(key: string): Promise<void> {
       await store.reset(keyFor(key));
+    },
+
+    async close(): Promise<void> {
+      // Only release a store we created ourselves; a caller-provided store is theirs to close.
+      if (ownsStore) await store.close?.();
     },
   };
 }

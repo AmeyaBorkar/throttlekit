@@ -172,4 +172,11 @@ export interface Limiter {
   checkManySync(keys: readonly string[], cost?: number): Decision[];
   /** Forget a key's state. */
   reset(key: string): Promise<void>;
+  /**
+   * Release resources this limiter *owns* — e.g. a default in-process store's sweep timer, or the
+   * two-tier `returnIdleAfterMs` timer. A no-op for limiters that own none. A store you passed in is
+   * yours to close (call its own `close()`); this never closes a caller-provided store. Optional, so
+   * existing code that never disposes a limiter keeps working.
+   */
+  close?(): Promise<void>;
 }
