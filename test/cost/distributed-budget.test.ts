@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LeaseSizer } from "../gale/lease-sizer";
 import { simulateWindowCoupled } from "../gale/window-coupled-sim";
 import { carryoverBound, simulateDistributedBudget } from "./distributed-budget";
@@ -14,6 +14,10 @@ import { heavyTailLengths } from "./token-budget";
  * exactly as GALE Pillar 1 does for nodes — and the windowCoupled token budget is byte-identical to
  * GALE's request-granular window-coupled leasing.
  */
+// These distributed sims take several seconds each; under coverage instrumentation they can exceed
+// vitest's 5s default, so raise the timeout for this file. A plain `vitest run` stays well under it.
+vi.setConfig({ testTimeout: 30_000 });
+
 const L = 10000;
 const B = 200;
 const W = 200;
