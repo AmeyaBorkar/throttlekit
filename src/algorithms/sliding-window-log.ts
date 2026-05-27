@@ -1,5 +1,12 @@
 import { LUA_NOW } from "../core/lua";
-import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
+import type {
+  Decision,
+  Forecast,
+  LuaProgram,
+  ReadState,
+  Strategy,
+  StrategyOutcome,
+} from "../core/types";
 import { requirePositive } from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns all timestamps with scores (no write). */
@@ -166,6 +173,21 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
         if (retryAfterMs < 1) retryAfterMs = 1;
       }
       return { allowed: false, limit, remaining, resetAt, retryAfterMs };
+    },
+    forecast(state: number[] | undefined, now: number, cost: number): Forecast {
+      const windowStart = now - windowMs;
+      const prev = state ?? [];
+      let firstLive = 0;
+      while (firstLive < prev.length && (prev[firstLive] as number) <= windowStart) firstLive++;
+      const count = prev.length - firstLive;
+      const available = Math.max(0, limit - count);
+      const hasLive = count > 0;
+      // Capacity returns as each stamp ages out: the oldest frees one unit, the newest frees the last.
+      return {
+        spendableNow: Math.floor(available / cost),
+        nextReplenishAt: hasLive ? Math.ceil((prev[firstLive] as number) + windowMs) : now,
+        fullAt: hasLive ? Math.ceil((prev[prev.length - 1] as number) + windowMs) : now,
+      };
     },
     readState: {
       lua: { script: SLIDING_LOG_READ_LUA, buildKeys: (key) => [key], buildArgv: () => [] },

@@ -1,5 +1,12 @@
 import { LUA_NOW } from "../core/lua";
-import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
+import type {
+  Decision,
+  Forecast,
+  LuaProgram,
+  ReadState,
+  Strategy,
+  StrategyOutcome,
+} from "../core/types";
 import { requireInteger, requirePositive } from "../core/validate";
 import { type CalendarCadence, MS_PER_DAY, calendarPeriod } from "./calendar";
 import { slidingWindow } from "./sliding-window";
@@ -265,6 +272,19 @@ export function quota(options: QuotaOptions): Strategy {
     };
   };
 
+  const forecast = (state: QuotaState | undefined, now: number, cost: number): Forecast => {
+    const { start, reset } = bounds(now);
+    const resetAt = Math.ceil(reset);
+    const count = state && state.start === start ? state.count : 0;
+    const available = Math.max(0, limit - count);
+    // A quota period is a step function: the budget returns in a lump at the boundary.
+    return {
+      spendableNow: Math.floor(available / cost),
+      nextReplenishAt: resetAt,
+      fullAt: resetAt,
+    };
+  };
+
   const readState: ReadState<QuotaState> = {
     lua: {
       script: "return redis.call('HMGET', KEYS[1], 's', 'c')",
@@ -278,7 +298,16 @@ export function quota(options: QuotaOptions): Strategy {
     },
   };
 
-  const base: Strategy<QuotaState> = { name: "quota", limit, ttlMs, lua, check, peek, readState };
+  const base: Strategy<QuotaState> = {
+    name: "quota",
+    limit,
+    ttlMs,
+    lua,
+    check,
+    peek,
+    forecast,
+    readState,
+  };
   // `fixed` has a constant period; surface it as the policy window. Calendar periods vary, so they
   // intentionally report no fixed `windowMs`.
   return cal === "fixed" ? { ...base, windowMs: periodMs } : base;

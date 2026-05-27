@@ -1,5 +1,12 @@
 import { LUA_NOW } from "../core/lua";
-import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
+import type {
+  Decision,
+  Forecast,
+  LuaProgram,
+  ReadState,
+  Strategy,
+  StrategyOutcome,
+} from "../core/types";
 import { requirePositive } from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns the stored [tokens, last] (no write). */
@@ -139,6 +146,20 @@ export function tokenBucket(options: TokenBucketOptions): Strategy<TokenBucketSt
         remaining,
         resetAt: now + Math.ceil((capacity - tokens) / refillPerMs),
         retryAfterMs: allowed ? 0 : Math.ceil((1 - tokens) / refillPerMs),
+      };
+    },
+    forecast(state: TokenBucketState | undefined, now: number, cost: number): Forecast {
+      const prevTokens = state?.tokens ?? capacity;
+      const last = state?.last ?? now;
+      const elapsed = now > last ? now - last : 0;
+      const tokens = Math.min(capacity, prevTokens + elapsed * refillPerMs);
+      const full = tokens >= capacity;
+      return {
+        spendableNow: Math.floor(tokens / cost),
+        nextReplenishAt: full
+          ? now
+          : now + Math.ceil((Math.floor(tokens) + 1 - tokens) / refillPerMs),
+        fullAt: full ? now : now + Math.ceil((capacity - tokens) / refillPerMs),
       };
     },
     readState: {

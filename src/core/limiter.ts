@@ -3,7 +3,7 @@ import { systemClock } from "./clock";
 import { ThrottleKitError } from "./errors";
 import { prefixer } from "./key";
 import { decisionTransform, readOnlyTransform } from "./transform";
-import type { Clock, Decision, Limiter, Store, Strategy, Transform } from "./types";
+import type { Clock, Decision, Forecast, Limiter, Store, Strategy, Transform } from "./types";
 import { requireCost } from "./validate";
 
 export interface RateLimitOptions<S = unknown> {
@@ -143,6 +143,41 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
         );
       }
       return store.applySync(keyFor(key), readOnlyTransform(strategy, peekFn, clock.now()));
+    },
+
+    forecast(key: string, cost = 1): Promise<Forecast> {
+      const fc = strategy.forecast;
+      if (fc === undefined) {
+        return Promise.reject(
+          new ThrottleKitError(`forecast() is not supported by the "${strategy.name}" strategy`),
+        );
+      }
+      try {
+        requireCost(cost);
+      } catch (err) {
+        return Promise.reject(err);
+      }
+      const k = keyFor(key);
+      const t = readOnlyTransform(strategy, (state, now) => fc(state, now, cost), clock.now());
+      if (store.applySync !== undefined) return Promise.resolve(store.applySync(k, t));
+      return store.apply(k, t);
+    },
+
+    forecastSync(key: string, cost = 1): Forecast {
+      const fc = strategy.forecast;
+      if (fc === undefined) {
+        throw new ThrottleKitError(
+          `forecast() is not supported by the "${strategy.name}" strategy`,
+        );
+      }
+      requireCost(cost);
+      if (store.applySync === undefined) {
+        throw new ThrottleKitError(
+          "forecastSync requires a synchronous store (e.g. MemoryStore); the configured store is async-only",
+        );
+      }
+      const t = readOnlyTransform(strategy, (state, now) => fc(state, now, cost), clock.now());
+      return store.applySync(keyFor(key), t);
     },
 
     async reset(key: string): Promise<void> {

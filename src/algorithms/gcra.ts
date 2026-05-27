@@ -1,5 +1,12 @@
 import { LUA_NOW } from "../core/lua";
-import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
+import type {
+  Decision,
+  Forecast,
+  LuaProgram,
+  ReadState,
+  Strategy,
+  StrategyOutcome,
+} from "../core/types";
 import { requireAtLeast, requirePositive } from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns the stored TAT string (no write). */
@@ -129,6 +136,18 @@ export function gcra(options: GcraOptions): Strategy<number> {
         remaining,
         resetAt: Math.ceil(tatEff), // full burst restored once `now` catches up to the TAT
         retryAfterMs: allowed ? 0 : Math.ceil(tatEff + T - tau - now),
+      };
+    },
+    forecast(state: number | undefined, now: number, cost: number): Forecast {
+      const tat = state ?? now;
+      const tatEff = tat > now ? tat : now;
+      const k = Math.max(0, Math.floor((tau - (tatEff - now)) / T)); // whole units available now
+      const full = tatEff <= now;
+      return {
+        spendableNow: Math.floor(k / cost),
+        // Capacity accrues continuously at one unit per T ms; the next whole unit lands here.
+        nextReplenishAt: full ? now : Math.ceil(tatEff - tau + (k + 1) * T),
+        fullAt: full ? now : Math.ceil(tatEff),
       };
     },
     readState: {

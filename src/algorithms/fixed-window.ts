@@ -1,5 +1,12 @@
 import { LUA_NOW } from "../core/lua";
-import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
+import type {
+  Decision,
+  Forecast,
+  LuaProgram,
+  ReadState,
+  Strategy,
+  StrategyOutcome,
+} from "../core/types";
 import { requirePositive } from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns the stored [start, count] (no write). */
@@ -128,6 +135,18 @@ export function fixedWindow(options: FixedWindowOptions): Strategy<FixedWindowSt
         remaining: Math.max(0, Math.floor(limit - count)),
         resetAt: Math.ceil(resetAt),
         retryAfterMs: count + 1 <= limit ? 0 : Math.ceil(resetAt - now),
+      };
+    },
+    forecast(state: FixedWindowState | undefined, now: number, cost: number): Forecast {
+      const windowStart = Math.floor(now / windowMs) * windowMs;
+      const resetAt = Math.ceil(windowStart + windowMs);
+      const count = state && state.start === windowStart ? state.count : 0;
+      const available = Math.max(0, limit - count);
+      // The window is a step function: capacity returns in a lump at the boundary.
+      return {
+        spendableNow: Math.floor(available / cost),
+        nextReplenishAt: resetAt,
+        fullAt: resetAt,
       };
     },
     readState: {

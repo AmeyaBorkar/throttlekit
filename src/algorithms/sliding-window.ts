@@ -1,5 +1,12 @@
 import { LUA_NOW } from "../core/lua";
-import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
+import type {
+  Decision,
+  Forecast,
+  LuaProgram,
+  ReadState,
+  Strategy,
+  StrategyOutcome,
+} from "../core/types";
 import { requireAtLeast, requireInteger, requirePositive } from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns the whole ring HASH (no write). */
@@ -203,6 +210,29 @@ export function slidingWindow(options: SlidingWindowOptions): Strategy<WindowSta
           : Math.ceil((c + 1) * w - now);
       if (retryAfterMs < 1) retryAfterMs = 1;
       return { allowed: false, limit, remaining, resetAt, retryAfterMs };
+    },
+    forecast(state: WindowState | undefined, now: number, cost: number): Forecast {
+      const c = Math.floor(now / w);
+      let elapsed = now - c * w;
+      if (elapsed < 0) elapsed = 0;
+      let weight = (w - elapsed) / w;
+      if (weight < 0) weight = 0;
+      if (weight > 1) weight = 1;
+      const slots = S + 1;
+      const get = (idx: number): number => {
+        if (idx < 0 || state === undefined) return 0;
+        const p = idx % slots;
+        return state.i[p] === idx ? (state.n[p] ?? 0) : 0;
+      };
+      let full = 0;
+      for (let j = c - S + 1; j <= c; j++) full += get(j);
+      const estimate = full + get(c - S) * weight;
+      const available = Math.max(0, Math.floor(limit - estimate));
+      return {
+        spendableNow: Math.floor(available / cost),
+        nextReplenishAt: Math.ceil((c + 1) * w), // next sub-bucket boundary: the window slides
+        fullAt: Math.ceil((c + 1) * w + windowMs), // all currently-counted activity has aged out
+      };
     },
     readState: {
       lua: { script: SLIDING_WINDOW_READ_LUA, buildKeys: (key) => [key], buildArgv: () => [] },
