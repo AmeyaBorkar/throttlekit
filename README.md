@@ -50,7 +50,7 @@ Every check returns an immutable `Decision` — `{ allowed, limit, remaining, re
 
 ## Pick a strategy, a backend, a framework
 
-**Seven strategies** — `gcra` (the default: tiny state, smooth pacing, controlled bursts), `tokenBucket`, `fixedWindow`, `slidingWindow`, `slidingWindowLog`, `leakyBucket` (shaping), and `adaptiveConcurrency` (backpressure when the right rate is unknown). Pick one → [Strategies](https://github.com/AmeyaBorkar/throttlekit/wiki/Strategies).
+**Seven strategies** — `gcra` (the default: tiny state, smooth pacing, controlled bursts), `tokenBucket`, `fixedWindow`, `slidingWindow`, `slidingWindowLog`, `leakyBucket` (shaping), and `adaptiveConcurrency` (backpressure when the right rate is unknown) — plus **`quota`**, a first-class billing-period budget (`calendar-month`/`-week`/`-day`, `fixed`, or `rolling`) for "1,000,000 calls/month, resetting on the 1st", distinct from a sliding rate limit and leap-year-correct. Pick one → [Strategies](https://github.com/AmeyaBorkar/throttlekit/wiki/Strategies).
 
 **Seven stores, identical decisions** — in-memory (lock-free sync RMW, timing-wheel expiry), **Redis** (`throttlekit/redis`; one `EVALSHA`/check; `ioredis`, `node-redis`, or Upstash REST for the edge), **Postgres** (`throttlekit/postgres`; advisory-lock transaction, **no Redis required**), **Cloudflare** (`throttlekit/cloudflare`: a `DurableObjectStore` for single-threaded atomicity, plus a `D1Store` for edge SQLite via version compare-and-set), **DynamoDB** (`throttlekit/dynamodb`; conditional-write CAS with native TTL), and **Deno KV** (`throttlekit/deno`; native atomic versionstamp CAS). The conformance suite — including a 200-way concurrent read-modify-write — proves every backend agrees.
 

@@ -2,6 +2,7 @@ import Redis from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixedWindow } from "../../src/algorithms/fixed-window";
 import { gcra } from "../../src/algorithms/gcra";
+import { quota } from "../../src/algorithms/quota";
 import { slidingWindow } from "../../src/algorithms/sliding-window";
 import { slidingWindowLog } from "../../src/algorithms/sliding-window-log";
 import { tokenBucket } from "../../src/algorithms/token-bucket";
@@ -67,6 +68,28 @@ const cases: Case[] = [
   {
     name: "slidingWindow-100-60s-1bucket",
     make: () => slidingWindow({ limit: 100, windowMs: 60_000, buckets: 1 }),
+  },
+  // quota: the Lua must recompute the same period boundary (incl. civil-calendar months) as JS.
+  {
+    name: "quota-calendar-month-100",
+    make: () => quota({ limit: 100, resetCadence: "calendar-month" }),
+  },
+  {
+    name: "quota-calendar-month-50-ist",
+    make: () => quota({ limit: 50, resetCadence: "calendar-month", offsetMinutes: 330 }),
+  },
+  {
+    name: "quota-calendar-week-50",
+    make: () => quota({ limit: 50, resetCadence: "calendar-week" }),
+  },
+  { name: "quota-calendar-day-50", make: () => quota({ limit: 50, resetCadence: "calendar-day" }) },
+  {
+    name: "quota-fixed-50-1s",
+    make: () => quota({ limit: 50, resetCadence: "fixed", periodMs: 1000, anchor: 250 }),
+  },
+  {
+    name: "quota-rolling-50-1s",
+    make: () => quota({ limit: 50, resetCadence: "rolling", periodMs: 1000 }),
   },
 ];
 

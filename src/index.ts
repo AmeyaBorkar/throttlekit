@@ -35,6 +35,8 @@ export { tokenBucket } from "./algorithms/token-bucket";
 export type { TokenBucketOptions } from "./algorithms/token-bucket";
 export { fixedWindow } from "./algorithms/fixed-window";
 export type { FixedWindowOptions } from "./algorithms/fixed-window";
+export { quota } from "./algorithms/quota";
+export type { QuotaCadence, QuotaOptions } from "./algorithms/quota";
 export { slidingWindow } from "./algorithms/sliding-window";
 export type { SlidingWindowOptions } from "./algorithms/sliding-window";
 export { slidingWindowLog } from "./algorithms/sliding-window-log";
