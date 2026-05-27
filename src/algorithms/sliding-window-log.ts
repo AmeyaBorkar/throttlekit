@@ -82,11 +82,16 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
     lua,
     check(state: number[] | undefined, now: number, cost: number): StrategyOutcome<number[]> {
       const windowStart = now - windowMs;
-      const log = (state ?? []).filter((ts) => ts > windowStart); // ascending; survivors only
-      const count = log.length;
+      const prev = state ?? [];
+      // Timestamps are ascending, so survivors are a suffix: skip the stale prefix by index, with
+      // no filter closure and no intermediate array.
+      let firstLive = 0;
+      while (firstLive < prev.length && (prev[firstLive] as number) <= windowStart) firstLive++;
+      const count = prev.length - firstLive;
 
       if (count + cost <= limit) {
-        const newLog = log.slice();
+        // One copy of the survivors, then append `cost` stamps — no filter array, no second copy.
+        const newLog = prev.slice(firstLive);
         for (let i = 0; i < cost; i++) newLog.push(now);
         const oldest = newLog.length > 0 ? (newLog[0] as number) : now;
         let remaining = limit - (count + cost);
@@ -105,6 +110,7 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
         };
       }
 
+      // Denied: index into the survivors directly (prev[firstLive..]) — no allocation.
       let retryAfterMs: number;
       if (count === 0) {
         retryAfterMs = windowMs; // cost exceeds limit: unsatisfiable in one window
@@ -112,11 +118,11 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
         let kMin = count + cost - limit;
         if (kMin < 1) kMin = 1;
         if (kMin > count) kMin = count;
-        const ref = log[kMin - 1] ?? now;
+        const ref = prev[firstLive + kMin - 1] ?? now;
         retryAfterMs = Math.ceil(ref + windowMs - now);
         if (retryAfterMs < 1) retryAfterMs = 1;
       }
-      const oldest = count > 0 ? (log[0] as number) : now;
+      const oldest = count > 0 ? (prev[firstLive] as number) : now;
       let remaining = limit - count;
       if (remaining < 0) remaining = 0;
       return {
