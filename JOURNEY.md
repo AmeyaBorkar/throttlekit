@@ -5,6 +5,31 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-27 — TALE Layer 1 ships as `tokenBudget`
+
+The streaming token-budget meter — TALE's load-bearing Layer 1 — graduates from the research kernel
+(`test/cost/token-budget.ts`) into the published library as **`tokenBudget`**, in the `admission`
+module beside `fairShare`/`weightedFairShare`. It enforces a per-window token budget when cost is
+*post-hoc* (LLM output tokens, known only as they stream): debit actual tokens as they're produced; a
+debit is admitted iff budget remains *before* it, so worst-case overshoot is bounded by the debit
+granularity — **exactly 0 per token**, `≤ g−1` at chunk `g` — *independent of the per-request cap and
+of concurrency* (only the single crossing debit can exceed the budget, no matter how many streams
+meter at once).
+
+Two decisions worth recording. **(1) Stop-at-boundary, not pre-check.** The meter counts the crossing
+debit in full rather than refusing it — the tokens are already produced (that *is* what "post-hoc
+cost" means), so honest accounting plus stopping future production is both correct and provably
+minimal: you can't beat `Δ ≤ g−1` without knowing cost in advance. **(2) Naming.** `tokenBudget` sits
+one letter from `tokenBucket`, but they have disjoint option/return types, so a wrong pick is a
+*compile* error under strict TS — and the name keeps the code↔proposal↔paper story consistent. A
+JSDoc `@see` spells out the distinction (rate limiter vs fixed post-hoc quota).
+
+Tests cross-check the shipped meter against the research `simulate(…, "streaming")` kernel for
+byte-identical overshoot over 200 randomized property runs, plus the tight `Δ = g−1` worst case,
+concurrency-independence, cap-independence, window roll, `remaining()`, and the `Decision` contract.
+Suite → **442**. Also synced the stale `version` const (0.3.0 → 0.5.1, its own commit). Not released
+yet — lands in the next version bump.
+
 ## 2026-05-26 — 0.5.1: lean README + a GitHub wiki
 
 Refit the public face. The README had grown to ~600 lines of reference; rewrote it to ~220 that lead

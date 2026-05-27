@@ -143,7 +143,7 @@ Reproduce with `npx vitest run test/cost`.
 
 | Result | How established | Status |
 |---|---|---|
-| Layer 1 — streaming meter: overshoot `≤ g−1` (0 at g=1), **independent of `max_tokens`** | implemented + measured (vs reserve-max util collapse 0.77→0; admit-then-count Δ 24→7192) | ✅ |
+| Layer 1 — streaming meter: overshoot `≤ g−1` (0 at g=1), **independent of `max_tokens`** | implemented + measured (vs reserve-max util collapse 0.77→0; admit-then-count Δ 24→7192); **shipped** as `tokenBudget` | ✅ |
 | Layer 2 — online learned reservation (newsvendor critical fractile), `O(√T)` regret | implemented + measured (avg pinball regret 8.49→2.77; admission util 1.0 + ~4 aborts vs greedy 16 / reserve-max 0.40 util) | ✅ |
 | Layer 3 — predictions-with-safety (rank predictor + Hedge), safety unconditional | implemented + measured (perfect→clairvoyant; adversarial→robust 1.00×; overshoot 0 under *any* predictor) | ✅ |
 | Distributed — multi-gateway TPM **= GALE leased budget (token unit)**: overshoot independent of gateway count C | implemented + measured (window-coupled Δ=0 ∀ C∈{1..32}; carryover grows ~C·(B−1); **byte-identical** to GALE `simulateWindowCoupled`) | ✅ |
@@ -154,6 +154,6 @@ Reproduce with `npx vitest run test/cost`.
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (430 tests total; GALE/TALE research suites included; Postgres/Redis error paths gated) |
+| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (442 tests total; GALE/TALE research suites included; Postgres/Redis error paths gated) |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) | ✅ |
 | Build emits valid ESM + CJS + types (11 subpaths) | ✅ |

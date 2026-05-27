@@ -81,6 +81,7 @@ export {
   adaptiveThrottle,
   fairShare,
   guaranteedShare,
+  tokenBudget,
   weightedFairShare,
   weightedMaxMin,
 } from "./admission";
@@ -89,6 +90,8 @@ export type {
   AdaptiveThrottleOptions,
   FairShareLimiter,
   FairShareOptions,
+  TokenBudgetMeter,
+  TokenBudgetOptions,
   WeightedFairShareLimiter,
   WeightedFairShareOptions,
 } from "./admission";

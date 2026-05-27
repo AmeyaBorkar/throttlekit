@@ -6,7 +6,24 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`tokenBudget`** — a streaming token-budget meter for *post-hoc* costs (the LLM-gateway problem:
+  a completion's output-token cost is known only as it streams). Debit the actual tokens as they are
+  produced; a debit is admitted iff budget remains *before* it, so worst-case overshoot is bounded by
+  the debit granularity — **exactly 0 per token**, `≤ g−1` at chunk size `g` — **independent of the
+  per-request cap (`max_tokens`)** and of how many streams meter concurrently (only the single
+  crossing debit can exceed the budget). This dominates the two production corners at once: it has
+  reserve-`max_tokens`'s safety (no overshoot per token) at admit-then-count's utilization (`~1`),
+  with no dependence on the cap. The shipped piece of the **TALE** research track's Layer 1
+  (`research/cost-uncertainty/`); its overshoot is cross-checked byte-for-byte against the research
+  streaming kernel over 200 randomized property runs. Same epoch-aligned window, `Decision` contract,
+  and injected `Clock` as the other `admission` primitives; lives beside `fairShare` /
+  `weightedFairShare`.
+
+### Fixed
+
+- The exported `version` constant was stale at `0.3.0`; synced to the package version.
 
 ## [0.5.1] — 2026-05-26
 

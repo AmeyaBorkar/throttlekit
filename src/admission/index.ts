@@ -1,10 +1,10 @@
 import { systemClock } from "../core/clock";
 import type { Clock, Decision } from "../core/types";
-import { requireAtLeast, requirePositive } from "../core/validate";
+import { requireAtLeast, requireInteger, requirePositive } from "../core/validate";
 
 /**
  * Admission-control primitives — decide whether to *attempt* work at all, upstream of the
- * per-key rate limiters. Two independent tools live here:
+ * per-key rate limiters. Several independent tools live here:
  *
  * - {@link adaptiveThrottle}: Google-SRE client-side adaptive throttling. A client that keeps
  *   hammering an overloaded backend only deepens the overload; this sheds a growing fraction of
@@ -13,6 +13,10 @@ import { requireAtLeast, requirePositive } from "../core/validate";
  *   tenant cannot consume a shared global budget and starve the others.
  * - {@link weightedMaxMin} + {@link weightedFairShare}: weighted fairness — the exact, work-conserving
  *   weighted max-min split of a contended budget (batch), and its online streaming limiter.
+ * - {@link tokenBudget}: a streaming token-budget meter for *post-hoc* costs (e.g. LLM output
+ *   tokens, billed only as they stream). Debit the actual tokens as they are produced; overshoot is
+ *   bounded by the debit granularity (exactly 0 per token), independent of the per-request cap and
+ *   of how many streams meter concurrently.
  *
  * All are pure JavaScript, dependency-free, and read time only through an injected {@link Clock},
  * so every decision is reproducible to the millisecond under {@link ManualClock}.
@@ -595,6 +599,153 @@ export function weightedFairShare(options: WeightedFairShareOptions): WeightedFa
         used.delete(tenant);
         weights.delete(tenant);
       }
+    },
+  };
+}
+
+// ── Primitive 4: tokenBudget (streaming token-budget meter for post-hoc costs) ──────────────────
+
+/** Options for {@link tokenBudget}. */
+export interface TokenBudgetOptions {
+  /** Token budget `L` enforced over each window. Floored to an integer; must be positive. */
+  budget: number;
+  /** Window width in ms. Windows are epoch-aligned: `floor(now/windowMs)*windowMs`. */
+  windowMs: number;
+  /** Injected clock. Defaults to {@link systemClock}. */
+  clock?: Clock;
+}
+
+/**
+ * A windowed token-budget meter — the streaming face of post-hoc cost control. Debit the *actual*
+ * tokens a stream produces as they are produced; see {@link tokenBudget}.
+ */
+export interface TokenBudgetMeter {
+  /** Atomically debit `tokens` (default 1, a positive integer) against the current window. */
+  debitSync(tokens?: number): Decision;
+  /** Promise-returning form of {@link TokenBudgetMeter.debitSync}; resolves synchronously. */
+  debit(tokens?: number): Promise<Decision>;
+  /** Tokens remaining in the current window (`>= 0`); rolls the window but does not debit. */
+  remaining(): number;
+  /** Forget all usage; the next call starts a fresh window. */
+  reset(): void;
+}
+
+/**
+ * **Streaming token-budget meter** — enforce a budget of `L` tokens per window when each request's
+ * cost is revealed only *as it streams*. This is the LLM-gateway problem: you do not know how many
+ * output tokens a completion will use until it has produced them, so you cannot price it at
+ * admission.
+ *
+ * Call {@link TokenBudgetMeter.debit} for each chunk a stream produces (ideally one token at a
+ * time). A debit is **admitted iff budget remains before it** (`served < L`); the single debit that
+ * crosses `L` is still counted in full, then every later debit in the window is refused
+ * (`allowed: false`) so the caller stops generating. This *stop-at-boundary* rule bounds the
+ * overshoot by the debit granularity:
+ *
+ * ```text
+ *   worst-case overshoot  Δ  ≤  (largest single debit) − 1
+ * ```
+ *
+ * so **per-token debiting (`tokens = 1`) overshoots by exactly 0** — the meter stops on the token
+ * that reaches `L`. Two properties make this strong:
+ *
+ * - **Independent of the per-request cap (`max_tokens`).** The meter never reserves a request's
+ *   cap; it counts only what is actually produced. A heavy-tailed length distribution costs it
+ *   nothing, so utilization stays ~1 with no tail waste.
+ * - **Independent of concurrency.** Because each debit's check and increment are a single
+ *   synchronous step, only the one crossing debit can exceed `L`, no matter how many streams meter
+ *   through the instance at once.
+ *
+ * It thus dominates the two production corners on both axes at once:
+ *
+ * - **reserve `max_tokens` up front** (e.g. an API gateway that estimates the cap at admission and
+ *   reconciles later): never overshoots, but sterilizes most of every reservation on a heavy tail —
+ *   utilization collapses as the cap grows.
+ * - **admit-then-count** (charge the real cost only at completion): fully utilized, but the streams
+ *   in flight when the budget runs out overshoot by up to `C · max_tokens` (`C` = concurrency).
+ *
+ * The meter gives reserve-max's safety (`Δ = 0` per token) at admit-then-count's utilization (`~1`),
+ * with no dependence on the cap.
+ *
+ * **Single-instance / single-gateway.** The synchronous check-then-increment is atomic only within
+ * one process. To share a budget across a fleet of gateways, back it with an atomic shared counter:
+ * that is GALE window-coupled leasing with the token as the unit (see
+ * `research/cost-uncertainty/PROPOSAL.md`), so the distributed token meter inherits the leased
+ * budget's fleet-size-independent overshoot bound.
+ *
+ * Not to be confused with {@link tokenBucket}, a *rate* limiter that refills capacity over time:
+ * `tokenBudget` enforces a *fixed quota* of post-hoc-metered cost over a fixed window.
+ *
+ * @example
+ * const meter = tokenBudget({ budget: 100_000, windowMs: 60_000 });
+ * for await (const tok of completion) {
+ *   if (!meter.debitSync(1).allowed) break; // budget spent — stop generating
+ *   emit(tok);
+ * }
+ */
+export function tokenBudget(options: TokenBudgetOptions): TokenBudgetMeter {
+  requirePositive("tokenBudget.budget", options.budget);
+  requirePositive("tokenBudget.windowMs", options.windowMs);
+
+  const L = Math.floor(options.budget);
+  const windowMs = options.windowMs;
+  const clock = options.clock ?? systemClock;
+
+  // -Infinity guarantees the first call (at any finite `now`) starts a fresh, epoch-aligned window.
+  let windowStart = Number.NEGATIVE_INFINITY;
+  let served = 0;
+
+  function rollWindow(now: number): void {
+    if (now >= windowStart + windowMs) {
+      windowStart = Math.floor(now / windowMs) * windowMs;
+      served = 0;
+    }
+  }
+
+  function debitSync(tokens = 1): Decision {
+    requirePositive("tokenBudget.tokens", tokens);
+    requireInteger("tokenBudget.tokens", tokens);
+
+    const now = clock.now();
+    rollWindow(now);
+    const resetAt = Math.ceil(windowStart + windowMs);
+
+    // Stop-at-boundary: refuse once the budget is already spent (`served >= L`). The cost is
+    // post-hoc — the tokens of an admitted debit are already produced, so we count them honestly
+    // and simply stop admitting more. The crossing debit can carry `served` to (L-1)+tokens, an
+    // overshoot of at most tokens-1 (0 when debiting per token); all later debits land here.
+    if (served >= L) {
+      return {
+        allowed: false,
+        limit: L,
+        remaining: 0,
+        resetAt,
+        retryAfterMs: Math.max(0, Math.ceil(resetAt - now)),
+      };
+    }
+    served += tokens;
+    return {
+      allowed: true,
+      limit: L,
+      remaining: Math.max(0, L - served),
+      resetAt,
+      retryAfterMs: 0,
+    };
+  }
+
+  return {
+    debitSync,
+    debit(tokens = 1): Promise<Decision> {
+      return Promise.resolve(debitSync(tokens));
+    },
+    remaining(): number {
+      const now = clock.now();
+      rollWindow(now);
+      return Math.max(0, L - served);
+    },
+    reset(): void {
+      windowStart = Number.NEGATIVE_INFINITY;
+      served = 0;
     },
   };
 }

@@ -150,6 +150,7 @@ Primitives that sit *upstream* of the per-key limiters:
 
 - **`adaptiveThrottle`** — Google-SRE client-side adaptive load-shedding: a client that keeps hammering an overloaded backend sheds a growing fraction *locally*, based on the backend's recent accept rate.
 - **`fairShare` / `weightedFairShare` / `weightedMaxMin`** — split one global budget across tenants so a greedy tenant can't starve the rest. `weightedMaxMin` is the exact, **work-conserving** weighted max-min allocation (an idle tenant's share flows to the backlogged ones; everyone gets at least their weighted floor) — the shipped piece of GALE's *Weighted Fair Escrow*, its fairness properties machine-checked.
+- **`tokenBudget`** — a streaming **token-budget meter** for *post-hoc* costs (LLM output tokens, known only as they stream): debit actual tokens as they're produced and worst-case overshoot is bounded by the debit granularity — **0 per token**, independent of the per-request cap *and* of concurrency. The shipped piece of TALE's Layer 1.
 - **`sketchRateLimit` / `mergeableSketch`** — cap an **unbounded key universe in fixed memory** (~7.4 KB) with a Count-Min Sketch that **provably never over-admits**; ship and `merge()` per-node sketches for *exact* cluster-wide heavy-hitter detection against low-and-slow distributed floods.
 
 Details: [**Overload, fairness & DDoS**](https://github.com/AmeyaBorkar/throttlekit/wiki/Overload-Fairness-and-DDoS).
@@ -161,7 +162,7 @@ Details: [**Overload, fairness & DDoS**](https://github.com/AmeyaBorkar/throttle
 ThrottleKit's distributed guarantees come from two research programs developed alongside it (target venues SIGMETRICS/POMACS, NSDI). Both are proven/measured and gated under [`research/`](./research); pieces ship into the library as marked.
 
 - **GALE** — *Globally-Accounted Learned Escrow.* The first distributed limiter with a hard, tight overshoot bound **independent of fleet size** (Pillar 1, shipped as `lease.windowCoupled`), plus online-EOQ learned lease sizing (Pillar 2), learning-augmented sizing with unconditional safety (Pillar 3), weighted work-conserving fairness (Pillar 4, shipped as `weightedFairShare`/`weightedMaxMin`), and a proved **trilemma** lower bound `Δ + N·U ≥ (N−1)L`. See [`research/gale/`](./research/gale).
-- **TALE** — *escrow under cost uncertainty.* Token-budget rate limiting for LLMs, where a request's cost — its *output* tokens — is revealed only as it streams. A reserve-then-reconcile escrow in three layers; the streaming meter is window-coupling on the cost axis, and the multi-gateway form reduces *byte-identically* to GALE's leased budget. See [`research/cost-uncertainty/`](./research/cost-uncertainty).
+- **TALE** — *escrow under cost uncertainty.* Token-budget rate limiting for LLMs, where a request's cost — its *output* tokens — is revealed only as it streams. A reserve-then-reconcile escrow in three layers; the streaming meter (Layer 1, **shipped as `tokenBudget`**) is window-coupling on the cost axis, and the multi-gateway form reduces *byte-identically* to GALE's leased budget. See [`research/cost-uncertainty/`](./research/cost-uncertainty).
 
 ---
 
@@ -206,7 +207,7 @@ ThrottleKit is built to be checkable, not just claimed:
 - **Formal model** — the leasing protocol is model-checked with TLA⁺/TLC and re-checked by an exhaustive JS checker in CI.
 - **Store conformance kit** — `runStoreConformance` runs any custom store through the same atomicity / TTL / concurrency suite the built-ins pass.
 
-All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **430 tests, 95.2% line coverage**, CI green across Node 20/22/24 — tracked in [SCOREBOARD.md](./SCOREBOARD.md).
+All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **442 tests, 95.2% line coverage**, CI green across Node 20/22/24 — tracked in [SCOREBOARD.md](./SCOREBOARD.md).
 
 ---
 
