@@ -173,3 +173,30 @@ describe("TALE Layer 2 — input validation", () => {
     ).toThrow(RangeError);
   });
 });
+
+describe("TALE Layer 2 — explicit O(√T) regret envelope (Theorem 1)", () => {
+  // Design + proof: research/cost-uncertainty/REGRET-ANALYSIS.md (§2). D = r_max − r_min, G = max(h,p).
+  it("continuous OGD regret stays within (3/2)·D·G·√T, and rounding adds ≤ (G/2)·T", () => {
+    const D = M; // diameter r_max − r_min = 512 − 0
+    const G = Math.max(H, P); // pinball subgradient bound max(h,p) = 4
+    for (const T of [100, 400, 1600, 6400]) {
+      const trace = heavyTailLengths(T, 120, M, 7);
+      const learner = createOnlineReservation({ holdCost: H, overrunCost: P, maxReservation: M });
+      let contLoss = 0; // loss of the continuous OGD trajectory (the value Theorem 1 governs)
+      let roundedLoss = 0; // loss of the integer-rounded *played* reservation
+      for (const c of trace) {
+        const rCont = learner.continuous; // the reservation played this round, pre-rounding
+        contLoss += reservationCost(rCont, c, H, P);
+        roundedLoss += reservationCost(Math.round(rCont), c, H, P);
+        learner.observe(c); // OGD update is on the continuous value — no rounding feeds back
+      }
+      const bestFixed = bestFixedReservationCost(trace, H, P, CAND).cost; // best integer ≥ best continuous
+      const contRegret = contLoss - bestFixed;
+      const envelope = 1.5 * D * G * Math.sqrt(T);
+      // Theorem 1: the continuous OGD trajectory respects the proven (3/2)·D·G·√T envelope.
+      expect(contRegret).toBeLessThanOrEqual(envelope);
+      // …and the rounding remark: a G-Lipschitz loss + a ≤1/2-token round ⇒ ≤ G/2 per round.
+      expect(Math.abs(roundedLoss - contLoss)).toBeLessThanOrEqual((G / 2) * T);
+    }
+  });
+});

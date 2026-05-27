@@ -145,8 +145,8 @@ Reproduce with `npx vitest run test/cost`.
 | Result | How established | Status |
 |---|---|---|
 | Layer 1 — streaming meter: overshoot `≤ g−1` (0 at g=1), **independent of `max_tokens`** | implemented + measured (vs reserve-max util collapse 0.77→0; admit-then-count Δ 24→7192); **shipped** as `tokenBudget` | ✅ |
-| Layer 2 — online learned reservation (newsvendor critical fractile), `O(√T)` regret | implemented + measured (avg pinball regret 8.49→2.77; admission util 1.0 + ~4 aborts vs greedy 16 / reserve-max 0.40 util) | ✅ |
-| Layer 3 — predictions-with-safety (rank predictor + Hedge), safety unconditional | implemented + measured (perfect→clairvoyant; adversarial→robust 1.00×; overshoot 0 under *any* predictor) | ✅ |
+| Layer 2 — online learned reservation (newsvendor critical fractile), `O(√T)` regret | implemented + measured (avg pinball regret 8.49→2.77; admission util 1.0 + ~4 aborts vs greedy 16 / reserve-max 0.40 util); regret envelope `≤ (3/2)DG√T` proven + machine-checked (REGRET-ANALYSIS.md) | ✅ |
+| Layer 3 — predictions-with-safety (rank predictor + Hedge), safety unconditional | implemented + measured (perfect→clairvoyant; adversarial→robust 1.00×; overshoot 0 under *any* predictor); best-of-both bound + fixed-η caveat instantiated (REGRET-ANALYSIS.md) | ✅ |
 | Distributed — multi-gateway TPM **= GALE leased budget (token unit)**: overshoot independent of gateway count C | implemented + measured (window-coupled Δ=0 ∀ C∈{1..32}; carryover grows ~C·(B−1); **byte-identical** to GALE `simulateWindowCoupled`) | ✅ |
 
 ## Quality gates

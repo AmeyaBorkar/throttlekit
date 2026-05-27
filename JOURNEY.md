@@ -5,6 +5,30 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-27 — TALE L2/L3 regret & consistency bounds, instantiated
+
+Wrote out the L2/L3 online-learning guarantees with the **explicit constants and assumptions for our
+loss** (`research/cost-uncertainty/REGRET-ANALYSIS.md`), so the proposal's `O(√T)` and
+"consistency/robustness" claims are precise — and, as agreed, framed as *known machinery on the cost
+axis*, not new theory (the load-bearing novelty is L1's bound + safety decoupled from the learner).
+L2: Zinkevich OGD on the pinball loss ⇒ `R_T ≤ (3/2)·D·G·√T`, `D = r_max−r_min`, `G = max(h,p)`, with
+the newsvendor `τ = p/(h+p)` quantile as the comparator. L3: Jensen + Hedge ⇒ `Σℓ(blend) ≤
+min(L_follow, L_robust) + O(√T)` (consistency to perfect advice, robustness to adversarial), with
+unconditional safety from the meter.
+
+Two honesty catches the careful instantiation forced out, both now stated plainly. **(1) Integer
+rounding.** The reservation is rounded for admission, so the clean `O(√T)` is the *continuous* OGD
+trajectory; rounding adds a `G`-Lipschitz `≤ G/2` per-round term to the *played* loss. Measured, it's
+tiny (`|rnd−cont|` = 0/6/27/93 over `T` = 100..6400, vs the `(G/2)T` = 200..12800 worst case) — the
+half-token errors mean-cancel — and it never touches safety. **(2) Fixed Hedge η.** The shipped default
+`η=0.01` gives the consistency/robustness *dichotomy* for any `η>0`, but the worst-case `√T` *rate*
+needs an annealed/tuned `η` — said so, rather than quietly claiming `√T` for the fixed-`η` code.
+
+Verified: added an envelope check to `learned-reservation.test.ts` (continuous regret `≤ (3/2)DG√T` at
+four horizons; the rounding term `≤ (G/2)T`), and a throwaway run confirmed the regret is genuinely
+positive and sits at 3–7% of the envelope (worst-case bounds are loose on benign stationary data, as
+expected). PROPOSAL/SCOREBOARD updated to point at the analysis.
+
 ## 2026-05-27 — the trilemma's `0 < C < N` interpolation
 
 Closed the standing open piece of the GALE capstone — what happens *between* zero coordination and

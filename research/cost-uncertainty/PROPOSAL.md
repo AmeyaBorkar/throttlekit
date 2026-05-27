@@ -96,7 +96,10 @@ hindsight *is* the empirical τ-quantile (the newsvendor identity, machine-check
 reservation by 31% under a distribution shift. In the admission loop (`L=1000, C=16, g=1`) the learned
 reservation is the only *implementable* policy that gets **full utilisation and ~4 aborts** — matching
 the clairvoyant oracle — where greedy streaming aborts 16 and reserve-max collapses to `0.40`
-utilisation; overshoot stays `0` for every reservation policy.
+utilisation; overshoot stays `0` for every reservation policy. The explicit regret envelope
+`R_T ≤ (3/2)·D·G·√T` (`D = r_max−r_min`, `G = max(h,p)`), the newsvendor-quantile comparator, and the
+integer-rounding caveat are instantiated, proved, and machine-checked in
+[REGRET-ANALYSIS.md](REGRET-ANALYSIS.md).
 
 ### Layer 3 — Learning-augmented with output-length predictions ⇒ consistency/robustness
 
@@ -106,7 +109,7 @@ reservation, arbitrated by a Hedge meta-learner over {follow-prediction, robust-
 Pillar 3 verbatim. **Consistency** (good predictions ⇒ near-clairvoyant admission/utilization),
 **robustness** (adversarial predictions ⇒ the no-regret quantile), and **safety unconditional** (the
 streaming meter holds `Δ ≤ g−1` no matter how wrong the predictor is — to our knowledge the first
-predictions-with-safety result for token *budgets*, instantiating the known newsvendor / predictions-with-safety machinery (§5) on the cost axis).
+predictions-with-safety result for token *budgets*, instantiating the known newsvendor / predictions-with-safety machinery (§5) on the cost axis — the best-of-both bound `Σℓ(blend) ≤ min(L_follow, L_robust) + O(√T)` (Jensen + Hedge), with the fixed-`η` caveat, is written out in [REGRET-ANALYSIS.md](REGRET-ANALYSIS.md)).
 
 **Implemented + measured** (`test/cost/predicted-reservation.ts`). The predictor is modelled on the
 LtR reality: it recovers output-length *rank* (with tunable noise) and maps ranks back through the
