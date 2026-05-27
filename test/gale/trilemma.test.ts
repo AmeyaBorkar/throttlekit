@@ -139,7 +139,7 @@ describe("GALE — trilemma under partial coordination (static-partition 0<C<N i
     expect(coordU).toBe(6);
     // Uncoordinated: split P into g per-node budgets; the system's best split is uniform ⌊P/g⌋=2, but a
     // single hot node is still capped at its own budget ⇒ U = L − 2 = 10 > coordU.
-    const split = [2, 2, 2];
+    const split = new Array(g).fill(Math.floor(P / g));
     const uncoordU = L - Math.min(L, Math.min(...split));
     expect(uncoordU).toBe(10);
     expect(coordU).toBeLessThan(uncoordU); // the shared pool is exactly what coordination buys
