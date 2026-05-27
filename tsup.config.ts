@@ -15,6 +15,7 @@ export default defineConfig({
     fastify: "src/adapters/fastify.ts",
     koa: "src/adapters/koa.ts",
     grpc: "src/adapters/grpc.ts",
+    lambda: "src/adapters/lambda.ts",
     otel: "src/observability/index.ts",
     testkit: "src/testkit/index.ts",
   },

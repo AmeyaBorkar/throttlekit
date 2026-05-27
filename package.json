@@ -180,6 +180,16 @@
         "default": "./dist/grpc.cjs"
       }
     },
+    "./lambda": {
+      "import": {
+        "types": "./dist/lambda.d.ts",
+        "default": "./dist/lambda.js"
+      },
+      "require": {
+        "types": "./dist/lambda.d.cts",
+        "default": "./dist/lambda.cjs"
+      }
+    },
     "./otel": {
       "import": {
         "types": "./dist/otel.d.ts",
