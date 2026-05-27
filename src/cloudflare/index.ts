@@ -8,10 +8,10 @@
  *  - {@link D1Store} — edge SQLite. No per-key lock, so it uses optimistic concurrency (a version
  *    compare-and-set); ideal for a plain Worker that has a D1 binding and no Durable Object.
  *
- * Workers KV is intentionally *not* offered as an exact store: it is eventually consistent with no
- * atomic compare-and-set, so it cannot honor the atomic {@link Store} contract and would silently
- * over-admit. KV suits only approximate/best-effort scenarios, which ThrottleKit does not present as
- * a `Store`.
+ * Workers KV ({@link KVStore}) is offered **only as an explicitly best-effort, approximate store**:
+ * it is eventually consistent with no atomic compare-and-set, so it cannot honor the exact `Store`
+ * contract and can over-admit under load. Use it for coarse edge protection where that's acceptable;
+ * prefer {@link DurableObjectStore} or {@link D1Store} for correctness. See its doc comment.
  */
 export { DurableObjectStore } from "./durable-object";
 export type {
@@ -21,3 +21,5 @@ export type {
 } from "./durable-object";
 export { D1Store } from "./d1";
 export type { D1Like, D1PreparedStatementLike, D1ResultLike, D1StoreOptions } from "./d1";
+export { KVStore } from "./kv";
+export type { KVNamespaceLike, KVStoreOptions } from "./kv";
