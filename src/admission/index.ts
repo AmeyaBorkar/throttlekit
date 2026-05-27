@@ -950,6 +950,8 @@ export function predictiveReservation(
 ): PredictiveReservation {
   const h = options.holdCost;
   const p = options.overrunCost;
+  requirePositive("predictiveReservation.holdCost", h);
+  requirePositive("predictiveReservation.overrunCost", p);
   const minR = options.minReservation ?? 0;
   const maxR = options.maxReservation;
   const eta = options.learningRate ?? 0.01;

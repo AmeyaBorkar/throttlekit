@@ -58,14 +58,6 @@ export interface MultiLimiter<Ctx> {
 
 const TYPE: Record<string, number> = { gcra: 1, tokenBucket: 2, fixedWindow: 3 };
 
-interface DimResult {
-  allowed: boolean;
-  limit: number;
-  remaining: number;
-  resetAt: number;
-  retryAfterMs: number;
-}
-
 /**
  * Combine per-dimension results into one binding decision, matching the fused Lua exactly:
  * - all + all-allow → min-remaining dimension (the tightest headroom)
@@ -73,11 +65,11 @@ interface DimResult {
  * - any + any-allow → allowing dimension with the most remaining
  * - any + all-deny → dimension with the smallest retryAfter (soonest recovery)
  */
-function combine(mode: "all" | "any", results: DimResult[]): Decision {
+function combine(mode: "all" | "any", results: Decision[]): Decision {
   if (mode === "all") {
     const allAllowed = results.every((r) => r.allowed);
     if (allAllowed) {
-      let b = results[0] as DimResult;
+      let b = results[0] as Decision;
       for (const r of results) if (r.remaining < b.remaining) b = r;
       return {
         allowed: true,
@@ -87,11 +79,11 @@ function combine(mode: "all" | "any", results: DimResult[]): Decision {
         retryAfterMs: 0,
       };
     }
-    let b: DimResult | undefined;
+    let b: Decision | undefined;
     for (const r of results) {
       if (!r.allowed && (b === undefined || r.retryAfterMs > b.retryAfterMs)) b = r;
     }
-    const d = b as DimResult;
+    const d = b as Decision;
     return {
       allowed: false,
       limit: d.limit,
@@ -103,11 +95,11 @@ function combine(mode: "all" | "any", results: DimResult[]): Decision {
   // any
   const anyAllowed = results.some((r) => r.allowed);
   if (anyAllowed) {
-    let b: DimResult | undefined;
+    let b: Decision | undefined;
     for (const r of results) {
       if (r.allowed && (b === undefined || r.remaining > b.remaining)) b = r;
     }
-    const d = b as DimResult;
+    const d = b as Decision;
     return {
       allowed: true,
       limit: d.limit,
@@ -116,7 +108,7 @@ function combine(mode: "all" | "any", results: DimResult[]): Decision {
       retryAfterMs: 0,
     };
   }
-  let b = results[0] as DimResult;
+  let b = results[0] as Decision;
   for (const r of results) if (r.retryAfterMs < b.retryAfterMs) b = r;
   return {
     allowed: false,
@@ -309,7 +301,7 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
       throw new ThrottleKitError("multi-dimensional checkSync requires a synchronous store");
     }
     const captured: { fk: string; out: StrategyOutcome<unknown> }[] = [];
-    const results: DimResult[] = [];
+    const results: Decision[] = [];
     for (const [name, dim] of entries) {
       const fk = keyOf(name, dim.key(ctx));
       const cost = dimCost(dim, ctx, globalCost);
@@ -329,7 +321,7 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
     if (commitAll || commitAny) {
       for (let i = 0; i < captured.length; i++) {
         const c = captured[i] as { fk: string; out: StrategyOutcome<unknown> };
-        const res = results[i] as DimResult;
+        const res = results[i] as Decision;
         const write = commitAll || res.allowed;
         if (write && c.out.persist) {
           const commit = (() => ({
