@@ -3,7 +3,8 @@ import { slidingWindow } from "../../src/algorithms/sliding-window";
 import type { Decision } from "../../src/core/types";
 
 function driver(strategy: ReturnType<typeof slidingWindow>) {
-  let state: Record<number, number> | undefined;
+  // The window state is opaque to the test; thread whatever shape the strategy returns.
+  let state: Parameters<typeof strategy.check>[0];
   return (now: number, cost = 1): Decision => {
     const r = strategy.check(state, now, cost);
     if (r.persist) state = r.state;

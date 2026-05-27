@@ -15,7 +15,17 @@ export interface SlidingWindowOptions {
   buckets?: number;
 }
 
-type Buckets = Record<number, number>;
+/**
+ * A fixed ring of `S+1` slots (plain arrays so the JS state JSON-round-trips on the Postgres path).
+ * Slot `tick mod (S+1)` holds that tick's count; `i[p]` records which absolute tick owns the slot, so
+ * a slot from an older lap reads as 0 — mirroring the Lua HASH ring. Replaces a per-check object rebuild.
+ */
+interface WindowState {
+  /** Absolute tick index owning each slot (−1 = empty; real ticks are ≥ 0). Length S+1. */
+  i: number[];
+  /** Count at each slot. Length S+1. */
+  n: number[];
+}
 
 /**
  * Atomic Redis form. State lives in a HASH used as a ring of `S+1` slots: field `idx % (S+1)`
@@ -76,7 +86,7 @@ return {0, limit, remaining, resetAt, retry}`;
  * between fixed window (cheap, 2× error) and the exact log (precise, unbounded memory).
  * See docs/DESIGN-NOTES.md for the estimator and citations.
  */
-export function slidingWindow(options: SlidingWindowOptions): Strategy<Buckets> {
+export function slidingWindow(options: SlidingWindowOptions): Strategy<WindowState> {
   requirePositive("slidingWindow.limit", options.limit);
   requirePositive("slidingWindow.windowMs", options.windowMs);
   const S = options.buckets ?? 10;
@@ -99,7 +109,7 @@ export function slidingWindow(options: SlidingWindowOptions): Strategy<Buckets> 
     windowMs,
     ttlMs: Math.ceil(windowMs + w),
     lua,
-    check(state: Buckets | undefined, now: number, cost: number): StrategyOutcome<Buckets> {
+    check(state: WindowState | undefined, now: number, cost: number): StrategyOutcome<WindowState> {
       const c = Math.floor(now / w);
       let elapsed = now - c * w;
       if (elapsed < 0) elapsed = 0;
@@ -107,25 +117,35 @@ export function slidingWindow(options: SlidingWindowOptions): Strategy<Buckets> 
       if (weight < 0) weight = 0;
       if (weight > 1) weight = 1;
 
-      const buckets = state ?? {};
+      const slots = S + 1;
+      const ring: WindowState = state ?? {
+        i: new Array<number>(slots).fill(-1),
+        n: new Array<number>(slots).fill(0),
+      };
+      // A slot whose stored tick ≠ the queried tick reads 0 (older lap); ticks < 0 were never written.
+      const get = (idx: number): number => {
+        if (idx < 0) return 0;
+        const p = idx % slots;
+        return ring.i[p] === idx ? (ring.n[p] ?? 0) : 0;
+      };
+
       let full = 0;
-      for (let j = c - S + 1; j <= c; j++) full += buckets[j] ?? 0;
-      const oldest = buckets[c - S] ?? 0;
+      for (let j = c - S + 1; j <= c; j++) full += get(j);
+      const oldest = get(c - S);
       const estimate = full + oldest * weight;
       const projected = estimate + cost;
       const resetAt = Math.ceil((c + 1) * w + windowMs);
 
       if (projected <= limit) {
-        const next: Buckets = {};
-        for (let j = c - S; j <= c; j++) {
-          const v = buckets[j];
-          if (v !== undefined) next[j] = v;
-        }
-        next[c] = (next[c] ?? 0) + cost;
+        // Bump the current tick's slot in place (the ring is private to this store turn).
+        const p = c % slots;
+        const cur = ring.i[p] === c ? (ring.n[p] ?? 0) : 0;
+        ring.i[p] = c;
+        ring.n[p] = cur + cost;
         let remaining = Math.floor(limit - projected);
         if (remaining < 0) remaining = 0;
         return {
-          state: next,
+          state: ring,
           result: { allowed: true, limit, remaining, resetAt, retryAfterMs: 0 },
           ttlMs: Math.ceil(windowMs + w),
           persist: true,
