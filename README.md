@@ -17,7 +17,7 @@ Most distributed rate limiters are a shared counter and a hope: fine in one proc
 - **A formally-verified overshoot bound — independent of fleet size.** The two-tier leasing path is model-checked in TLA⁺/TLC: worst-case global admissions are *exactly* `Limit + N·(Batch−1)` (shown tight by counterexample), and with `windowCoupled` they collapse to *exactly* `Limit` — **no matter how many nodes**. Most limiters can't state a bound at all; this one is machine-checked, and the checker re-runs in CI.
 - **One algorithm, every backend, proven identical.** The *same* GCRA (or token-bucket, sliding-window, …) runs in-memory, on Redis (one atomic Lua round trip), and on Postgres (advisory-lock transaction — no Redis needed). A dual-path conformance suite proves the JavaScript and Lua decisions are bit-identical, so local and distributed limiters can't silently drift apart.
 - **A real synchronous API.** `checkSync` is allocation-free at ~320 ns/op — uncommon among JS limiters, which are almost all async-only — for hot paths that shouldn't pay for an `await`.
-- **Research-grade, and shipping.** Two formal programs underpin it — **GALE** (provable distributed leasing) and **TALE** (token-budget escrow for LLMs) — and their results land as real features (`lease.windowCoupled`, `weightedFairShare`, `tokenBudget`), not slideware.
+- **Research-grade, and shipping.** Two formal programs underpin it — **GALE** (provable distributed leasing) and **TALE** (token-budget escrow for LLMs) — and their results land as real features, not slideware: the proven core (`lease.windowCoupled`, `weightedFairShare`, `tokenBudget`) *and* the learned/predictive layers (`learnedReservation`/`predictiveReservation`, `leaseSizer`/`predictiveLeaseSizer`), each cross-checked byte-identically against its proven kernel.
 
 And it tells you where it **loses**: every benchmark is reproducible on your hardware, including the cases where an incumbent is faster. Honesty is part of the spec — see [SCOREBOARD.md](./SCOREBOARD.md).
 
@@ -97,6 +97,7 @@ Primitives that sit *upstream* of the per-key limiters:
 - **`adaptiveThrottle`** — Google-SRE client-side load-shedding: shed locally based on a backend's recent accept rate.
 - **`fairShare` / `weightedFairShare` / `weightedMaxMin`** — split one budget across tenants so a greedy tenant can't starve the rest. `weightedMaxMin` is the exact, **work-conserving** weighted max-min allocation — GALE's *Weighted Fair Escrow*, machine-checked.
 - **`tokenBudget`** — a streaming **token-budget meter** for *post-hoc* costs (LLM output tokens, known only as they stream): debit actual tokens as produced and overshoot is bounded by the debit granularity — **0 per token**, independent of the per-request cap *and* of concurrency. TALE's Layer 1.
+- **`learnedReservation` / `predictiveReservation`** — pace LLM admission *over* a `tokenBudget`: an online newsvendor learner sets the per-request token reservation, descending onto the cost-optimal quantile with `O(√T)` regret; the predictive variant blends in an output-length hint with consistency, robustness, and **unconditional safety** (the meter, not the prediction, holds the bound). TALE Layers 2–3.
 - **`sketchRateLimit` / `mergeableSketch`** — cap an **unbounded key universe in ~7.4 KB** with a Count-Min Sketch that **provably never over-admits**; `merge()` per-node sketches for exact cluster-wide heavy-hitter detection.
 
 Details: [Overload, fairness & DDoS](https://github.com/AmeyaBorkar/throttlekit/wiki/Overload-Fairness-and-DDoS).
@@ -105,8 +106,8 @@ Details: [Overload, fairness & DDoS](https://github.com/AmeyaBorkar/throttlekit/
 
 ThrottleKit's distributed guarantees come from two formal programs developed alongside it; both are proven/measured and gated under [`research/`](./research), with pieces shipping into the library as marked.
 
-- **GALE** — *Globally-Accounted Learned Escrow.* A distributed limiter with a hard, tight overshoot bound **independent of fleet size** (shipped as `lease.windowCoupled`), online-EOQ learned lease sizing, learning-augmented sizing with unconditional safety, weighted work-conserving fairness (shipped as `weightedFairShare`/`weightedMaxMin`), and a proved **trilemma** lower bound `Δ + N·U ≥ (N−1)L`, with a tight `0<C<N` partial-coordination interpolation across **both** static partitioning and dynamic leasing (`Δ + N·U ≥ (N−1)(L − C·B)`, tight at unit batch) — all machine-checked.
-- **TALE** — *escrow under cost uncertainty.* Token-budget rate limiting for LLMs, where a request's cost — its *output* tokens — is revealed only as it streams. A three-layer escrow; the streaming meter (**shipped as `tokenBudget`**) is window-coupling on the cost axis and the multi-gateway form reduces *byte-identically* to GALE's leased budget.
+- **GALE** — *Globally-Accounted Learned Escrow.* A distributed limiter with a hard, tight overshoot bound **independent of fleet size** (shipped as `lease.windowCoupled`), online-EOQ learned lease sizing and learning-augmented sizing with unconditional safety (shipped as `leaseSizer`/`predictiveLeaseSizer`), weighted work-conserving fairness (shipped as `weightedFairShare`/`weightedMaxMin`), and a proved **trilemma** lower bound `Δ + N·U ≥ (N−1)L`, with a tight `0<C<N` partial-coordination interpolation across **both** static partitioning and dynamic leasing (`Δ + N·U ≥ (N−1)(L − C·B)`, tight at unit batch) — all machine-checked.
+- **TALE** — *escrow under cost uncertainty.* Token-budget rate limiting for LLMs, where a request's cost — its *output* tokens — is revealed only as it streams. A three-layer escrow, now all shipping: the streaming meter (**`tokenBudget`**, window-coupling on the cost axis), the online learned reservation (**`learnedReservation`**), and the predictions-with-safety reservation (**`predictiveReservation`**); the multi-gateway form reduces *byte-identically* to GALE's leased budget.
 
 ## Performance
 
@@ -118,7 +119,7 @@ In-process, single hot key (Node 24, reproducible via `npm run bench`; ~±10%):
 
 ## Tested to be checkable, not just claimed
 
-Dual-path conformance (JS ≡ Lua on thousands of generated timelines), property tests (fast-check), atomicity (N concurrent checks at limit K ⇒ exactly K allowed), and the TLA⁺/TLC formal model re-checked by an exhaustive JS checker in CI. All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **460 tests, 95.2% line coverage**, CI green across Node 20/22/24.
+Dual-path conformance (JS ≡ Lua on thousands of generated timelines), property tests (fast-check), atomicity (N concurrent checks at limit K ⇒ exactly K allowed), and the TLA⁺/TLC formal model re-checked by an exhaustive JS checker in CI. All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **490 tests, 95.2% line coverage**, CI green across Node 20/22/24.
 
 ## Status & license
 

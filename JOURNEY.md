@@ -5,6 +5,35 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-27 — 0.7.0: the learned/predictive layers ship
+
+The research that sat gated under `test/` now lands in `src/`. Four primitives, one per GALE/TALE
+learned layer, each a faithful port of its proven kernel:
+
+- **`learnedReservation`** (TALE L2) + **`predictiveReservation`** (TALE L3) in `src/admission` — the
+  online newsvendor reservation that paces admission over `tokenBudget`, and its
+  predictions-with-safety sibling.
+- **`leaseSizer`** (GALE P2) + **`predictiveLeaseSizer`** (GALE P3) in a new `src/twotier/sizing.ts` —
+  online-EOQ lease-batch sizing and its prediction-augmented form.
+
+The deliberate scoping call: ship them as **standalone, pure learners**, *not* wired into the `twoTier`
+hot path. The sizers advise `lease.batch`; live in-loop adaptation touches the proven async leasing
+path and is best validated by the at-scale cluster eval, so it's a separate, later step. The
+reservation learners pair with `tokenBudget` (the meter holds safety; the learner only paces). Nothing
+in the proven core changed — these are purely additive.
+
+Source-of-truth discipline: rather than duplicate-and-hope, each shipped primitive's test
+**cross-checks it byte-identically against the research kernel** it was ported from (many seeds, every
+step, reservations/sizes *and* Hedge weights). That both proves the shipped code inherits the kernel's
+guarantees and makes drift impossible — any divergence turns CI red. The research artifacts stay
+pristine (good for the papers); the equivalence test is the bridge. 460 → 490 tests; full
+lint+typecheck+suite green at every one of the four feature commits.
+
+One self-caught slip worth recording: `tsc` flagged an unused research import in the Pillar-3 test that
+biome missed — the same TS6133 class that bit a commit two releases ago. The per-commit `npm run check`
+(lint **and** typecheck **and** test) caught it before it could land. The lesson holds: typecheck every
+commit, biome alone is not enough.
+
 ## 2026-05-27 — 0.6.1: the dynamic trilemma bound, on the record
 
 Docs release. The package code is byte-identical to 0.6.0 — the dynamic `≤C`-message bound was

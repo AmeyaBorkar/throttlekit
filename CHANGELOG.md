@@ -8,6 +8,44 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.7.0] — 2026-05-27
+
+The learned/predictive layers of both research tracks ship as first-class primitives. Each is a
+faithful port of its proven research kernel and is **cross-checked byte-identically** against that
+kernel over many seeds, so the shipped code inherits the kernel's guarantees and any future drift
+turns CI red. No existing behaviour changes — these are additive.
+
+### Added
+
+- **`learnedReservation`** (+ **`criticalFractile`**) — online learned token *reservation* (the
+  shipped **TALE Layer 2**). The streaming `tokenBudget` meter bounds overshoot for any reservation,
+  but admission still needs a reservation committed *before* a request's cost is known; this learns it
+  with projected online gradient descent on the asymmetric newsvendor / pinball loss, descending onto
+  the critical-fractile quantile `τ = overrunCost/(holdCost+overrunCost)` with **`O(√T)` regret**
+  versus the best fixed reservation. Safety stays the meter's job — the learner only governs the
+  false-reject ⇆ abort trade-off. Pure, deterministic, no clock.
+- **`predictiveReservation`** — learning-augmented reservation (the shipped **TALE Layer 3**): blend a
+  per-request output-length *prediction* against `learnedReservation` via a Hedge meta-learner.
+  Accurate predictions drive cost to the clairvoyant optimum (**consistency**); adversarial ones fall
+  back to the no-regret quantile (**robustness**); and safety is untouched — the prediction is just a
+  number the meter caps, so no prediction can breach the budget (predictions-with-safety on the cost
+  axis).
+- **`leaseSizer`** (+ **`eoqOptimum`**) — adaptive lease sizing for `twoTier` leased mode (the shipped
+  **GALE Pillar 2**): an online learner for the L2 lease `batch` that minimises the EOQ
+  coordination-vs-stranding cost via AdaGrad in log-space, with **`O(√T)` regret** versus the best
+  fixed batch. Standalone for now (feed `size()` into `lease.batch`); safety stays Pillar 1's — under
+  `lease.windowCoupled` the overshoot is exactly `Limit` *independent of the batch*, so adaptive
+  sizing can never loosen the proven bound.
+- **`predictiveLeaseSizer`** — learning-augmented lease sizing (the shipped **GALE Pillar 3**): the
+  prediction-augmented sibling of `leaseSizer`, with the same consistency / robustness / unconditional
+  safety triad via Hedge over {follow-prediction, robust learner}.
+
+### Documentation
+
+- README, SCOREBOARD, and the GitHub Wiki updated: the GALE Pillars 2/3 and TALE Layers 2/3 are now
+  marked **shipped** (`leaseSizer` / `predictiveLeaseSizer`, `learnedReservation` /
+  `predictiveReservation`), not just researched. Test count 460 → 490.
+
 ## [0.6.1] — 2026-05-27
 
 ### Documentation
@@ -240,7 +278,8 @@ bit-identical by a dual-path conformance suite.
 - Tested with Vitest (unit, boundary, property via fast-check, dual-path conformance, and
   exactly-K concurrency/atomicity on memory and Redis); CI on Node 20/22/24 with a Redis service.
 
-[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.0...v0.5.1
