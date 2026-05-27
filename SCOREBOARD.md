@@ -128,6 +128,7 @@ lease sizing and weighted fairness. Proven/measured and gated under `test/gale/`
 | Result | How established | Status |
 |---|---|---|
 | Pillar 1 — window-coupled overshoot `= L`, independent of N | TLA+ + exhaustive BFS twin; **shipped** as `lease.windowCoupled` | ✅ |
+| Pillar 1 at scale — discrete-event sim (lease latency, partitions, skew, **N → 512**) | windowCoupled Δ=0 ∀ N; partitions fail-closed; fixed-B util dip at N=512 motivates Pillar 2 (DISTRIBUTED-SIM-EVAL.md) | ✅ |
 | Pillar 2 — online EOQ lease sizing, `O(√T)` regret | implemented + measured (avg regret/round 18.6 → 0.40) | ✅ |
 | Pillar 3 — learning-augmented (consistency + robustness), safety unconditional | implemented + measured | ✅ |
 | Pillar 4 — weighted fair escrow (work-conserving multi-tenant fairness) | 4 theorems machine-checked on 20k instances + measured (Workload C); **shipped** as `weightedMaxMin` / `weightedFairShare` | ✅ |
@@ -155,6 +156,6 @@ Reproduce with `npx vitest run test/cost`.
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (442 tests total; GALE/TALE research suites included; Postgres/Redis error paths gated) |
+| Test coverage on `src` | ✅ **95.2% lines**, 93.9% funcs, 85.7% branch (460 tests total; GALE/TALE research suites included; Postgres/Redis error paths gated) |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) | ✅ |
 | Build emits valid ESM + CJS + types (11 subpaths) | ✅ |

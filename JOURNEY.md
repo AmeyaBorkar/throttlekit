@@ -5,6 +5,33 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-27 — GALE at scale: a discrete-event simulator (N → 512, latency, partitions)
+
+Built a discrete-event simulator (`test/gale/discrete-event-sim.ts`) to carry the Pillar-1 overshoot
+bound past its single-window synchronous proof into a realistic async model: continuous-time Poisson
+arrivals with per-node skew, lease round-trip latency, and network partitions, across N → 512 nodes.
+
+The headline holds: **windowCoupled Δ = 0 at every N from 2 to 512**, under latency and skew — because
+the shared L2 budget is decremented *atomically* per grant (a Redis/Postgres `INCR`), so concurrent
+in-flight leases serialise and never over-grant. Latency only delays grants (Δ=0 even at 50 ms RTT,
+util ~0.95); partitions fail closed (cut nodes starved 6160→4020, fleet reclaims the budget
+0.952→0.938, Δ=0); and the B=1 zero-latency case is byte-identical to the synchronous
+`simulateDistributedBudget` kernel — the engine validated against the proven model.
+
+The honest, useful finding: with a *fixed* batch B=20, utilisation collapses at large N (1.0 → **0.39**
+at N=512) — only ~L/B≈50 of 512 nodes can lease, each stranding the rest. That is *not* a safety problem
+(Δ stays 0); it is the Pillar-2 lesson, measured — the *safe* batch is N-independent, the *efficient*
+one is not. Reported precisely because it motivates adaptive sizing rather than hiding it.
+
+Two test-premise corrections the sim forced out (it taught me my own assertions were wrong): (1) under
+heavy overload, partitioning one node doesn't change *aggregate* shed — reachable nodes absorb the freed
+budget — so the real effect is *per-node* starvation; added per-node admit tracking and asserted that.
+(2) Carryover only leaks when nodes hold leftover credits at the boundary (demand < batch), so the leak
+test needed a controlled demand-below-batch scenario, not overload. Also caught & fixed a self-inflicted
+regression — the trilemma commit had an unused var `tsc` flags but biome didn't, committed without
+re-running typecheck (fixed in c637317; `npm run typecheck` is now in the pre-commit ritual). The
+remaining open systems work is a real multi-region cluster (needs cloud); this de-risks and predicts it.
+
 ## 2026-05-27 — TALE L2/L3 regret & consistency bounds, instantiated
 
 Wrote out the L2/L3 online-learning guarantees with the **explicit constants and assumptions for our

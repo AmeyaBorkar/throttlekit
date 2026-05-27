@@ -1,0 +1,106 @@
+{
+  "L": 1000,
+  "W": 100,
+  "WIN": 20,
+  "sweepA": [
+    {
+      "n": 2,
+      "maxOvershoot": 0,
+      "utilization": 0.808,
+      "roundTrips": 810,
+      "rtPerWindow": 41
+    },
+    {
+      "n": 8,
+      "maxOvershoot": 0,
+      "utilization": 1,
+      "roundTrips": 2542,
+      "rtPerWindow": 127
+    },
+    {
+      "n": 32,
+      "maxOvershoot": 0,
+      "utilization": 1,
+      "roundTrips": 6750,
+      "rtPerWindow": 338
+    },
+    {
+      "n": 128,
+      "maxOvershoot": 0,
+      "utilization": 0.844,
+      "roundTrips": 18392,
+      "rtPerWindow": 920
+    },
+    {
+      "n": 256,
+      "maxOvershoot": 0,
+      "utilization": 0.7,
+      "roundTrips": 27223,
+      "rtPerWindow": 1361
+    },
+    {
+      "n": 512,
+      "maxOvershoot": 0,
+      "utilization": 0.387,
+      "roundTrips": 38164,
+      "rtPerWindow": 1908
+    }
+  ],
+  "sweepB": [
+    {
+      "n": 8,
+      "windowCoupledMaxOvershoot": 0,
+      "carryoverMaxOvershoot": 0,
+      "carryoverBound": 392
+    },
+    {
+      "n": 32,
+      "windowCoupledMaxOvershoot": 0,
+      "carryoverMaxOvershoot": 0,
+      "carryoverBound": 1568
+    },
+    {
+      "n": 128,
+      "windowCoupledMaxOvershoot": 0,
+      "carryoverMaxOvershoot": 200,
+      "carryoverBound": 6272
+    },
+    {
+      "n": 256,
+      "windowCoupledMaxOvershoot": 0,
+      "carryoverMaxOvershoot": 200,
+      "carryoverBound": 12544
+    }
+  ],
+  "sweepC": [
+    {
+      "latencyMs": 0,
+      "maxOvershoot": 0,
+      "utilization": 0.962
+    },
+    {
+      "latencyMs": 5,
+      "maxOvershoot": 0,
+      "utilization": 0.96
+    },
+    {
+      "latencyMs": 20,
+      "maxOvershoot": 0,
+      "utilization": 0.955
+    },
+    {
+      "latencyMs": 50,
+      "maxOvershoot": 0,
+      "utilization": 0.949
+    }
+  ],
+  "sweepD": {
+    "nodes": 64,
+    "cutNodes": 16,
+    "maxOvershoot": 0,
+    "fleetUtilizationNoPartition": 0.952,
+    "fleetUtilizationPartitioned": 0.938,
+    "cutNodesAdmittedNoPartition": 6160,
+    "cutNodesAdmittedPartitioned": 4020
+  }
+}

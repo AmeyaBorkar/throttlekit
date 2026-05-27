@@ -78,7 +78,7 @@ Pillars 1–3 fix the *total* credits; they say nothing about the *split* when t
 
 ## 4. The machine-checked keystone (already done)
 
-`test/gale/leasing-variants.test.ts` is an exhaustive BFS over the leasing transition system, a CI-gated vitest twin of `test/twotier/leasing-model.test.ts`. It self-validates, then proves Pillar 1 (the asserted facts):
+`test/gale/leasing-variants.test.ts` is an exhaustive BFS over the leasing transition system, a CI-gated vitest twin of `test/twotier/leasing-model.test.ts`. It self-validates, then proves Pillar 1 (the asserted facts). A **discrete-event simulator** (`test/gale/discrete-event-sim.ts`; eval [DISTRIBUTED-SIM-EVAL.md](DISTRIBUTED-SIM-EVAL.md)) then carries the result *beyond* the single-window synchronous proof: `Δ = 0` holds for **N → 512** under lease-RTT latency, demand skew, and network partitions (which cost only utilisation/coordination, never safety — grants are atomic at L2), partitioned nodes fail closed, and the fixed-batch utilisation dip at large N *measures* the case for Pillar 2's adaptive sizing. The asserted BFS facts:
 
 ```
 === 1. Harness validation: reproduce committed TLA+/TLC baseline numbers ===

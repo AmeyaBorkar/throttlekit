@@ -207,7 +207,7 @@ ThrottleKit is built to be checkable, not just claimed:
 - **Formal model** — the leasing protocol is model-checked with TLA⁺/TLC and re-checked by an exhaustive JS checker in CI.
 - **Store conformance kit** — `runStoreConformance` runs any custom store through the same atomicity / TTL / concurrency suite the built-ins pass.
 
-All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **442 tests, 95.2% line coverage**, CI green across Node 20/22/24 — tracked in [SCOREBOARD.md](./SCOREBOARD.md).
+All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **460 tests, 95.2% line coverage**, CI green across Node 20/22/24 — tracked in [SCOREBOARD.md](./SCOREBOARD.md).
 
 ---
 
