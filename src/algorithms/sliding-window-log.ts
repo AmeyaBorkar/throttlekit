@@ -27,7 +27,9 @@ if count + cost <= limit then
   for i = 1, cost do
     redis.call('ZADD', key, now, now .. '-' .. (count + i))
   end
-  redis.call('PEXPIRE', key, windowMs)
+  local px = math.ceil(windowMs)
+  if px < 1 then px = 1 end
+  redis.call('PEXPIRE', key, px)
   local first = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
   local oldest = now
   if first[2] then oldest = tonumber(first[2]) end

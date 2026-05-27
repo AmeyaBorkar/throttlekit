@@ -36,7 +36,9 @@ if start == nil or start ~= window_start then count = 0 end
 if count + cost <= limit then
   local new_count = count + cost
   redis.call('HSET', KEYS[1], 's', window_start, 'c', new_count)
-  redis.call('PEXPIRE', KEYS[1], reset_at - now)
+  local px = math.ceil(reset_at - now)
+  if px < 1 then px = 1 end
+  redis.call('PEXPIRE', KEYS[1], px)
   return {1, limit, limit - new_count, reset_at, 0}
 end
 local remaining = limit - count
