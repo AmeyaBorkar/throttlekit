@@ -47,8 +47,15 @@ export type {
   ConcurrencyGuard,
   Lease,
 } from "./concurrency/adaptive";
-export { twoTier } from "./twotier";
-export type { TwoTierMode, TwoTierOptions, LeaseOptions, L1Options } from "./twotier";
+export { eoqOptimum, leaseSizer, twoTier } from "./twotier";
+export type {
+  L1Options,
+  LeaseOptions,
+  LeaseSizer,
+  LeaseSizerOptions,
+  TwoTierMode,
+  TwoTierOptions,
+} from "./twotier";
 export { buildRateLimitHeaders } from "./http/headers";
 export type { HeaderEmit, BuildRateLimitHeadersOptions } from "./http/headers";
 export { clientIp } from "./security/ip";
