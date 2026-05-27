@@ -1,4 +1,5 @@
 import { systemClock } from "../core/clock";
+import { prefixer } from "../core/key";
 import type { Clock, Store, Transform } from "../core/types";
 
 /**
@@ -91,7 +92,7 @@ const IDENT = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
  */
 export class PostgresStore implements Store {
   readonly #pool: PgPoolLike;
-  readonly #prefix: string;
+  readonly #prefixKey: (key: string) => string;
   readonly #clock: Clock;
   readonly #autoCreate: boolean;
   /** Pre-built statements (table name is a validated identifier, interpolated once). */
@@ -110,7 +111,7 @@ export class PostgresStore implements Store {
       throw new Error(`PostgresStore: invalid table identifier ${JSON.stringify(table)}`);
     }
     this.#pool = options.pool;
-    this.#prefix = options.prefix ?? "";
+    this.#prefixKey = prefixer(options.prefix);
     this.#clock = options.clock ?? systemClock;
     this.#autoCreate = options.autoCreate ?? true;
 
@@ -132,10 +133,6 @@ export class PostgresStore implements Store {
     }
   }
 
-  #key(key: string): string {
-    return this.#prefix.length > 0 ? `${this.#prefix}:${key}` : key;
-  }
-
   /** Create the table + index once (memoized). No-op when {@link PostgresStoreOptions.autoCreate} is false. */
   #ensureSchema(): Promise<void> {
     if (!this.#autoCreate) return Promise.resolve();
@@ -154,7 +151,7 @@ export class PostgresStore implements Store {
 
   async apply<S, R>(key: string, transform: Transform<S, R>): Promise<R> {
     await this.#ensureSchema();
-    const fullKey = this.#key(key);
+    const fullKey = this.#prefixKey(key);
     const now = Math.floor(this.#clock.now());
 
     const client = await this.#pool.connect();
@@ -196,7 +193,7 @@ export class PostgresStore implements Store {
 
   async reset(key: string): Promise<void> {
     await this.#ensureSchema();
-    await this.#pool.query(this.#sqlDelete, [this.#key(key)]);
+    await this.#pool.query(this.#sqlDelete, [this.#prefixKey(key)]);
   }
 
   /** Delete every row already past its expiry. Best-effort; errors are swallowed. */

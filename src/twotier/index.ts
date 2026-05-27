@@ -1,5 +1,6 @@
 import { systemClock } from "../core/clock";
 import { ThrottleKitError } from "../core/errors";
+import { prefixer } from "../core/key";
 import { rateLimit } from "../core/limiter";
 import { decisionTransform } from "../core/transform";
 import type { Clock, Decision, Limiter, Store, Strategy } from "../core/types";
@@ -89,10 +90,7 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
   const { strategy, l2, mode } = options;
   const clock = options.clock ?? systemClock;
   const prefix = options.prefix;
-  const keyFor =
-    prefix !== undefined && prefix.length > 0
-      ? (k: string): string => `${prefix}:${k}`
-      : (k: string): string => k;
+  const keyFor = prefixer(prefix);
 
   if (mode === "strict") {
     return rateLimit<S>({

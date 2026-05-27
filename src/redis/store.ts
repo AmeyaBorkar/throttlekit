@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { StoreUnavailableError } from "../core/errors";
+import { prefixer } from "../core/key";
 import type { Store, Transform } from "../core/types";
 
 /**
@@ -51,7 +52,7 @@ function isNoScript(err: unknown): boolean {
  */
 export class RedisStore implements Store {
   readonly #client: RedisClientLike;
-  readonly #prefix: string;
+  readonly #prefixKey: (key: string) => string;
   readonly #useLua: boolean;
   readonly #useServerTime: boolean;
   readonly #maxRetries: number;
@@ -59,14 +60,10 @@ export class RedisStore implements Store {
 
   constructor(options: RedisStoreOptions) {
     this.#client = options.client;
-    this.#prefix = options.prefix ?? "";
+    this.#prefixKey = prefixer(options.prefix);
     this.#useLua = options.useLua ?? true;
     this.#useServerTime = options.useServerTime ?? true;
     this.#maxRetries = options.maxRetries ?? 5;
-  }
-
-  #key(key: string): string {
-    return this.#prefix.length > 0 ? `${this.#prefix}:${key}` : key;
   }
 
   #sha(script: string): string {
@@ -92,7 +89,7 @@ export class RedisStore implements Store {
   }
 
   async apply<S, R>(key: string, transform: Transform<S, R>): Promise<R> {
-    const baseKey = this.#key(key);
+    const baseKey = this.#prefixKey(key);
     const lua = transform.lua;
     if (lua !== undefined && this.#useLua) {
       const keys = lua.program.buildKeys(baseKey);
@@ -128,6 +125,6 @@ export class RedisStore implements Store {
   }
 
   async reset(key: string): Promise<void> {
-    await this.#client.del(this.#key(key));
+    await this.#client.del(this.#prefixKey(key));
   }
 }

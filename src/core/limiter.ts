@@ -1,6 +1,7 @@
 import { MemoryStore } from "../stores/memory";
 import { systemClock } from "./clock";
 import { ThrottleKitError } from "./errors";
+import { prefixer } from "./key";
 import { decisionTransform } from "./transform";
 import type { Clock, Decision, Limiter, Store, Strategy, Transform } from "./types";
 import { requireCost } from "./validate";
@@ -28,11 +29,7 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
   const store: Store =
     options.store ?? new MemoryStore(options.clock !== undefined ? { clock: options.clock } : {});
 
-  const prefix = options.prefix;
-  const keyFor =
-    prefix !== undefined && prefix.length > 0
-      ? (k: string): string => `${prefix}:${k}`
-      : (k: string): string => k;
+  const keyFor = prefixer(options.prefix);
 
   // A single reused transform for the local hot path, shared by checkSync and check's synchronous-
   // store fast path. Both set `now`/`cost` on these slots and then invoke the transform *through a

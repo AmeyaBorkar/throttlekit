@@ -1,5 +1,6 @@
 import { systemClock } from "../core/clock";
 import { ThrottleKitError } from "../core/errors";
+import { prefixer } from "../core/key";
 import { LUA_NOW } from "../core/lua";
 import type {
   ApplyOutcome,
@@ -101,11 +102,7 @@ export function leakyBucket(options: LeakyBucketOptions): Shaper {
   const clock = options.clock ?? systemClock;
   const store: Store =
     options.store ?? new MemoryStore(options.clock !== undefined ? { clock: options.clock } : {});
-  const prefix = options.prefix;
-  const keyFor =
-    prefix !== undefined && prefix.length > 0
-      ? (k: string): string => `${prefix}:${k}`
-      : (k: string): string => k;
+  const keyFor = prefixer(options.prefix);
 
   const T = 1000 / options.ratePerSec;
   const maxQueueMs = options.maxQueueMs;
