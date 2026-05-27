@@ -113,11 +113,11 @@ ThrottleKit's distributed guarantees come from two formal programs developed alo
 
 ## Performance
 
-In-process, single hot key (Node 24, reproducible via `npm run bench`; ~±10%):
+In-process, single hot key (Node 24, AMD Ryzen AI 9 HX 370, measured 2026-05-28; reproducible via `npm run bench`; ~±10%):
 
-- **`checkSync` (GCRA): ~3.1M ops/s, ~320 ns/op, allocation-free.** `check` (async): ~1.7M ops/s. Redis: exactly one `EVALSHA` round trip per check.
+- **`checkSync` (GCRA): ~5.4M ops/s, ~186 ns/op, ~1 B/op (≈allocation-free).** `check` (async): ~3.5M ops/s. Redis: exactly one `EVALSHA` round trip per check.
 
-**The honest head-to-head** (`npm run bench:compare`): roughly tied with `rate-limiter-flexible` on Redis (both one atomic Lua round trip), with a tighter tail; counter-based libraries are faster on async in-memory (the cost of GCRA over a bounded-memory store); a single Postgres check trails a one-statement upsert by design, but `twoTier(leased)` amortizes it into a ~34× throughput win under load. The full table, methodology, and every place ThrottleKit loses: [SCOREBOARD.md](./SCOREBOARD.md).
+**The honest head-to-head** (`npm run bench:compare`): roughly tied with `rate-limiter-flexible` on Redis (both one atomic Lua round trip), with a tighter tail; ThrottleKit's async in-memory path now edges *past* `rate-limiter-flexible`, though `express-rate-limit`'s bare counter is still ~1.4× faster (the cost of returning a full `Decision` over a bounded-memory store); a single Postgres check trails a one-statement upsert by design, but `twoTier(leased)` amortizes it into a ~37× throughput win under load. The full table, methodology, machine spec, and every place ThrottleKit loses: [SCOREBOARD.md](./SCOREBOARD.md).
 
 ## Tested to be checkable, not just claimed
 

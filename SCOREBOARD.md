@@ -2,24 +2,27 @@
 
 Whether the project meets its stated expectations. Legend: ✅ met · 🟡 partial · ⬜ not started.
 
-Benchmarks below were produced by `npm run bench -- --redis` (with `--expose-gc`) on the dev
-machine — Windows 11, Node v24.13.1, single-node Redis 7 in Docker over the loopback. The
-head-to-head numbers come from `npm run bench:compare`. All are reproducible on your hardware, not
-vendor claims, and vary run-to-run (±10% on the sync and Redis rows; the async in-process rows swing
-more, since the comparative harness runs all contenders in one process under shared GC pressure).
-Redis latency here is loopback-Docker-on-Windows (NAT-bound); native Linux / CI is lower.
+Benchmarks below were produced on **2026-05-28** by `npm run bench -- --redis` (with `--expose-gc`)
+and the head-to-head `npm run bench:compare`, on: **AMD Ryzen AI 9 HX 370** (24 logical cores),
+31 GB RAM, Windows 11 (build 26200), **Node v24.13.1**; Redis 7 and PostgreSQL 16 in Docker Desktop
+(WSL2 backend) over the loopback. All are reproducible on your hardware (`npm run bench`), not vendor
+claims, and vary run-to-run (±10% on the sync and Redis rows; the async in-process rows swing more,
+since the comparative harness runs all contenders in one process under shared GC pressure).
+**The Redis/Postgres latencies here are Docker-Desktop-on-Windows (WSL2, NAT-bound) and are dominated
+by that network path — native Linux / CI is materially lower. Read the cross-library *relative*
+numbers and the round-trip *counts* as the signal, not the absolute microseconds.**
 
 ## Performance budgets (design targets from §11)
 
 | Path | Target | Measured | Status |
 |---|---|---|---|
-| In-memory `checkSync` (GCRA) | sub-microsecond; ~0 steady-state allocations | **320 ns/op (3.12M ops/s)**, ~4 B/op | ✅ |
-| In-memory `check` (async) | low single-digit microseconds | **596 ns/op (1.68M ops/s)** — 2.7× faster after the sync-store fast path | ✅ |
-| Redis `strict` decision | exactly **1** round trip | **1 EVALSHA / req**; p50 ~1.2ms / p99 ~2.0ms (loopback) | ✅ |
-| `leased` steady state | ~**1 round trip per B** requests | **exactly 100 reqs / round trip** at batch 100 (64.8k ops/s) | ✅ |
+| In-memory `checkSync` (GCRA) | sub-microsecond; ~0 steady-state allocations | **186 ns/op (5.37M ops/s)**, ~1 B/op | ✅ |
+| In-memory `check` (async) | low single-digit microseconds | **284 ns/op (3.52M ops/s)** | ✅ |
+| Redis `strict` decision | exactly **1** round trip | **1 EVALSHA / req**; p50 ~1.2ms / p99 ~1.8ms (Docker/WSL2 loopback) | ✅ |
+| `leased` steady state | ~**1 round trip per B** requests | **exactly 100 reqs / round trip** at batch 100 (69.9k ops/s) | ✅ |
 | Multi-dimensional (k axes) on Redis | **1** round trip regardless of k | **1 fused EVALSHA** over k keys (conformance-proven) | ✅ |
 
-Token bucket `checkSync` 404 ns/op (2.47M ops/s); fixed window `checkSync` 468 ns/op (2.14M ops/s).
+Token bucket `checkSync` 181 ns/op (5.54M ops/s); fixed window `checkSync` 192 ns/op (5.22M ops/s, ~0 B/op).
 
 ## Versus alternatives (`npm run bench:compare`)
 
@@ -31,29 +34,30 @@ same guarantee even at equal ops/s. Nothing hidden or cherry-picked.
 
 | Library | Algorithm | API | ops/s | ns/op |
 |---|---|---|---|---|
-| **throttlekit** | GCRA | `checkSync` (sync) | **2.95M** | 339 (≈1 B/op) |
-| **throttlekit** | GCRA | `check` (async) | 1.30M | 771 |
-| throttlekit | fixed-window | `check` (async) | 1.38M | 725 |
-| rate-limiter-flexible | fixed-window | `consume` (async) | 2.31M | 433 |
+| **throttlekit** | GCRA | `checkSync` (sync) | **5.84M** | 171 (≈1 B/op) |
+| **throttlekit** | GCRA | `check` (async) | 3.39M | 295 |
+| throttlekit | fixed-window | `check` (async) | 3.41M | 293 |
+| rate-limiter-flexible | fixed-window | `consume` (async) | 2.77M | 362 |
 | express-rate-limit | fixed-window | store `increment` (async) | 4.74M | 211 |
 
-ThrottleKit owns the **sync** path (≈allocation-free; no incumbent offers a sync API — its 339 ns
-beats rate-limiter-flexible's only, async, API) and stays in the **millions/sec on async**, though
-the bare-counter incumbents are ~2–3× faster there. That gap is the trade: their async edge is a
-plain fixed-window counter, while ThrottleKit's headline path is GCRA over a timing-wheel + CLOCK
-store (smooth pacing, bounded memory, TTL expiry) — more real work per check. The `throttlekit`
-fixed-window row is the closest apples-to-apples comparison. All contenders are far beyond real-world
-per-process need; the distributed tail and `leased` amortization matter more in practice.
+ThrottleKit owns the **sync** path (≈allocation-free at 171 ns; no incumbent offers a sync API) and
+on **async** now edges *past* rate-limiter-flexible (3.4M vs 2.77M) while doing more real work per
+check — GCRA / fixed-window returning a full immutable `Decision` over a timing-wheel + CLOCK store
+(smooth pacing, bounded memory, TTL expiry). express-rate-limit's bare `Map.increment` (a plain
+counter, no `Decision` object) is still ~1.4× faster on this micro-benchmark — the honest cost of
+ThrottleKit's richer per-check contract. The `throttlekit` fixed-window row is the closest
+apples-to-apples. All contenders are far beyond real-world per-process need; the distributed tail and
+`leased` amortization matter more in practice.
 
 **Redis (loopback, identical ioredis client / server / DB):**
 
 | Library | Algorithm | ops/s | p50 | p99 | p999 |
 |---|---|---|---|---|---|
-| **throttlekit** | GCRA | 761 | 1.24 ms | 2.27 ms | **2.89 ms** |
-| rate-limiter-flexible | fixed-window | 767 | 1.24 ms | 2.15 ms | 4.60 ms |
+| **throttlekit** | GCRA | 787 | 1.22 ms | 1.83 ms | **2.28 ms** |
+| rate-limiter-flexible | fixed-window | 824 | 1.17 ms | 1.79 ms | 3.01 ms |
 
 Both do one atomic Lua round trip per request; **tied on throughput and p50** (latency-bound, serial
-awaits — not pipelined), but ThrottleKit holds a **tighter tail** — p999 ~1.6× lower (cached
+awaits — not pipelined), but ThrottleKit holds a **tighter tail** — p999 ~1.3× lower (cached
 `EVALSHA` + a leaner script). `@upstash/ratelimit` is excluded: it requires the Upstash cloud REST
 endpoint and can't be benchmarked locally on equal footing.
 
@@ -61,19 +65,19 @@ endpoint and can't be benchmarked locally on equal footing.
 
 | Library | Algorithm | Round trips | ops/s | p50 / avg |
 |---|---|---|---|---|
-| throttlekit `PostgresStore` | GCRA | ~5 (txn) | 123 | 7.8 ms |
-| **rate-limiter-flexible** | fixed-window | 1 (upsert) | **366** | **2.6 ms** |
-| **throttlekit `twoTier(leased)`** | GCRA | 1 per **100** reqs | **12.6k** | **79.7 µs** |
+| throttlekit `PostgresStore` | GCRA | ~5 (txn) | 127 | 7.6 ms |
+| **rate-limiter-flexible** | fixed-window | 1 (upsert) | **372** | **2.5 ms** |
+| **throttlekit `twoTier(leased)`** | GCRA | 1 per **100** reqs | **13.8k** | **72.6 µs** |
 
-Two honest, opposite results. **Per single op, rate-limiter-flexible wins ~3×** — it expresses its
+Two honest, opposite results. **Per single op, rate-limiter-flexible wins ~2.9×** — it expresses its
 counter as one atomic `INSERT … ON CONFLICT DO UPDATE`, while `PostgresStore` runs a generic
 read-modify-write **transaction** (advisory lock → read → write → commit) so the *same proven
 transform* drives every strategy and backend; that generality costs round trips. **At throughput,
-`twoTier(leased)` over Postgres wins ~34×** (12.6k vs 366 ops/s; 79.7 µs vs 2.6 ms/op) — one
+`twoTier(leased)` over Postgres wins ~37×** (13.8k vs 372 ops/s; 72.6 µs vs 2.5 ms/op) — one
 transaction per `batch`, a lever rate-limiter-flexible has no equivalent for. So: reach for leased on
 hot keys; the bare single-op path trails on latency by design. (A single-round-trip per-op win is
 possible via a server-side PL/pgSQL function — a third execution path — but isn't shipped.) Per-op
-latency here is loopback-Docker-on-Windows.
+latency here is Docker-Desktop-on-Windows.
 
 ## Correctness guarantees (§12)
 
