@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     redis: "src/redis/index.ts",
     postgres: "src/postgres/index.ts",
+    cloudflare: "src/cloudflare/index.ts",
     express: "src/adapters/express.ts",
     fetch: "src/adapters/fetch.ts",
     hono: "src/adapters/hono.ts",

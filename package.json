@@ -76,6 +76,16 @@
         "default": "./dist/postgres.cjs"
       }
     },
+    "./cloudflare": {
+      "import": {
+        "types": "./dist/cloudflare.d.ts",
+        "default": "./dist/cloudflare.js"
+      },
+      "require": {
+        "types": "./dist/cloudflare.d.cts",
+        "default": "./dist/cloudflare.cjs"
+      }
+    },
     "./express": {
       "import": {
         "types": "./dist/express.d.ts",
