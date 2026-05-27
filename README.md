@@ -46,7 +46,7 @@ const decision = await limiter.check(userId); // cost defaults to 1
 if (!decision.allowed) throw new Error(`rate limited; retry in ${decision.retryAfterMs}ms`);
 ```
 
-Every check returns an immutable `Decision` — `{ allowed, limit, remaining, resetAt, retryAfterMs }`. The in-memory store also gives a synchronous fast path (`limiter.checkSync(userId)`) and a per-request `cost`. The [**Getting Started**](https://github.com/AmeyaBorkar/throttlekit/wiki/Getting-Started) guide covers the `Decision` shape, batch checks (`checkMany`), and deterministic time (`ManualClock`); runnable demos live in [`examples/`](./examples).
+Every check returns an immutable `Decision` — `{ allowed, limit, remaining, resetAt, retryAfterMs }`. The in-memory store also gives a synchronous fast path (`limiter.checkSync(userId)`) and a per-request `cost`. Need to read state **without spending it**? `limiter.peek(key)` returns the current `Decision` and `limiter.forecast(key, cost)` projects capacity (`{ spendableNow, nextReplenishAt, fullAt }`) — both non-consuming on every backend. The [**Getting Started**](https://github.com/AmeyaBorkar/throttlekit/wiki/Getting-Started) guide covers the `Decision` shape, batch checks (`checkMany`), introspection, and deterministic time (`ManualClock`); runnable demos live in [`examples/`](./examples).
 
 ## Pick a strategy, a backend, a framework
 
