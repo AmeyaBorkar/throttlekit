@@ -8,6 +8,8 @@ interface Entry {
   ref: boolean;
   /** Index into the CLOCK ring, or -1 when the store is unbounded. */
   slot: number;
+  /** Epoch-ms expiry, checked inline on read so the hot path needs no second (wheel) Map lookup. */
+  exp: number;
 }
 
 export interface MemoryStoreOptions {
@@ -79,7 +81,8 @@ export class MemoryStore implements Store {
 
   /** Whether `key` is present and unexpired at the current time. */
   has(key: string): boolean {
-    return this.#map.has(key) && !this.#wheel.isExpired(key, this.#clock.now());
+    const entry = this.#map.get(key);
+    return entry !== undefined && entry.exp > this.#clock.now();
   }
 
   /** Remove a key from the map and release its CLOCK ring slot (does not touch the wheel). */
@@ -113,9 +116,9 @@ export class MemoryStore implements Store {
     return this.#hand; // unreachable in practice
   }
 
-  #insert(key: string, state: unknown): void {
+  #insert(key: string, state: unknown, exp: number): void {
     if (!this.#bounded) {
-      this.#map.set(key, { state, ref: false, slot: -1 });
+      this.#map.set(key, { state, ref: false, slot: -1, exp });
       return;
     }
     let slot: number;
@@ -126,14 +129,15 @@ export class MemoryStore implements Store {
       slot = this.#evictSlot();
       this.#ring[slot] = key;
     }
-    this.#map.set(key, { state, ref: false, slot });
+    this.#map.set(key, { state, ref: false, slot, exp });
   }
 
   applySync<S, R>(key: string, transform: Transform<S, R>, now = this.#clock.now()): R {
     this.#wheel.advance(now, this.#dropBound);
 
     let entry = this.#map.get(key);
-    if (entry !== undefined && this.#wheel.isExpired(key, now)) {
+    // Lazy expiry inline off the entry's own `exp` — no second (wheel) Map lookup on the hot path.
+    if (entry !== undefined && entry.exp <= now) {
       this.#drop(key);
       this.#wheel.delete(key);
       entry = undefined;
@@ -144,12 +148,14 @@ export class MemoryStore implements Store {
     const out: ApplyOutcome<S, R> = transform(current);
 
     if (out.persist) {
+      const exp = now + Math.max(0, out.ttlMs);
       if (entry !== undefined) {
         entry.state = out.state;
+        entry.exp = exp;
       } else {
-        this.#insert(key, out.state);
+        this.#insert(key, out.state, exp);
       }
-      this.#wheel.set(key, now + Math.max(0, out.ttlMs));
+      this.#wheel.set(key, exp);
     }
     return out.result;
   }
