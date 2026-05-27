@@ -59,8 +59,23 @@ export interface Shaper {
   reset(key: string): Promise<void>;
 }
 
-const sleep = (ms: number): Promise<void> =>
-  ms <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms));
+/** setTimeout's maximum delay; a larger value silently clamps to 1ms and fires almost immediately. */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+/** Sleep `ms`, chunking delays beyond setTimeout's 32-bit ceiling so long waits still pace correctly. */
+const sleep = (ms: number): Promise<void> => {
+  if (ms <= 0) return Promise.resolve();
+  if (ms <= MAX_TIMEOUT_MS) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    let remaining = ms;
+    const tick = (): void => {
+      const slice = Math.min(remaining, MAX_TIMEOUT_MS);
+      remaining -= slice;
+      setTimeout(remaining > 0 ? tick : resolve, slice);
+    };
+    tick();
+  });
+};
 
 /**
  * Atomic Redis form. Reply: `{accepted, delayMs}`. The next-departure timestamp is stored at full
