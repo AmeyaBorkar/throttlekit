@@ -7,5 +7,11 @@
  * @packageDocumentation
  */
 
-export { instrumentGuard, instrumentLimiter } from "./otel";
-export type { InstrumentOptions } from "./otel";
+export {
+  instrumentGuard,
+  instrumentLimiter,
+  METRIC_NAMES,
+  recordDecisionOnSpan,
+  SPAN_ATTRIBUTES,
+} from "./otel";
+export type { InstrumentOptions, SpanLike } from "./otel";

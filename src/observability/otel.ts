@@ -20,6 +20,28 @@ import type { ConcurrencyGuard } from "../concurrency/adaptive";
 import { forwardIntrospection } from "../core/limiter";
 import type { Decision, Limiter } from "../core/types";
 
+/**
+ * The **stable** metric names ThrottleKit emits. Treated as a public contract: a name changes only
+ * with a deliberate major bump (a renamed metric breaks dashboards), and the metrics-contract test
+ * pins these exact strings. Reference them instead of hard-coding (e.g. in Grafana/alert config).
+ * An OTel Prometheus exporter maps the dots to underscores (`throttlekit.checks` →
+ * `throttlekit_checks`); see docs/METRICS.md.
+ */
+export const METRIC_NAMES = {
+  /** Counter `+1` per check. Attributes: `{ strategy, allowed }`. */
+  checks: "throttlekit.checks",
+  /** Histogram of `decision.remaining`. Attribute: `{ strategy }`. */
+  remaining: "throttlekit.remaining",
+  /** Histogram (ms) of wall time inside the store per check. Attribute: `{ strategy }`. */
+  storeLatency: "throttlekit.store.latency",
+  /** Observable gauge: current inferred concurrency ceiling. */
+  concurrencyLimit: "throttlekit.concurrency.limit",
+  /** Observable gauge: concurrency leases outstanding. */
+  concurrencyInflight: "throttlekit.concurrency.inflight",
+  /** Observable gauge (ms): windowed no-load RTT baseline. */
+  concurrencyRttNoload: "throttlekit.concurrency.rtt_noload",
+} as const;
+
 /** Common options for the instrumentation wrappers. */
 export interface InstrumentOptions {
   /**
@@ -58,13 +80,13 @@ export function instrumentLimiter(
   const extra = opts?.attributes;
 
   // Instruments are created once here, never on the per-check hot path.
-  const checks = meter.createCounter("throttlekit.checks", {
+  const checks = meter.createCounter(METRIC_NAMES.checks, {
     description: "Total rate-limit checks, labelled by strategy and allow/deny outcome.",
   });
-  const remaining = meter.createHistogram("throttlekit.remaining", {
+  const remaining = meter.createHistogram(METRIC_NAMES.remaining, {
     description: "Units remaining reported by each rate-limit decision.",
   });
-  const latency = meter.createHistogram("throttlekit.store.latency", {
+  const latency = meter.createHistogram(METRIC_NAMES.storeLatency, {
     description: "Wall time spent in the underlying store per check.",
     unit: "ms",
   });
@@ -151,13 +173,13 @@ export function instrumentGuard(
   const extra = opts?.attributes;
   const attrs: Record<string, string> | undefined = extra !== undefined ? { ...extra } : undefined;
 
-  const limitGauge = meter.createObservableGauge("throttlekit.concurrency.limit", {
+  const limitGauge = meter.createObservableGauge(METRIC_NAMES.concurrencyLimit, {
     description: "Current inferred concurrency ceiling.",
   });
-  const inflightGauge = meter.createObservableGauge("throttlekit.concurrency.inflight", {
+  const inflightGauge = meter.createObservableGauge(METRIC_NAMES.concurrencyInflight, {
     description: "Concurrency leases currently outstanding.",
   });
-  const rttGauge = meter.createObservableGauge("throttlekit.concurrency.rtt_noload", {
+  const rttGauge = meter.createObservableGauge(METRIC_NAMES.concurrencyRttNoload, {
     description: "Windowed no-load RTT baseline.",
     unit: "ms",
   });
@@ -174,4 +196,57 @@ export function instrumentGuard(
   );
 
   return guard;
+}
+
+/**
+ * The **stable** span-attribute keys set by {@link recordDecisionOnSpan}. A public contract like
+ * {@link METRIC_NAMES}; pinned by the metrics-contract test. See docs/METRICS.md.
+ */
+export const SPAN_ATTRIBUTES = {
+  /** The active strategy name (e.g. `"gcra"`, `"quota"`). */
+  strategy: "throttlekit.strategy",
+  /** Whether the request was admitted (boolean). */
+  allowed: "throttlekit.allowed",
+  /** The effective ceiling. */
+  limit: "throttlekit.limit",
+  /** Units remaining after the decision. */
+  remaining: "throttlekit.remaining",
+  /** Milliseconds to wait before retrying (`0` when allowed). */
+  retryAfterMs: "throttlekit.retry_after_ms",
+} as const;
+
+/** The slice of an OpenTelemetry `Span` used to record decision attributes (structural; no import). */
+export interface SpanLike {
+  setAttribute(key: string, value: string | number | boolean): unknown;
+}
+
+/**
+ * Record a rate-limit {@link Decision} onto an OpenTelemetry span using the stable
+ * {@link SPAN_ATTRIBUTES} keys, so a trace can be searched by `throttlekit.allowed=false` and
+ * faceted by `throttlekit.strategy`. Pass the span you already have (e.g. `trace.getActiveSpan()`);
+ * typing it structurally keeps this module dependency-free. `extra` adds your own attributes.
+ *
+ * @example
+ * ```ts
+ * import { trace } from "@opentelemetry/api";
+ * import { recordDecisionOnSpan } from "throttlekit/otel";
+ * const d = await limiter.check(key);
+ * const span = trace.getActiveSpan();
+ * if (span) recordDecisionOnSpan(span, d, limiter.strategy.name);
+ * ```
+ */
+export function recordDecisionOnSpan(
+  span: SpanLike,
+  decision: Decision,
+  strategyName: string,
+  extra?: Record<string, string | number | boolean>,
+): void {
+  span.setAttribute(SPAN_ATTRIBUTES.strategy, strategyName);
+  span.setAttribute(SPAN_ATTRIBUTES.allowed, decision.allowed);
+  span.setAttribute(SPAN_ATTRIBUTES.limit, decision.limit);
+  span.setAttribute(SPAN_ATTRIBUTES.remaining, decision.remaining);
+  span.setAttribute(SPAN_ATTRIBUTES.retryAfterMs, decision.retryAfterMs);
+  if (extra !== undefined) {
+    for (const [k, v] of Object.entries(extra)) span.setAttribute(k, v);
+  }
 }
