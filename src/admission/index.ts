@@ -17,9 +17,14 @@ import { requireAtLeast, requireInteger, requirePositive } from "../core/validat
  *   tokens, billed only as they stream). Debit the actual tokens as they are produced; overshoot is
  *   bounded by the debit granularity (exactly 0 per token), independent of the per-request cap and
  *   of how many streams meter concurrently.
+ * - {@link learnedReservation}: an online newsvendor learner for the per-request token *reservation*
+ *   that paces admission over a {@link tokenBudget} — it descends onto the cost-optimal quantile with
+ *   `O(√T)` regret, while the meter (not the reservation) holds safety unconditionally.
  *
- * All are pure JavaScript, dependency-free, and read time only through an injected {@link Clock},
- * so every decision is reproducible to the millisecond under {@link ManualClock}.
+ * The throttles and budgets read time only through an injected {@link Clock}, so every decision is
+ * reproducible to the millisecond under {@link ManualClock}; the learners ({@link learnedReservation})
+ * carry no clock at all and are driven purely by the outcomes you feed them. All are pure JavaScript
+ * and dependency-free.
  */
 
 // ── Primitive 1: adaptiveThrottle (Google SRE client-side adaptive throttling) ─────────────────
@@ -746,6 +751,138 @@ export function tokenBudget(options: TokenBudgetOptions): TokenBudgetMeter {
     reset(): void {
       windowStart = Number.NEGATIVE_INFINITY;
       served = 0;
+    },
+  };
+}
+
+// ── Primitive 5: learnedReservation (TALE Layer 2 — online learned token reservation) ───────────
+
+/** Clamp `v` into the closed interval `[lo, hi]`. */
+const clampNum = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+
+/** Options for {@link learnedReservation}. */
+export interface LearnedReservationOptions {
+  /** Hold cost `h`: penalty per token *reserved but unused* — the cost of a needless reject. Must be `> 0`. */
+  holdCost: number;
+  /** Overrun cost `p`: penalty per token of realised cost *beyond* the reservation — the cost of an abort. Must be `> 0`. */
+  overrunCost: number;
+  /** Upper clamp on the reservation = the per-request cap `m`; also the reservation-domain diameter. Must be `> 0`. */
+  maxReservation: number;
+  /** Lower clamp on the reservation. Default `0` (no admission gate — admit into any free slot). */
+  minReservation?: number;
+  /** Initial reservation. Default the feasible midpoint `(minR+maxR)/2`, a neutral prior. */
+  initialReservation?: number;
+  /** OGD step scale `η₀` in the step `η₀/√t`. Default `D/G = (maxR−minR)/max(h,p)`, the Zinkevich-optimal scale. */
+  stepScale?: number;
+}
+
+/** A learned per-request reservation: commit a reservation, then learn from each realised cost. */
+export interface LearnedReservation {
+  /** The integer reservation to commit for the next request, in `[minReservation, maxReservation]`. */
+  reserve(): number;
+  /** Feed the realised cost once a request completes; updates the reservation for subsequent requests. */
+  observe(cost: number): void;
+  /** The continuous internal reservation (before rounding/clamping), for introspection. */
+  readonly continuous: number;
+}
+
+/**
+ * The **critical-fractile** quantile level `τ = p/(h+p)` — the cost quantile that minimises the
+ * asymmetric newsvendor / pinball loss, and the target {@link learnedReservation} descends onto. With
+ * `h = p` it is the median (`0.5`); a costlier overrun (`p > h`) pushes it toward higher percentiles.
+ */
+export function criticalFractile(holdCost: number, overrunCost: number): number {
+  requirePositive("criticalFractile.holdCost", holdCost);
+  requirePositive("criticalFractile.overrunCost", overrunCost);
+  return overrunCost / (holdCost + overrunCost);
+}
+
+/**
+ * **Online learned reservation** (TALE Layer 2) — learn the per-request token *reservation* `r` that
+ * best paces admission over a {@link tokenBudget}, when each request's true cost (its output tokens)
+ * is revealed only *after* it runs.
+ *
+ * A {@link tokenBudget} bounds *overshoot* for any reservation, but admission still needs a reservation
+ * committed *before* the cost is known — it sets the 429 and paces concurrency. Reserve too much
+ * (`r = max_tokens`) and you reject admissible traffic and starve concurrency; reserve too little and
+ * you over-admit, so the meter has to abort in-flight streams at the boundary (wasted half-finished
+ * work). The per-request regret of a reservation `r` against the realised cost `c` is the asymmetric
+ * **newsvendor / pinball** loss
+ *
+ * ```text
+ *   ℓ(r, c) = holdCost·(r − c)₊  +  overrunCost·(c − r)₊
+ * ```
+ *
+ * whose population minimiser is the {@link criticalFractile} quantile `τ = overrunCost/(holdCost+overrunCost)`
+ * of the cost distribution. This learns it online with **projected online gradient descent** (Zinkevich,
+ * ICML'03): {@link LearnedReservation.reserve} commits the current reservation, and
+ * {@link LearnedReservation.observe} feeds back the realised cost (full information — the cost is known
+ * once the stream finishes), stepping the reservation by the pinball subgradient (`+h` when it
+ * over-reserved, `−p` when it under-reserved). With the canonical `η_t = η₀/√t` step this attains
+ * **`O(√T)` regret** versus the best fixed reservation in hindsight (`R_T ≤ (3/2)·D·G·√T`, with
+ * `D = maxR−minR`, `G = max(h,p)`; see `research/cost-uncertainty/REGRET-ANALYSIS.md`).
+ *
+ * **Safety is not this learner's job.** The reservation only governs the false-reject ⇆ abort
+ * trade-off; the {@link tokenBudget} meter caps production at the budget for *any* reservation
+ * whatsoever, so no choice of `r` — learned, maximal, or zero — can breach the budget `L`. Pair the
+ * two: the meter holds the hard bound, this learner makes admission efficient.
+ *
+ * Pure and deterministic — no clock, no RNG; driven entirely by the costs you
+ * {@link LearnedReservation.observe}. For predictions-with-safety (a per-request length hint blended
+ * against this robust learner), see {@link predictiveReservation}.
+ *
+ * @example
+ * const meter = tokenBudget({ budget: 100_000, windowMs: 60_000 });
+ * const policy = learnedReservation({ holdCost: 1, overrunCost: 4, maxReservation: 4096 });
+ * // at admission, only let a request in if its reservation fits the remaining budget:
+ * if (policy.reserve() <= meter.remaining()) {
+ *   let produced = 0;
+ *   for await (const tok of completion) {
+ *     if (!meter.debitSync(1).allowed) break; // budget spent — stop generating
+ *     produced++;
+ *     emit(tok);
+ *   }
+ *   policy.observe(produced); // learn from the realised cost
+ * }
+ */
+export function learnedReservation(options: LearnedReservationOptions): LearnedReservation {
+  const h = options.holdCost;
+  const p = options.overrunCost;
+  requirePositive("learnedReservation.holdCost", h);
+  requirePositive("learnedReservation.overrunCost", p);
+  const maxR = options.maxReservation;
+  requirePositive("learnedReservation.maxReservation", maxR);
+  const minR = options.minReservation ?? 0;
+  requireAtLeast("learnedReservation.minReservation", minR, 0);
+  if (minR > maxR) {
+    throw new RangeError(
+      `learnedReservation.minReservation must be <= maxReservation, got ${minR} > ${maxR}`,
+    );
+  }
+  if (options.stepScale !== undefined) {
+    requirePositive("learnedReservation.stepScale", options.stepScale);
+  }
+
+  // Zinkevich-optimal step scale η₀ = D/G: diameter D = maxR−minR over subgradient bound G = max(h,p).
+  const stepScale = options.stepScale ?? Math.max((maxR - minR) / Math.max(h, p), 1e-6);
+
+  let r = clampNum(options.initialReservation ?? (minR + maxR) / 2, minR, maxR);
+  let t = 0;
+
+  return {
+    reserve(): number {
+      return Math.round(r);
+    },
+    observe(cost: number): void {
+      // Subgradient of ℓ(r,c) w.r.t. r: +h if we over-reserved (r > c), −p if we under-reserved.
+      // E[g] = h·F(r) − p·(1−F(r)) = 0 ⇔ F(r) = p/(h+p) = τ, so OGD descends onto the τ-quantile.
+      t += 1;
+      const grad = r > cost ? h : -p;
+      const step = stepScale / Math.sqrt(t);
+      r = clampNum(r - step * grad, minR, maxR);
+    },
+    get continuous(): number {
+      return r;
     },
   };
 }

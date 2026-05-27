@@ -79,8 +79,10 @@ export type {
 } from "./analytics";
 export {
   adaptiveThrottle,
+  criticalFractile,
   fairShare,
   guaranteedShare,
+  learnedReservation,
   tokenBudget,
   weightedFairShare,
   weightedMaxMin,
@@ -90,6 +92,8 @@ export type {
   AdaptiveThrottleOptions,
   FairShareLimiter,
   FairShareOptions,
+  LearnedReservation,
+  LearnedReservationOptions,
   TokenBudgetMeter,
   TokenBudgetOptions,
   WeightedFairShareLimiter,
