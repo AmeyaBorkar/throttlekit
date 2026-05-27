@@ -1,4 +1,5 @@
 import { systemClock } from "../core/clock";
+import { clamp } from "../core/math";
 import type { Clock, Decision } from "../core/types";
 import { requireAtLeast, requireInteger, requirePositive } from "../core/validate";
 
@@ -761,9 +762,6 @@ export function tokenBudget(options: TokenBudgetOptions): TokenBudgetMeter {
 
 // ── Primitive 5: learnedReservation (TALE Layer 2 — online learned token reservation) ───────────
 
-/** Clamp `v` into the closed interval `[lo, hi]`. */
-const clampNum = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
-
 /** Options for {@link learnedReservation}. */
 export interface LearnedReservationOptions {
   /** Hold cost `h`: penalty per token *reserved but unused* — the cost of a needless reject. Must be `> 0`. */
@@ -870,7 +868,7 @@ export function learnedReservation(options: LearnedReservationOptions): LearnedR
   // Zinkevich-optimal step scale η₀ = D/G: diameter D = maxR−minR over subgradient bound G = max(h,p).
   const stepScale = options.stepScale ?? Math.max((maxR - minR) / Math.max(h, p), 1e-6);
 
-  let r = clampNum(options.initialReservation ?? (minR + maxR) / 2, minR, maxR);
+  let r = clamp(options.initialReservation ?? (minR + maxR) / 2, minR, maxR);
   let t = 0;
 
   return {
@@ -883,7 +881,7 @@ export function learnedReservation(options: LearnedReservationOptions): LearnedR
       t += 1;
       const grad = r > cost ? h : -p;
       const step = stepScale / Math.sqrt(t);
-      r = clampNum(r - step * grad, minR, maxR);
+      r = clamp(r - step * grad, minR, maxR);
     },
     get continuous(): number {
       return r;
@@ -974,10 +972,10 @@ export function predictiveReservation(
 
   return {
     reserve(prediction: number): number {
-      lastFollow = clampNum(prediction, minR, maxR);
+      lastFollow = clamp(prediction, minR, maxR);
       lastRobust = robust.reserve();
       const [wf, wr] = weights();
-      return Math.round(clampNum(wf * lastFollow + wr * lastRobust, minR, maxR));
+      return Math.round(clamp(wf * lastFollow + wr * lastRobust, minR, maxR));
     },
     observe(cost: number): void {
       // Score each expert on its own counterfactual pinball loss for this request (full information).

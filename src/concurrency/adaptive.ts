@@ -1,4 +1,5 @@
 import { systemClock } from "../core/clock";
+import { clamp } from "../core/math";
 import type { Clock } from "../core/types";
 import { requireAtLeast, requirePositive } from "../core/validate";
 
@@ -155,8 +156,6 @@ export function adaptiveConcurrency(options: AdaptiveConcurrencyOptions = {}): C
     rttNoload = dqVal[dqHead % cap]!;
   }
 
-  const clamp = (lo: number, hi: number, v: number): number => Math.min(hi, Math.max(lo, v));
-
   /** Apply the Gradient2 law for one completed request. */
   function updateGradient2(rtt: number, dropped: boolean, inflightAtAcquire: number): void {
     let gradient: number;
@@ -167,7 +166,7 @@ export function adaptiveConcurrency(options: AdaptiveConcurrencyOptions = {}): C
       // No measurable latency => no queueing signal; treat as fully healthy.
       gradient = 1;
     } else {
-      gradient = clamp(0.5, 1.0, (tolerance * rttNoload) / rtt);
+      gradient = clamp((tolerance * rttNoload) / rtt, 0.5, 1.0);
     }
 
     // Don't grow the limit while the system is under-utilized: a healthy sample taken when we
@@ -177,7 +176,7 @@ export function adaptiveConcurrency(options: AdaptiveConcurrencyOptions = {}): C
     const queueSize = Math.sqrt(estimate);
     let newLimit = estimate * gradient + queueSize;
     newLimit = estimate * (1 - smoothing) + newLimit * smoothing;
-    estimate = clamp(minLimit, maxLimit, newLimit);
+    estimate = clamp(newLimit, minLimit, maxLimit);
   }
 
   /** Apply the AIMD law for one completed request. */

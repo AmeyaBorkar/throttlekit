@@ -31,10 +31,8 @@
  *
  * Pure and deterministic: no clock, no RNG.
  */
+import { clamp } from "../core/math";
 import { requireAtLeast, requirePositive } from "../core/validate";
-
-/** Clamp `v` into the closed interval `[lo, hi]`. */
-const clampNum = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
 /** A lease-size policy: commit a size for the next refill, then learn from the realised demand. */
 export interface LeaseSizer {
@@ -113,12 +111,12 @@ export function leaseSizer(options: LeaseSizerOptions): LeaseSizer {
   const stepScale = options.stepScale ?? Math.max(lnMax - lnMin, 1e-6);
   const epsilon = options.epsilon ?? 1e-8;
 
-  let x = Math.log(clampNum(options.initialSize ?? minSize, minSize, maxSize));
+  let x = Math.log(clamp(options.initialSize ?? minSize, minSize, maxSize));
   let sumSq = 0;
 
   return {
     size(): number {
-      return Math.round(clampNum(Math.exp(x), minSize, maxSize));
+      return Math.round(clamp(Math.exp(x), minSize, maxSize));
     },
     observe(demand: number): void {
       const b = Math.exp(x);
@@ -126,7 +124,7 @@ export function leaseSizer(options: LeaseSizerOptions): LeaseSizer {
       const grad = -(c * demand) / b + (h / 2) * b;
       sumSq += grad * grad;
       const step = stepScale / Math.sqrt(epsilon + sumSq);
-      x = clampNum(x - step * grad, lnMin, lnMax);
+      x = clamp(x - step * grad, lnMin, lnMax);
     },
     get continuous(): number {
       return Math.exp(x);
@@ -203,7 +201,7 @@ export function predictiveLeaseSizer(options: PredictiveLeaseSizerOptions): Pred
   let lastFollow = minSize;
   let lastRobust = minSize;
 
-  const clampSize = (b: number): number => Math.round(clampNum(b, minSize, maxSize));
+  const clampSize = (b: number): number => Math.round(clamp(b, minSize, maxSize));
 
   /** Hedge weights via a numerically-stable softmax of the negated, η-scaled cumulative losses. */
   function weights(): [number, number] {
