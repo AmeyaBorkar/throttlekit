@@ -81,6 +81,23 @@ function noSyncMany(): Decision[] {
 }
 
 /**
+ * All per-key L1 state for `leased` mode in one record, so a local hit hashes the key once instead
+ * of probing five parallel maps (credits / lastDecision / lastUse / refilling / pendingLease).
+ */
+interface LeaseEntry {
+  /** Local leased credits available to spend without a round trip. */
+  credits: number;
+  /** The most recent L2 decision (for `resetAt` and windowCoupled expiry). */
+  lastDecision: Decision | undefined;
+  /** Epoch-ms of the last check (drives `returnIdleAfterMs` reclamation). */
+  lastUse: number;
+  /** A proactive (lowWater) refill is in flight. */
+  refilling: boolean;
+  /** An on-demand lease is in flight — concurrent misses await it instead of issuing their own. */
+  pending: Promise<Decision> | undefined;
+}
+
+/**
  * A two-tier limiter: a local in-process tier (L1) fronting a distributed tier (L2), with a
  * selectable consistency/throughput trade-off.
  *
@@ -167,59 +184,63 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
   const returnIdleAfterMs = lease.returnIdleAfterMs;
   const windowCoupled = lease.windowCoupled ?? false;
 
-  const credits = new Map<string, number>();
-  const lastDecision = new Map<string, Decision>();
-  const lastUse = new Map<string, number>();
-  const refilling = new Set<string>();
-  // In-flight on-demand leases per key, so N concurrent misses coalesce onto ONE L2 round trip.
-  const pendingLease = new Map<string, Promise<Decision>>();
+  const entries = new Map<string, LeaseEntry>();
 
   const forget = (fk: string): void => {
-    credits.delete(fk);
-    lastDecision.delete(fk);
-    lastUse.delete(fk);
+    entries.delete(fk);
   };
-  const evictCredits = (): void => {
-    if (credits.size >= maxKeys) {
-      const oldest = credits.keys().next();
-      if (!oldest.done) forget(oldest.value);
+  /** Fetch (or create) the one record for `fk`, bounding the map before adding a new key. */
+  const entryFor = (fk: string): LeaseEntry => {
+    let e = entries.get(fk);
+    if (e === undefined) {
+      if (entries.size >= maxKeys) {
+        const oldest = entries.keys().next(); // approximate FIFO eviction of the oldest key
+        if (!oldest.done) entries.delete(oldest.value);
+      }
+      e = { credits: 0, lastDecision: undefined, lastUse: 0, refilling: false, pending: undefined };
+      entries.set(fk, e);
     }
+    return e;
   };
 
-  const synthAllow = (fk: string, now: number): Decision => {
-    const last = lastDecision.get(fk);
-    return {
-      allowed: true,
-      limit: strategy.limit,
-      remaining: Math.max(0, Math.floor(credits.get(fk) ?? 0)),
-      resetAt: last?.resetAt ?? now + strategy.ttlMs,
-      retryAfterMs: 0,
-    };
-  };
+  const synthAllow = (e: LeaseEntry, now: number): Decision => ({
+    allowed: true,
+    limit: strategy.limit,
+    remaining: Math.max(0, Math.floor(e.credits)),
+    resetAt: e.lastDecision?.resetAt ?? now + strategy.ttlMs,
+    retryAfterMs: 0,
+  });
 
-  const maybeRefill = (fk: string): void => {
+  const maybeRefill = (fk: string, e: LeaseEntry): void => {
     if (lowWater <= 0) return; // proactive refill is opt-in
-    if ((credits.get(fk) ?? 0) > lowWater) return;
-    if (refilling.has(fk)) return;
-    refilling.add(fk);
-    // Fire-and-forget: requests never block on a refill.
+    if (e.credits > lowWater) return;
+    if (e.refilling) return;
+    e.refilling = true;
+    // Fire-and-forget: requests never block on a refill. Re-fetch by key in the callbacks in case
+    // the entry was evicted/reclaimed while the refill was in flight.
     l2.apply(fk, decisionTransform(strategy, clock.now(), batch))
       .then((d) => {
-        lastDecision.set(fk, d);
-        if (d.allowed) credits.set(fk, (credits.get(fk) ?? 0) + batch);
+        const t = entries.get(fk);
+        if (t !== undefined) {
+          t.lastDecision = d;
+          if (d.allowed) t.credits += batch;
+        }
       })
       .catch(() => {
         /* leave credits as-is; the next check leases synchronously */
       })
-      .finally(() => refilling.delete(fk));
+      .finally(() => {
+        const t = entries.get(fk);
+        if (t !== undefined) t.refilling = false;
+      });
   };
 
   let idleTimer: ReturnType<typeof setInterval> | undefined;
   if (returnIdleAfterMs !== undefined && returnIdleAfterMs > 0) {
     idleTimer = setInterval(() => {
       const now = clock.now();
-      for (const [k, t] of lastUse) {
-        if (now - t > returnIdleAfterMs) forget(k);
+      for (const [k, e] of entries) {
+        if (now - e.lastUse > returnIdleAfterMs) forget(k);
       }
     }, returnIdleAfterMs);
     (idleTimer as { unref?(): void }).unref?.();
@@ -229,54 +250,53 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
     requireCost(cost);
     const fk = keyFor(key);
     const now = clock.now();
-    lastUse.set(fk, now);
+    let e = entryFor(fk);
+    e.lastUse = now;
 
-    if (windowCoupled) {
+    if (windowCoupled && e.lastDecision !== undefined) {
       // Once the L2 window that granted these credits has rolled over, they expire rather than
       // carrying across the boundary — removing the sole source of cross-window overshoot.
-      const last = lastDecision.get(fk);
-      if (last !== undefined && now >= last.resetAt && (credits.get(fk) ?? 0) > 0) {
-        credits.set(fk, 0);
-      }
+      if (now >= e.lastDecision.resetAt && e.credits > 0) e.credits = 0;
     }
 
-    // Serve from local credits; when short, lease a batch from L2 — but coalesce concurrent misses
-    // on the same key onto ONE in-flight lease, so a node never holds more than `batch` outstanding
-    // (which the overshoot bound assumes) and a hot cold key can't stampede L2 with parallel leases.
+    // Serve from local credits; when short, lease a batch from L2 — coalescing concurrent misses on
+    // the same key onto ONE in-flight lease (the shared `e.pending`), so a node never holds more than
+    // `batch` outstanding (the overshoot-bound assumption) and a hot cold key can't stampede L2.
     for (;;) {
-      const have = credits.get(fk) ?? 0;
-      if (have >= cost) {
-        credits.set(fk, have - cost);
-        maybeRefill(fk);
-        return synthAllow(fk, now);
+      if (e.credits >= cost) {
+        e.credits -= cost;
+        maybeRefill(fk, e);
+        return synthAllow(e, now);
       }
 
-      let lease = pendingLease.get(fk);
+      let lease = e.pending;
       if (lease === undefined) {
         const leaseAmount = Math.max(batch, cost);
         lease = l2.apply(fk, decisionTransform(strategy, clock.now(), leaseAmount)).then((d) => {
-          lastDecision.set(fk, d);
-          if (d.allowed) {
-            evictCredits();
-            credits.set(fk, (credits.get(fk) ?? 0) + leaseAmount);
+          const t = entries.get(fk);
+          if (t !== undefined) {
+            t.lastDecision = d;
+            if (d.allowed) t.credits += leaseAmount;
           }
           return d;
         });
-        pendingLease.set(fk, lease);
-        // Free the slot once settled so the next shortage starts a fresh lease (guarding against a
-        // newer lease having replaced it). The separate `.catch` keeps a rejected lease from going
-        // unhandled on this cleanup chain; the awaiter below still observes the rejection.
+        e.pending = lease;
+        // Free the slot once settled so the next shortage starts a fresh lease. The separate
+        // `.catch` keeps a rejected lease from going unhandled here; the awaiter still observes it.
         const settled = lease;
         void settled
           .catch(() => undefined)
           .finally(() => {
-            if (pendingLease.get(fk) === settled) pendingLease.delete(fk);
+            const t = entries.get(fk);
+            if (t !== undefined && t.pending === settled) t.pending = undefined;
           });
       }
 
       const d = await lease;
+      // The entry may have been evicted+recreated across the await; re-fetch the live one.
+      e = entries.get(fk) ?? entryFor(fk);
       // L2 globally exhausted and still nothing to serve locally ⇒ surface its denial.
-      if (!d.allowed && (credits.get(fk) ?? 0) < cost) return d;
+      if (!d.allowed && e.credits < cost) return d;
       // Otherwise loop: the lease added a batch, so this request now fits (or we lease again).
     }
   };
