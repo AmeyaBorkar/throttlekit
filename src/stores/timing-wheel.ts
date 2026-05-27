@@ -50,14 +50,22 @@ export class TimingWheel {
 
   /** Schedule or reschedule `key` to expire at `expiresAt` (epoch-ms). */
   set(key: string, expiresAt: number): void {
-    const prev = this.#entries.get(key);
-    if (prev !== undefined) {
-      this.#slots[prev.slot]?.delete(key);
-    }
     // Place at least one tick ahead of the hand so short TTLs are swept on the next tick
     // rather than lingering a full rotation. The authoritative expiry lives in `exp`.
     const tick = Math.max(this.#lastTick + 1, Math.floor(expiresAt / this.#tickMs));
     const slot = this.#slotForTick(tick);
+    const prev = this.#entries.get(key);
+    if (prev !== undefined) {
+      // Reschedule in place: only touch the slot Sets when the slot actually changes, and never
+      // allocate a new entry. The common repeat-key-within-a-tick path hits neither.
+      if (prev.slot !== slot) {
+        this.#slots[prev.slot]?.delete(key);
+        this.#slots[slot]?.add(key);
+        prev.slot = slot;
+      }
+      prev.exp = expiresAt;
+      return;
+    }
     this.#slots[slot]?.add(key);
     this.#entries.set(key, { exp: expiresAt, slot });
   }
