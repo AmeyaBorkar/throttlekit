@@ -52,13 +52,15 @@ Every check returns an immutable `Decision` — `{ allowed, limit, remaining, re
 
 **Seven strategies** — `gcra` (the default: tiny state, smooth pacing, controlled bursts), `tokenBucket`, `fixedWindow`, `slidingWindow`, `slidingWindowLog`, `leakyBucket` (shaping), and `adaptiveConcurrency` (backpressure when the right rate is unknown). Pick one → [Strategies](https://github.com/AmeyaBorkar/throttlekit/wiki/Strategies).
 
-**Three backends, identical decisions** — in-memory (lock-free sync RMW, timing-wheel expiry), **Redis** (`throttlekit/redis`; one `EVALSHA`/check; `ioredis`, `node-redis`, or Upstash REST for the edge), and **Postgres** (`throttlekit/postgres`; advisory-lock transaction, **no Redis required**). The conformance suite proves every backend agrees.
+**Seven stores, identical decisions** — in-memory (lock-free sync RMW, timing-wheel expiry), **Redis** (`throttlekit/redis`; one `EVALSHA`/check; `ioredis`, `node-redis`, or Upstash REST for the edge), **Postgres** (`throttlekit/postgres`; advisory-lock transaction, **no Redis required**), **Cloudflare** (`throttlekit/cloudflare`: a `DurableObjectStore` for single-threaded atomicity, plus a `D1Store` for edge SQLite via version compare-and-set), **DynamoDB** (`throttlekit/dynamodb`; conditional-write CAS with native TTL), and **Deno KV** (`throttlekit/deno`; native atomic versionstamp CAS). The conformance suite — including a 200-way concurrent read-modify-write — proves every backend agrees.
 
-**Six frameworks + the edge**, each its own subpath sharing one options surface and standards headers:
+**A dozen framework & transport bindings**, each its own subpath sharing one options surface and standards headers — Express, Fastify, Koa, Hono, Next, **NestJS**, **SvelteKit**, **Remix**, **Elysia**, the Web `fetch` edge, **AWS Lambda**, **tRPC**, and **gRPC** — plus a transport-agnostic `createEnforcer()` for anything else (queue consumers, job runners, custom protocols). The serverless/edge/RPC bindings are **dependency-free**.
 
 ```ts
-import { expressRateLimit } from "throttlekit/express"; // + /fastify, /koa, /hono, /next
-import { withRateLimit } from "throttlekit/fetch";      // Web fetch — Cloudflare/Deno/Bun/Next edge
+import { expressRateLimit } from "throttlekit/express"; // + /fastify /koa /hono /next /nest /sveltekit /remix /elysia
+import { withRateLimit } from "throttlekit/fetch";       // Web fetch — Cloudflare/Deno/Bun/Next edge
+import { lambdaRateLimit } from "throttlekit/lambda";     // AWS Lambda + API Gateway
+import { grpcRateLimit } from "throttlekit/grpc";         // gRPC; + /trpc, and createEnforcer() for custom transports
 ```
 
 Copy-pasteable setups: [Frameworks & the edge](https://github.com/AmeyaBorkar/throttlekit/wiki/Frameworks-and-the-Edge).
@@ -96,7 +98,7 @@ Primitives that sit *upstream* of the per-key limiters:
 
 - **`adaptiveThrottle`** — Google-SRE client-side load-shedding: shed locally based on a backend's recent accept rate.
 - **`fairShare` / `weightedFairShare` / `weightedMaxMin`** — split one budget across tenants so a greedy tenant can't starve the rest. `weightedMaxMin` is the exact, **work-conserving** weighted max-min allocation — GALE's *Weighted Fair Escrow*, machine-checked.
-- **`tokenBudget`** — a streaming **token-budget meter** for *post-hoc* costs (LLM output tokens, known only as they stream): debit actual tokens as produced and overshoot is bounded by the debit granularity — **0 per token**, independent of the per-request cap *and* of concurrency. TALE's Layer 1.
+- **`tokenBudget`** — a streaming **token-budget meter** for *post-hoc* costs (LLM output tokens, known only as they stream): debit actual tokens as produced and overshoot is bounded by the debit granularity — **0 per token**, independent of the per-request cap *and* of concurrency. TALE's Layer 1. **`distributedTokenBudget`** is its fleet-shared, `Store`-backed form — the same stop-at-boundary debit run as an atomic RMW, so one budget holds across every gateway with the same per-token **Δ = 0**.
 - **`learnedReservation` / `predictiveReservation`** — pace LLM admission *over* a `tokenBudget`: an online newsvendor learner sets the per-request token reservation, descending onto the cost-optimal quantile with `O(√T)` regret; the predictive variant blends in an output-length hint with consistency, robustness, and **unconditional safety** (the meter, not the prediction, holds the bound). TALE Layers 2–3.
 - **`sketchRateLimit` / `mergeableSketch`** — cap an **unbounded key universe in ~7.4 KB** with a Count-Min Sketch that **provably never over-admits**; `merge()` per-node sketches for exact cluster-wide heavy-hitter detection.
 
@@ -107,7 +109,7 @@ Details: [Overload, fairness & DDoS](https://github.com/AmeyaBorkar/throttlekit/
 ThrottleKit's distributed guarantees come from two formal programs developed alongside it; both are proven/measured and gated under [`research/`](./research), with pieces shipping into the library as marked.
 
 - **GALE** — *Globally-Accounted Learned Escrow.* A distributed limiter with a hard, tight overshoot bound **independent of fleet size** (shipped as `lease.windowCoupled`), online-EOQ learned lease sizing and learning-augmented sizing with unconditional safety (shipped as `leaseSizer`/`predictiveLeaseSizer`), weighted work-conserving fairness (shipped as `weightedFairShare`/`weightedMaxMin`), and a proved **trilemma** lower bound `Δ + N·U ≥ (N−1)L`, with a tight `0<C<N` partial-coordination interpolation across **both** static partitioning and dynamic leasing (`Δ + N·U ≥ (N−1)(L − C·B)`, tight at unit batch) — all machine-checked.
-- **TALE** — *escrow under cost uncertainty.* Token-budget rate limiting for LLMs, where a request's cost — its *output* tokens — is revealed only as it streams. A three-layer escrow, now all shipping: the streaming meter (**`tokenBudget`**, window-coupling on the cost axis), the online learned reservation (**`learnedReservation`**), and the predictions-with-safety reservation (**`predictiveReservation`**); the multi-gateway form reduces *byte-identically* to GALE's leased budget.
+- **TALE** — *escrow under cost uncertainty.* Token-budget rate limiting for LLMs, where a request's cost — its *output* tokens — is revealed only as it streams. A three-layer escrow, now all shipping: the streaming meter (**`tokenBudget`**, window-coupling on the cost axis), the online learned reservation (**`learnedReservation`**), and the predictions-with-safety reservation (**`predictiveReservation`**); the multi-gateway form (**`distributedTokenBudget`**, `Store`-backed) reduces *byte-identically* to GALE's leased budget.
 
 ## Performance
 

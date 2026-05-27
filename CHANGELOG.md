@@ -8,6 +8,69 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.8.0] — 2026-05-28
+
+Full-reach release: four new exact backends, seven new framework/transport bindings, a fleet-shared
+token budget, a transport-agnostic enforcement core, and a security/robustness/performance hardening
+pass from a multi-agent code audit. Every new store passes the shared conformance suite (including a
+200-way concurrent read-modify-write); test count **490 → 609**.
+
+### Added
+
+- **Cloudflare stores** (`throttlekit/cloudflare`): **`DurableObjectStore`** runs the limiter's pure
+  transform inside `blockConcurrencyWhile`, so the read-modify-write is atomic with **no retry loop**;
+  **`D1Store`** backs edge SQLite with optimistic concurrency (a version compare-and-set) plus
+  in-process per-key coalescing and a `sweep()` for Cron Triggers. (Workers KV is intentionally *not*
+  offered — it can't honor the atomic `Store` contract.)
+- **`DynamoStore`** (`throttlekit/dynamodb`) — DynamoDB via a conditional-write CAS on a `version`
+  attribute, with `expires_at` in epoch seconds so native TTL reclaims items. Zero-dep structural
+  client whose inputs mirror the AWS SDK v3 commands.
+- **`DenoKvStore`** (`throttlekit/deno`) — Deno KV via its native atomic `versionstamp` CAS and native
+  `expireIn` TTL; lazy expiry on the injected clock keeps decisions deterministic.
+- **`distributedTokenBudget`** — the fleet-shared, `Store`-backed sibling of `tokenBudget`: the same
+  stop-at-boundary debit run as an atomic RMW, so one budget `L` holds across every gateway with a
+  per-token overshoot of **0 independent of fleet size** (the `B=1` GALE window-coupled instantiation).
+  Carries a Lua form for single-round-trip Redis.
+- **`createEnforcer`** — a transport-agnostic enforcement core (root export): turns a key into a
+  verdict + standards headers with the fail policy folded in, for any transport.
+- **Framework & transport adapters** — **NestJS** (`/nest`, a `CanActivate` guard), **AWS Lambda /
+  API Gateway** (`/lambda`, REST v1 + HTTP v2), **gRPC** (`/grpc`, unary interceptor →
+  `RESOURCE_EXHAUSTED`), **tRPC** (`/trpc`, ctx-keyed middleware), **SvelteKit** (`/sveltekit`, a
+  `handle` hook), **Remix** (`/remix`, a loader/action guard that throws a `Response`), and **Elysia**
+  (`/elysia`, an `onBeforeHandle` hook). All dependency-free via structural/Web-standard types.
+
+### Changed
+
+- **Performance (hot path):** `slidingWindow` is now backed by a fixed ring buffer (no per-check object
+  rebuild); `slidingWindowLog` denies allocation-free; `checkSync` reads the clock once and reuses one
+  transform with no per-call closure; `MemoryStore` folds expiry into the entry and mutates timing-wheel
+  entries in place; `twoTier` collapses its per-key state into one record. (audit TK-P01..P07)
+- **Security:** edge adapters no longer trust `x-forwarded-for` unless a proxy chain is configured, and
+  `cf-connecting-ip` trust is opt-out via `trustClientIpHeader` (audit TK-S01); structured rate-limit
+  header values are sanitized against CRLF/control-character injection (audit TK-S03).
+- **Robustness:** `leakyBucket.schedule()` chunks sleeps past `setTimeout`'s 32-bit ceiling (audit
+  TK-R05); `Limiter.close()` releases owned timers and the `twoTier` idle timer (audit TK-R02);
+  `twoTier` coalesces in-flight on-demand leases (audit TK-R01); Lua `PEXPIRE` is clamped `≥ 1` (audit
+  TK-R03); `sketchRateLimit` requires an integer cost (audit TK-R04); the per-window fairness maps are
+  documented as bounded by distinct tenants (audit TK-R07).
+- Validation/cleanup: shared `requireCost`/`clamp`/`prefixer` helpers across the core (audit TK-Q01..Q06).
+
+### Breaking
+
+- **Custom `Strategy` authors only:** `Strategy.check` now returns its decision under **`result`**
+  (was `decision`), unifying `StrategyOutcome<S>` as a type alias of `ApplyOutcome<S, Decision>` so the
+  limiter passes a strategy's output to the store with no per-check re-wrap (audit TK-P01). **Built-in
+  strategies and all public APIs are unaffected** — only code that implemented a custom `Strategy` and
+  read `outcome.decision` must rename it to `outcome.result`.
+
+### Notes
+
+- Two audit trade-offs were evaluated and **deliberately declined** as net-negative: forcing the
+  synchronous in-process meters' `reset()` to return `Promise<void>` (TK-Q07 — sync state deserves a
+  sync API; the store-backed `distributedTokenBudget` is correctly async), and renaming the
+  `throttlekit/otel` entry (TK-Q08 — the export-map convention is already uniform and a rename would
+  only break importers).
+
 ## [0.7.0] — 2026-05-27
 
 The learned/predictive layers of both research tracks ship as first-class primitives. Each is a
