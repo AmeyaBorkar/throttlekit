@@ -126,7 +126,7 @@ export function slidingWindow(options: SlidingWindowOptions): Strategy<Buckets> 
         if (remaining < 0) remaining = 0;
         return {
           state: next,
-          decision: { allowed: true, limit, remaining, resetAt, retryAfterMs: 0 },
+          result: { allowed: true, limit, remaining, resetAt, retryAfterMs: 0 },
           ttlMs: Math.ceil(windowMs + w),
           persist: true,
         };
@@ -144,7 +144,7 @@ export function slidingWindow(options: SlidingWindowOptions): Strategy<Buckets> 
       if (remaining < 0) remaining = 0;
       return {
         state,
-        decision: { allowed: false, limit, remaining, resetAt, retryAfterMs },
+        result: { allowed: false, limit, remaining, resetAt, retryAfterMs },
         ttlMs: Math.ceil(windowMs + w),
         persist: false,
       };

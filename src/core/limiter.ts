@@ -40,10 +40,8 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
   // allocation. No Lua invocation is attached: a synchronous store never uses it.
   let syncNow = 0;
   let syncCost = 1;
-  const syncTransform = ((state: S | undefined) => {
-    const r = strategy.check(state, syncNow, syncCost);
-    return { state: r.state, result: r.decision, ttlMs: r.ttlMs, persist: r.persist };
-  }) as Transform<S, Decision>;
+  const syncTransform = ((state: S | undefined) =>
+    strategy.check(state, syncNow, syncCost)) as Transform<S, Decision>;
 
   return {
     strategy: strategy as Strategy<unknown>,

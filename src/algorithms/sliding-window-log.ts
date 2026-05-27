@@ -93,7 +93,7 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
         if (remaining < 0) remaining = 0;
         return {
           state: newLog,
-          decision: {
+          result: {
             allowed: true,
             limit,
             remaining,
@@ -121,7 +121,7 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
       if (remaining < 0) remaining = 0;
       return {
         state,
-        decision: {
+        result: {
           allowed: false,
           limit,
           remaining,

@@ -96,7 +96,7 @@ export function tokenBucket(options: TokenBucketOptions): Strategy<TokenBucketSt
         if (remaining < 0) remaining = 0;
         return {
           state: { tokens: newTokens, last: now },
-          decision: {
+          result: {
             allowed: true,
             limit: capacity,
             remaining,
@@ -112,7 +112,7 @@ export function tokenBucket(options: TokenBucketOptions): Strategy<TokenBucketSt
       if (remaining < 0) remaining = 0;
       return {
         state,
-        decision: {
+        result: {
           allowed: false,
           limit: capacity,
           remaining,

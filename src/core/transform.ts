@@ -12,10 +12,9 @@ export function decisionTransform<S>(
   now: number,
   cost: number,
 ): Transform<S, Decision> {
-  const fn = (state: S | undefined) => {
-    const r = strategy.check(state, now, cost);
-    return { state: r.state, result: r.decision, ttlMs: r.ttlMs, persist: r.persist };
-  };
+  // strategy.check already returns the ApplyOutcome shape (its `result` is the Decision), so pass it
+  // straight through — no per-check re-wrap object.
+  const fn = (state: S | undefined) => strategy.check(state, now, cost);
   if (strategy.lua !== undefined) {
     const invocation: LuaInvocation<Decision> = {
       program: strategy.lua,

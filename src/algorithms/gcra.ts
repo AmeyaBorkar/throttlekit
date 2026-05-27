@@ -87,7 +87,7 @@ export function gcra(options: GcraOptions): Strategy<number> {
         if (remaining < 0) remaining = 0;
         return {
           state,
-          decision: {
+          result: {
             allowed: false,
             limit: burst,
             remaining,
@@ -103,7 +103,7 @@ export function gcra(options: GcraOptions): Strategy<number> {
       if (remaining < 0) remaining = 0;
       return {
         state: newTat,
-        decision: {
+        result: {
           allowed: true,
           limit: burst,
           remaining,

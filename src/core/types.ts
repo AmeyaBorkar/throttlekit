@@ -28,17 +28,13 @@ export interface Decision {
   retryAfterMs: number;
 }
 
-/** What a {@link Strategy} returns from a single transition. */
-export interface StrategyOutcome<S> {
-  /** The next state to persist (when {@link StrategyOutcome.persist} is true). */
-  state: S | undefined;
-  /** The decision for this request. */
-  decision: Decision;
-  /** TTL to persist the state with, in ms. Upper-bounds how long the state stays relevant. */
-  ttlMs: number;
-  /** Whether the state actually changed and must be written. Denials usually set this false. */
-  persist: boolean;
-}
+/**
+ * What a {@link Strategy} returns from a single transition: exactly the {@link ApplyOutcome} a store
+ * consumes, with `result` being the {@link Decision}. Unifying the two shapes lets the limiter pass a
+ * strategy's output straight to the store with no per-check re-wrap allocation. Kept as a named alias
+ * for strategy authors. (Custom strategies return `result`, not `decision`.)
+ */
+export type StrategyOutcome<S> = ApplyOutcome<S, Decision>;
 
 /**
  * A pure rate-limiting algorithm over serializable state `S`.

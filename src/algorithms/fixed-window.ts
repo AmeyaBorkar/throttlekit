@@ -89,7 +89,7 @@ export function fixedWindow(options: FixedWindowOptions): Strategy<FixedWindowSt
         const newCount = count + cost;
         return {
           state: { start: windowStart, count: newCount },
-          decision: {
+          result: {
             allowed: true,
             limit,
             remaining: Math.max(0, Math.floor(limit - newCount)),
@@ -104,7 +104,7 @@ export function fixedWindow(options: FixedWindowOptions): Strategy<FixedWindowSt
 
       return {
         state,
-        decision: {
+        result: {
           allowed: false,
           limit,
           remaining: Math.max(0, Math.floor(limit - count)),

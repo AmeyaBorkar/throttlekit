@@ -7,7 +7,7 @@ function driver(strategy: ReturnType<typeof slidingWindow>) {
   return (now: number, cost = 1): Decision => {
     const r = strategy.check(state, now, cost);
     if (r.persist) state = r.state;
-    return r.decision;
+    return r.result;
   };
 }
 

@@ -53,7 +53,7 @@ function run<S>(strategy: Strategy<S>, start: number, steps: Step[]): Event[] {
     now += step.delta;
     const r = strategy.check(state, now, step.cost);
     if (r.persist) state = r.state;
-    events.push({ now, cost: step.cost, decision: r.decision });
+    events.push({ now, cost: step.cost, decision: r.result });
   }
   return events;
 }
@@ -169,7 +169,7 @@ describe("strategy invariants (property-based)", () => {
           let allowed = 0;
           for (let i = 0; i < burst + 5; i++) {
             const r = strategy.check(state, now, 1);
-            if (r.decision.allowed) {
+            if (r.result.allowed) {
               allowed++;
               if (r.persist) state = r.state;
             }
