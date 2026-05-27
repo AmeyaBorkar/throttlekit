@@ -14,6 +14,7 @@ export default defineConfig({
     next: "src/adapters/next.ts",
     fastify: "src/adapters/fastify.ts",
     koa: "src/adapters/koa.ts",
+    grpc: "src/adapters/grpc.ts",
     otel: "src/observability/index.ts",
     testkit: "src/testkit/index.ts",
   },

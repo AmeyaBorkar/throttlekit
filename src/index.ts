@@ -60,6 +60,8 @@ export type {
 } from "./twotier";
 export { buildRateLimitHeaders } from "./http/headers";
 export type { HeaderEmit, BuildRateLimitHeadersOptions } from "./http/headers";
+export { createEnforcer } from "./adapters/enforce";
+export type { Enforcer, EnforceOptions, EnforceOutcome, EnforceResult } from "./adapters/enforce";
 export { clientIp } from "./security/ip";
 export type { TrustProxyConfig, ClientIpInput } from "./security/ip";
 export { hashKey, hmacKeyer } from "./security/keys";

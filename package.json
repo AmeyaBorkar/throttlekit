@@ -170,6 +170,16 @@
         "default": "./dist/koa.cjs"
       }
     },
+    "./grpc": {
+      "import": {
+        "types": "./dist/grpc.d.ts",
+        "default": "./dist/grpc.js"
+      },
+      "require": {
+        "types": "./dist/grpc.d.cts",
+        "default": "./dist/grpc.cjs"
+      }
+    },
     "./otel": {
       "import": {
         "types": "./dist/otel.d.ts",
