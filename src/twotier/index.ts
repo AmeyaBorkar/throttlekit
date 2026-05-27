@@ -42,7 +42,12 @@ export interface LeaseOptions {
 }
 
 export interface L1Options {
-  /** Max distinct keys held locally before approximate eviction. */
+  /**
+   * Max distinct keys held locally before approximate (CLOCK-style) eviction. **Unbounded when
+   * omitted** — set this on public-facing endpoints so a flood of unique keys can't grow the local
+   * `credits`/`lastDecision`/`lastUse` maps without limit (the same stance as `MemoryStore`'s
+   * `maxKeys`). The `cached-deny` deny-cache is bounded by the same value.
+   */
   maxKeys?: number;
 }
 

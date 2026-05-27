@@ -275,6 +275,11 @@ export interface FairShareLimiter {
  *    handed out on a first-come basis up to the global `limit`, **not** perfectly redistributed to
  *    the remaining tenants the way true max-min fairness would. An active tenant can use idle
  *    tenants' slack only until those tenants show up or the global budget runs out.
+ * 4. **Per-window memory is O(distinct tenants).** The active-tenant map is cleared only when the
+ *    window rolls, so it grows with the number of distinct tenant keys seen within a window. Key it
+ *    on a **bounded, trusted** tenant set (not raw client input); for an unbounded/untrusted key
+ *    universe, front it with {@link sketchRateLimit}. (Eviction is intentionally not offered here:
+ *    dropping a tenant mid-window would change the fair-share divisor and skew the split.)
  *
  * In short: a robust anti-starvation budget splitter with a hard global ceiling — not a precise
  * max-min fair scheduler.
@@ -526,6 +531,8 @@ export interface WeightedFairShareLimiter {
  *    first-come up to `limit`, not perfectly reallocated by weight the way true max-min would. When you
  *    have all tenants' demands at once and want the exact, fully work-conserving weighted split, call
  *    {@link weightedMaxMin} instead (e.g. to divide a node's leased batch among its local tenants).
+ * 4. **Per-window memory is O(distinct tenants)** (same as {@link fairShare}): key it on a bounded,
+ *    trusted tenant set, or front an untrusted key universe with {@link sketchRateLimit}.
  */
 export function weightedFairShare(options: WeightedFairShareOptions): WeightedFairShareLimiter {
   requirePositive("weightedFairShare.limit", options.limit);
