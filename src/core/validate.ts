@@ -17,3 +17,14 @@ export function requireInteger(name: string, value: number): void {
     throw new RangeError(`${name} must be an integer, got ${String(value)}`);
   }
 }
+
+/**
+ * Validate a per-request `cost`: a positive finite number. The one source of this check and its
+ * message, shared by every limiter/shaper (`rateLimit`, `twoTier`, `leakyBucket`, `multiRateLimit`)
+ * so the public-facing wording can never drift between them.
+ */
+export function requireCost(cost: number): void {
+  if (!Number.isFinite(cost) || cost <= 0) {
+    throw new RangeError(`cost must be a positive finite number, got ${String(cost)}`);
+  }
+}

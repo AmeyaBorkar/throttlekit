@@ -9,7 +9,7 @@ import type {
   Store,
   Transform,
 } from "../core/types";
-import { requireAtLeast, requirePositive } from "../core/validate";
+import { requireAtLeast, requireCost, requirePositive } from "../core/validate";
 import { MemoryStore } from "../stores/memory";
 
 export interface LeakyBucketOptions {
@@ -149,19 +149,13 @@ export function leakyBucket(options: LeakyBucketOptions): Shaper {
     return fn as Transform<number, Reservation>;
   };
 
-  function validateCost(cost: number): void {
-    if (!Number.isFinite(cost) || cost <= 0) {
-      throw new RangeError(`cost must be a positive finite number, got ${String(cost)}`);
-    }
-  }
-
   return {
     async reserve(key: string, cost = 1): Promise<Reservation> {
-      validateCost(cost);
+      requireCost(cost);
       return store.apply(keyFor(key), makeTransform(clock.now(), cost));
     },
     reserveSync(key: string, cost = 1): Reservation {
-      validateCost(cost);
+      requireCost(cost);
       if (store.applySync === undefined) {
         throw new ThrottleKitError(
           "reserveSync requires a synchronous store (e.g. MemoryStore); the configured store is async-only",

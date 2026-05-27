@@ -11,6 +11,7 @@ import type {
   StrategyOutcome,
   Transform,
 } from "../core/types";
+import { requireCost } from "../core/validate";
 import { MemoryStore } from "../stores/memory";
 
 /** One axis of a multi-dimensional limit. */
@@ -370,19 +371,13 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
     return store.apply(keys[0] ?? "tk:multi", transform);
   };
 
-  const validateCost = (cost: number): void => {
-    if (!Number.isFinite(cost) || cost <= 0) {
-      throw new RangeError(`cost must be a positive finite number, got ${String(cost)}`);
-    }
-  };
-
   return {
     async check(ctx: Ctx, cost = 1): Promise<Decision> {
-      validateCost(cost);
+      requireCost(cost);
       return store.applySync !== undefined ? runSync(ctx, cost) : runLua(ctx, cost);
     },
     checkSync(ctx: Ctx, cost = 1): Decision {
-      validateCost(cost);
+      requireCost(cost);
       return runSync(ctx, cost);
     },
     async reset(ctx: Ctx): Promise<void> {

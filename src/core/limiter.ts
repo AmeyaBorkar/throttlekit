@@ -3,6 +3,7 @@ import { systemClock } from "./clock";
 import { ThrottleKitError } from "./errors";
 import { decisionTransform } from "./transform";
 import type { Clock, Decision, Limiter, Store, Strategy, Transform } from "./types";
+import { requireCost } from "./validate";
 
 export interface RateLimitOptions<S = unknown> {
   /** The algorithm to enforce. Defaults across the library favor {@link gcra}. */
@@ -13,12 +14,6 @@ export interface RateLimitOptions<S = unknown> {
   clock?: Clock;
   /** Key namespace, so one store can back many independent limiters. */
   prefix?: string;
-}
-
-function validateCost(cost: number): void {
-  if (!Number.isFinite(cost) || cost <= 0) {
-    throw new RangeError(`cost must be a positive finite number, got ${String(cost)}`);
-  }
 }
 
 /**
@@ -55,10 +50,10 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
     strategy: strategy as Strategy<unknown>,
 
     check(key: string, cost = 1): Promise<Decision> {
-      if (!Number.isFinite(cost) || cost <= 0) {
-        return Promise.reject(
-          new RangeError(`cost must be a positive finite number, got ${String(cost)}`),
-        );
+      try {
+        requireCost(cost);
+      } catch (err) {
+        return Promise.reject(err);
       }
       const k = keyFor(key);
       // Synchronous store (e.g. MemoryStore): run the transition inline with the reused transform
@@ -74,7 +69,7 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
     },
 
     checkSync(key: string, cost = 1): Decision {
-      validateCost(cost);
+      requireCost(cost);
       if (store.applySync === undefined) {
         throw new ThrottleKitError(
           "checkSync requires a synchronous store (e.g. MemoryStore); the configured store is async-only",
@@ -86,10 +81,10 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
     },
 
     checkMany(keys: readonly string[], cost = 1): Promise<Decision[]> {
-      if (!Number.isFinite(cost) || cost <= 0) {
-        return Promise.reject(
-          new RangeError(`cost must be a positive finite number, got ${String(cost)}`),
-        );
+      try {
+        requireCost(cost);
+      } catch (err) {
+        return Promise.reject(err);
       }
       // Synchronous store: one clock read, a tight loop, no per-key promise. Reusing the shared
       // transform is safe because applySync never yields between iterations.
@@ -111,7 +106,7 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
     },
 
     checkManySync(keys: readonly string[], cost = 1): Decision[] {
-      validateCost(cost);
+      requireCost(cost);
       if (store.applySync === undefined) {
         throw new ThrottleKitError(
           "checkManySync requires a synchronous store (e.g. MemoryStore); the configured store is async-only",

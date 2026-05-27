@@ -3,6 +3,7 @@ import { ThrottleKitError } from "../core/errors";
 import { rateLimit } from "../core/limiter";
 import { decisionTransform } from "../core/transform";
 import type { Clock, Decision, Limiter, Store, Strategy } from "../core/types";
+import { requireCost } from "../core/validate";
 
 export { eoqOptimum, leaseSizer, predictiveLeaseSizer } from "./sizing";
 export type {
@@ -61,12 +62,6 @@ export interface TwoTierOptions<S = unknown> {
   prefix?: string;
 }
 
-function validateCost(cost: number): void {
-  if (!Number.isFinite(cost) || cost <= 0) {
-    throw new RangeError(`cost must be a positive finite number, got ${String(cost)}`);
-  }
-}
-
 function noSync(): Decision {
   throw new ThrottleKitError(
     "two-tier checkSync is not supported because L2 access is asynchronous; use check()",
@@ -119,7 +114,7 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
       }
     };
     const check = async (key: string, cost = 1): Promise<Decision> => {
-      validateCost(cost);
+      requireCost(cost);
       const fk = keyFor(key);
       const now = clock.now();
       const cached = denyUntil.get(fk);
@@ -225,7 +220,7 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
   }
 
   const check = async (key: string, cost = 1): Promise<Decision> => {
-    validateCost(cost);
+    requireCost(cost);
     const fk = keyFor(key);
     const now = clock.now();
     lastUse.set(fk, now);
