@@ -36,6 +36,12 @@
     "koa",
     "hono",
     "nextjs",
+    "sveltekit",
+    "remix",
+    "elysia",
+    "trpc",
+    "grpc",
+    "aws-lambda",
     "middleware",
     "fetch",
     "edge",
@@ -188,6 +194,46 @@
       "require": {
         "types": "./dist/lambda.d.cts",
         "default": "./dist/lambda.cjs"
+      }
+    },
+    "./sveltekit": {
+      "import": {
+        "types": "./dist/sveltekit.d.ts",
+        "default": "./dist/sveltekit.js"
+      },
+      "require": {
+        "types": "./dist/sveltekit.d.cts",
+        "default": "./dist/sveltekit.cjs"
+      }
+    },
+    "./remix": {
+      "import": {
+        "types": "./dist/remix.d.ts",
+        "default": "./dist/remix.js"
+      },
+      "require": {
+        "types": "./dist/remix.d.cts",
+        "default": "./dist/remix.cjs"
+      }
+    },
+    "./elysia": {
+      "import": {
+        "types": "./dist/elysia.d.ts",
+        "default": "./dist/elysia.js"
+      },
+      "require": {
+        "types": "./dist/elysia.d.cts",
+        "default": "./dist/elysia.cjs"
+      }
+    },
+    "./trpc": {
+      "import": {
+        "types": "./dist/trpc.d.ts",
+        "default": "./dist/trpc.js"
+      },
+      "require": {
+        "types": "./dist/trpc.d.cts",
+        "default": "./dist/trpc.cjs"
       }
     },
     "./otel": {
