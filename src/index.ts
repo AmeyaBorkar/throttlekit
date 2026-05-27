@@ -89,6 +89,7 @@ export type {
 export {
   adaptiveThrottle,
   criticalFractile,
+  distributedTokenBudget,
   fairShare,
   guaranteedShare,
   learnedReservation,
@@ -100,6 +101,8 @@ export {
 export type {
   AdaptiveThrottle,
   AdaptiveThrottleOptions,
+  DistributedTokenBudgetMeter,
+  DistributedTokenBudgetOptions,
   FairShareLimiter,
   FairShareOptions,
   LearnedReservation,

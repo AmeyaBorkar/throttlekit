@@ -17,7 +17,8 @@ import { requireAtLeast, requireInteger, requirePositive } from "../core/validat
  * - {@link tokenBudget}: a streaming token-budget meter for *post-hoc* costs (e.g. LLM output
  *   tokens, billed only as they stream). Debit the actual tokens as they are produced; overshoot is
  *   bounded by the debit granularity (exactly 0 per token), independent of the per-request cap and
- *   of how many streams meter concurrently.
+ *   of how many streams meter concurrently. {@link distributedTokenBudget} is its fleet-shared,
+ *   {@link Store}-backed form, with the same bound across every gateway at once.
  * - {@link learnedReservation}: an online newsvendor learner for the per-request token *reservation*
  *   that paces admission over a {@link tokenBudget} — it descends onto the cost-optimal quantile with
  *   `O(√T)` regret, while the meter (not the reservation) holds safety unconditionally.
@@ -766,6 +767,17 @@ export function tokenBudget(options: TokenBudgetOptions): TokenBudgetMeter {
     },
   };
 }
+
+/**
+ * The fleet-shared, {@link Store}-backed sibling of {@link tokenBudget}: the same stop-at-boundary
+ * rule run as an atomic read-modify-write against a shared counter, so one budget `L` is enforced
+ * across every gateway with a per-token overshoot of 0 independent of fleet size.
+ */
+export { distributedTokenBudget } from "./distributed-budget";
+export type {
+  DistributedTokenBudgetMeter,
+  DistributedTokenBudgetOptions,
+} from "./distributed-budget";
 
 // ── Primitive 5: learnedReservation (TALE Layer 2 — online learned token reservation) ───────────
 
