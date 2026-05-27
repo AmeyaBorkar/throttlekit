@@ -44,6 +44,23 @@ function resetDeltaSeconds(decision: Decision, now: number): number {
 }
 
 /**
+ * Make `name` safe to embed inside an RFC 9651 Structured-Fields quoted string. `policyName` is
+ * developer-supplied (it defaults to the strategy name), but the library validates nothing else, so
+ * we drop control characters — crucially CR/LF, the header-injection vector — and backslash-escape
+ * the `"` and `\` the grammar requires. A normal token (e.g. `"gcra"`) passes through unchanged.
+ */
+function sanitizePolicyName(name: string): string {
+  let out = "";
+  for (const ch of name) {
+    const code = ch.charCodeAt(0);
+    if (code < 0x20 || code === 0x7f) continue; // drop C0 controls + DEL (incl. CR/LF/HTAB)
+    if (ch === '"' || ch === "\\") out += "\\"; // escape the two sf-string specials
+    out += ch;
+  }
+  return out;
+}
+
+/**
  * Build the rate-limit response headers for one {@link Decision}.
  *
  * @returns a plain `Record<string,string>` ready to be set on a response. Header names use their
@@ -63,7 +80,7 @@ export function buildRateLimitHeaders(
   }
 
   if (emit.structured === true) {
-    const policy = opts.policyName ?? "default";
+    const policy = sanitizePolicyName(opts.policyName ?? "default");
     const t = resetDeltaSeconds(decision, opts.now);
     headers.RateLimit = `"${policy}";r=${decision.remaining};t=${t}`;
     let policyValue = `"${policy}";q=${decision.limit}`;
