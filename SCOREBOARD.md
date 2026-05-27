@@ -132,6 +132,7 @@ lease sizing and weighted fairness. Proven/measured and gated under `test/gale/`
 | Pillar 3 — learning-augmented (consistency + robustness), safety unconditional | implemented + measured | ✅ |
 | Pillar 4 — weighted fair escrow (work-conserving multi-tenant fairness) | 4 theorems machine-checked on 20k instances + measured (Workload C); **shipped** as `weightedMaxMin` / `weightedFairShare` | ✅ |
 | Capstone — rate-limiting trilemma `Δ + N·U ≥ (N−1)L`, tight | proven + machine-checked (N ∈ {2,3,4}) | ✅ |
+| Capstone — partial-coordination interpolation `Δ + (N−C)·U ≥ (N−C−1)L` (static-partition) | proven (reduction lemma) + machine-checked (linear floor decay; dynamic `≤C`-message case open) | ✅ |
 
 ## Research track — TALE (escrow under cost uncertainty)
 

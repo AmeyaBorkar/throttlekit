@@ -82,11 +82,54 @@ Yi, SODA 2008**; **Woodruff & Zhang, STOC 2012**) — diverging as `ε → 0` (e
 counting bounds; the two price orthogonal axes); the `Δ–C` edge is the counting bounds; GALE is the
 scheme that spends bounded `C` to hold `Δ = 0` and `U ≈ 0` simultaneously, which no `C = 0` protocol can.
 
+## Partial coordination: the `0 < C < N` interpolation
+
+The theorem prices the no-coordination slice (`C = 0`) and GALE prices the well-coordinated corner.
+What lies between? Here is a clean, tight interpolation in the **static-partition** model of partial
+coordination.
+
+**Model.** Partition the `N` nodes into `m` groups. Within a group the members share **one budget
+pool** `P_j ≥ 0` atomically — intra-group coordination, so any member may draw the whole `P_j`;
+between groups there is none. Maintaining a shared pool across a `g`-member group costs `g − 1`
+coordination links per window (a spanning tree over its members), so the total coordination is
+`C = Σ_j (g_j − 1) = N − m`.
+
+**Reduction lemma.** A group of any size `g` with pool `P` behaves as a **single super-node of budget
+`P`**: flooding it admits `min(Σ d, P)` (its overshoot contribution is per-*pool*, `P`, not per-node),
+and a *lone* hot member can draw the whole pool, so its worst-case under-utilisation is `(L − P)^+` —
+strictly better than the `(L − P/g)^+` an uncoordinated split of `P` into `g` budgets would suffer.
+*The pool is the point: coordination lets the hot member reach budget that, uncoordinated, would sit
+idle on its peers.*
+
+**Corollary (static-partition trilemma).** The `m` groups are therefore `m` zero-coordination
+super-nodes with budgets `P_j`, and the main theorem applies verbatim with `N := m`:
+```
+        Δ + (N − C) · U ≥ (N − C − 1) · L ,     C = N − m ∈ {0, …, N − 1},
+```
+tight at uniform pools `P_j = L/m`. The floor decays **linearly — one `L` per coordination link** —
+from `(N−1)L` at `C = 0` (recovering the theorem), through `(N−C−1)L` in between, to `0` at `C = N−1`
+(a single group of `N` — full coordination, the GALE corner). Machine-checked exhaustively in
+`test/gale/trilemma.test.ts`: the reduction lemma, the bound + tightness for each `m`, and the linear
+floor decay (`N=4`: `3L, 2L, L, 0`).
+
+**Static vs. dynamic coordination — why GALE beats this bound.** The interpolation is for *static*
+partitions: budget is committed per group up front, and coordination only *shares within* a fixed
+group. GALE's leasing is **dynamic and demand-driven** — a single round trip pulls a whole batch `B`
+from the shared L2 *to wherever demand just appeared*. That is strictly more powerful per message:
+even **one** dynamic fetch defeats the single-hot-node adversary that pins `U` at `C = 0` (the hot node
+simply leases more), whereas in the static model one link merely merges two groups (one `L` off the
+floor). This is the honest reason GALE reaches `Δ = 0, U ≈ 0` with *bounded* coordination while the
+static interpolation needs `C = N−1`: it is the **demand-driven** *use* of coordination, not merely its
+quantity, that breaks the trilemma cheaply. A tight lower bound for the *dynamic* `≤ C`-message model —
+where one message may redirect a bounded batch `B` — is **open**; the static-partition bound is the
+clean, provable anchor between the `C = 0` theorem and the `Δ–C` counting bounds.
+
 ## Scope / honesty
 - The theorem is a **single-window, deterministic, hard-worst-case** bound — clean and tight.
   Amortised/randomised/multi-window relaxations (where overshoot is averaged or probabilistic) are a
   natural extension, noted not modelled. The `C = 0` abstraction (pre-authorised budgets) is the
-  standard one for "no communication"; partial-information regimes (`0 < C < N`) interpolate and are
-  future work.
+  standard one for "no communication"; partial coordination (`0 < C < N`) is characterised above in the
+  **static-partition** model (tight, machine-checked), and a tight bound for the *dynamic* `≤ C`-message
+  model is the open question.
 - This bound concerns the *allocation* tension; it complements, and does not replace, the counting
   lower bounds that price `C`.

@@ -141,9 +141,10 @@ what makes this a result, not an analogy.
 ### §8 — Why now / open *(0.25 pp)*
 - **Why now:** LLM TPM budgets make the cost axis urgent *and* unsolved in production — the framing is
   timely and the foils are live.
-- **Open (the honest roadmap):** (1) the partial-coordination `0<C<N` interpolation (the real theory
-  depth); (2) a distributed eval at scale on real LLM-serving traces; (3) the conjectured cost-axis
-  trilemma.
+- **Open (the honest roadmap):** (1) a tight bound for *dynamic* partial coordination — the
+  static-partition `0<C<N` interpolation is now settled & machine-checked, the dynamic `≤C`-message
+  case is open (the real theory depth); (2) a distributed eval at scale on real LLM-serving traces;
+  (3) the conjectured cost-axis trilemma.
 
 ---
 

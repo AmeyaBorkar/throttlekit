@@ -5,6 +5,35 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-27 — the trilemma's `0 < C < N` interpolation
+
+Closed the standing open piece of the GALE capstone — what happens *between* zero coordination and
+GALE's well-coordinated corner — in a clean, tight, machine-checked form. The model: partition the `N`
+nodes into `m` groups that each share **one budget pool** atomically (intra-group coordination, none
+across); maintaining `m` pools costs `C = N − m` links/window. The **reduction lemma** is the crux: a
+size-`g` group with pool `P` behaves as a *single super-node* of budget `P` — a lone hot member draws
+the whole pool, so its under-utilisation is `(L−P)⁺`, not the `(L−P/g)⁺` of an uncoordinated split.
+The `m` groups are then `m` zero-coordination super-nodes, so the main theorem applies with `N := m`:
+
+```
+        Δ + (N − C)·U ≥ (N − C − 1)·L ,   tight,   C = N − m ∈ {0,…,N−1}.
+```
+
+The floor decays **linearly — one `L` per coordination link** — from `(N−1)L` at `C=0` to `0` at
+`C=N−1`. Verified exhaustively (`test/gale/trilemma.test.ts`): the reduction lemma, the bound +
+tightness per `m`, and the floor sequence `24,16,8,0` at `N=4, L=8`.
+
+The honest boundary — and the genuinely interesting part. This is a *static-partition* model; it is
+**not** a universal lower bound for "≤ C messages." GALE's leasing is *dynamic and demand-driven* — one
+round trip pulls a whole batch to *wherever demand just appeared* — which is strictly more powerful per
+message: even **one** dynamic fetch defeats the single-hot-node adversary that pins `U` at `C=0`,
+whereas a static link only merges two groups. So the static interpolation is the provable anchor, and
+the tight bound for the *dynamic* `≤C`-message model is the real open problem (and explains *why* GALE
+reaches `Δ=0, U≈0` cheaply: the demand-driven *use* of coordination, not its quantity). Resisted the
+temptation to claim the static bound as the general one — it isn't, and the central-pool counterexample
+(one message redistributing the whole pool) shows it. TRILEMMA.md, the PROPOSAL/DRAFT/OUTLINE "open"
+framing, and SCOREBOARD updated to match.
+
 ## 2026-05-27 — TALE Layer 1 ships as `tokenBudget`
 
 The streaming token-budget meter — TALE's load-bearing Layer 1 — graduates from the research kernel
