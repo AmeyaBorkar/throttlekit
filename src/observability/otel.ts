@@ -17,6 +17,7 @@
 
 import type { Meter } from "@opentelemetry/api";
 import type { ConcurrencyGuard } from "../concurrency/adaptive";
+import { forwardIntrospection } from "../core/limiter";
 import type { Decision, Limiter } from "../core/types";
 
 /** Common options for the instrumentation wrappers. */
@@ -124,6 +125,9 @@ export function instrumentLimiter(
     reset(key: string): Promise<void> {
       return limiter.reset(key);
     },
+
+    // Forward non-consuming introspection + disposal so instrumenting never hides them.
+    ...forwardIntrospection(limiter),
   };
 }
 

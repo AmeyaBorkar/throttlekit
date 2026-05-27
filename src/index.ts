@@ -92,6 +92,8 @@ export type {
   AnalyticsSnapshot,
   HeavyHitter,
 } from "./analytics";
+export { tapDecisions } from "./observability/tap";
+export type { DecisionEvent, DecisionKind, DecisionTap } from "./observability/tap";
 export {
   adaptiveThrottle,
   criticalFractile,

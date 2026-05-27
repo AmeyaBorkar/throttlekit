@@ -22,6 +22,7 @@
  */
 
 import { systemClock } from "../core/clock";
+import { forwardIntrospection } from "../core/limiter";
 import type { Clock, Decision, Limiter, Strategy } from "../core/types";
 import { requireAtLeast, requirePositive } from "../core/validate";
 
@@ -266,6 +267,9 @@ export function withAnalytics(limiter: Limiter, options: AnalyticsOptions = {}):
     reset(key: string): Promise<void> {
       return limiter.reset(key);
     },
+
+    // Forward non-consuming introspection + disposal so wrapping never hides them.
+    ...forwardIntrospection(limiter),
 
     analytics(): AnalyticsSnapshot {
       // Snapshotting must observe a window roll too, so stats read after a boundary (with no

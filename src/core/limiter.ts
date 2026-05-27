@@ -23,6 +23,24 @@ export interface RateLimitOptions<S = unknown> {
  * an in-memory store runs the transition locally while a Redis store collapses it to one round
  * trip — from the same configuration.
  */
+/**
+ * Forward a limiter's **optional** methods (`peek`/`peekSync`/`forecast`/`forecastSync`/`close`) to
+ * an inner limiter, but only the ones it actually implements. Spread the result into a wrapper's
+ * returned object so decorators like {@link withAnalytics}, `instrumentLimiter`, and `tapDecisions`
+ * don't silently drop introspection or disposal. (The limiter methods are closures, not `this`-bound,
+ * so calling them detached is safe.)
+ */
+export function forwardIntrospection(inner: Limiter): Partial<Limiter> {
+  const out: Partial<Limiter> = {};
+  const { peek, peekSync, forecast, forecastSync, close } = inner;
+  if (peek) out.peek = (key) => peek(key);
+  if (peekSync) out.peekSync = (key) => peekSync(key);
+  if (forecast) out.forecast = (key, cost) => forecast(key, cost);
+  if (forecastSync) out.forecastSync = (key, cost) => forecastSync(key, cost);
+  if (close) out.close = () => close();
+  return out;
+}
+
 export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
   const strategy = options.strategy;
   const clock = options.clock ?? systemClock;
