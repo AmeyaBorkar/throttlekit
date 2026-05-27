@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { leakyBucket } from "../../src/algorithms/leaky-bucket";
 import { ManualClock } from "../../src/core/clock";
+import { MemoryStore } from "../../src/stores/memory";
 
 /**
  * TK-R05: a delay beyond setTimeout's 32-bit ceiling (~24.8 days) silently clamps to 1ms and fires
@@ -11,8 +12,11 @@ describe("leakyBucket.schedule — long-delay sleep (TK-R05)", () => {
     vi.useFakeTimers();
     try {
       const clock = new ManualClock(0);
+      // A sweep-less store, so advancing fake time by ~2e9 ms doesn't fire the default 5s sweep timer
+      // hundreds of thousands of times (which made this test flaky/slow).
+      const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
       // ratePerSec 1 ⇒ T = 1000ms/unit; maxQueueMs huge so a big backlog is still accepted.
-      const shaper = leakyBucket({ ratePerSec: 1, maxQueueMs: 3_000_000_000, clock });
+      const shaper = leakyBucket({ ratePerSec: 1, maxQueueMs: 3_000_000_000, clock, store });
       // Prime: push the next departure ~2.2e9 ms out (cost 2.2e6 × 1000ms = 2.2e9).
       await shaper.reserve("k", 2_200_000);
 
