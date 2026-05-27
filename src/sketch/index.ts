@@ -1,5 +1,6 @@
 import { systemClock } from "../core/clock";
 import type { Clock, Decision } from "../core/types";
+import { requireCost, requireInteger } from "../core/validate";
 
 /** Bytes of fixed header in {@link CountMinSketch.toBytes}: width(u32) + depth(u32) + total(f64). */
 const HEADER_BYTES = 16;
@@ -306,9 +307,10 @@ export function sketchRateLimit(options: SketchRateLimitOptions): SketchRateLimi
   let windowStart = Number.NEGATIVE_INFINITY;
 
   function checkSync(key: string, cost = 1): Decision {
-    if (!Number.isFinite(cost) || cost <= 0) {
-      throw new RangeError(`cost must be a positive finite number, got ${String(cost)}`);
-    }
+    requireCost(cost);
+    // Counts live in a Uint32Array, so a fractional cost would truncate on `add` and let the key
+    // admit more than `limit` true units — breaking the never-over-admit guarantee. Require integers.
+    requireInteger("sketchRateLimit.cost", cost);
     const now = clock.now();
     // Roll the window on the first check at/after its end — epoch-aligned, matching fixedWindow.
     if (now >= windowStart + windowMs) {
