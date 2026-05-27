@@ -1,0 +1,17 @@
+panel,scheme,x,overshoot,overshoot_over_L
+placement,corner(legacy),2,18,0.0900
+placement,window-coupled,2,0,0.0000
+placement,corner(legacy),4,36,0.1800
+placement,window-coupled,4,0,0.0000
+placement,corner(legacy),8,72,0.3600
+placement,window-coupled,8,0,0.0000
+placement,corner(legacy),16,144,0.7200
+placement,window-coupled,16,0,0.0000
+cost,corner(admit-then-count),256,24,0.0240
+cost,window-coupled(streaming),256,0,0.0000
+cost,corner(admit-then-count),512,1048,1.0480
+cost,window-coupled(streaming),512,0,0.0000
+cost,corner(admit-then-count),1024,3096,3.0960
+cost,window-coupled(streaming),1024,0,0.0000
+cost,corner(admit-then-count),2048,7192,7.1920
+cost,window-coupled(streaming),2048,0,0.0000
