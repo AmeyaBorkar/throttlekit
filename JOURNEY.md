@@ -5,6 +5,14 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-27 — 0.6.1: the dynamic trilemma bound, on the record
+
+Docs release. The package code is byte-identical to 0.6.0 — the dynamic `≤C`-message bound was
+research/test/docs only — so `0.6.1` is a README republish (the 0.5.1 pattern) recording the now-proved
+`Δ + N·U ≥ (N−1)(L − C·B)` (tight at `B=1`) in the research framing on the npm page. Honest scope: the
+proven core is elementary and the practically-relevant batched case (`B>1`) stays open — the release
+reflects the result, it doesn't add library functionality.
+
 ## 2026-05-27 — the dynamic `≤C`-message trilemma bound (the last open theory piece)
 
 Closed the dynamic counterpart to the static-partition interpolation — coordination as *demand-driven

@@ -8,6 +8,21 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.6.1] — 2026-05-27
+
+### Documentation
+
+- README updated to record the now-**proved** dynamic `≤C`-message trilemma bound
+  `Δ + N·U ≥ (N−1)(L − C·B)` (tight at unit batch `B=1`), completing the trilemma's coordination axis
+  alongside the static-partition interpolation.
+
+### Research
+
+- The dynamic `≤C`-message trilemma bound is proven (single-hot-node adversary) and machine-checked
+  (`test/gale/dynamic-coordination.ts` — exhaustive solver + 6 gated checks), with the closed form for
+  *batched* leasing (`B>1, C≥2`, an online-stranding lower bound) left as the one open piece. Gated
+  under `research/`/`test/`; **no change to the published package code** — this is a docs release.
+
 ## [0.6.0] — 2026-05-27
 
 ### Added
@@ -225,7 +240,8 @@ bit-identical by a dual-path conformance suite.
 - Tested with Vitest (unit, boundary, property via fast-check, dual-path conformance, and
   exactly-K concurrency/atomicity on memory and Redis); CI on Node 20/22/24 with a Redis service.
 
-[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.4.1...v0.5.0

@@ -105,7 +105,7 @@ Details: [Overload, fairness & DDoS](https://github.com/AmeyaBorkar/throttlekit/
 
 ThrottleKit's distributed guarantees come from two formal programs developed alongside it; both are proven/measured and gated under [`research/`](./research), with pieces shipping into the library as marked.
 
-- **GALE** — *Globally-Accounted Learned Escrow.* A distributed limiter with a hard, tight overshoot bound **independent of fleet size** (shipped as `lease.windowCoupled`), online-EOQ learned lease sizing, learning-augmented sizing with unconditional safety, weighted work-conserving fairness (shipped as `weightedFairShare`/`weightedMaxMin`), and a proved **trilemma** lower bound `Δ + N·U ≥ (N−1)L` (with a tight `0<C<N` partial-coordination interpolation).
+- **GALE** — *Globally-Accounted Learned Escrow.* A distributed limiter with a hard, tight overshoot bound **independent of fleet size** (shipped as `lease.windowCoupled`), online-EOQ learned lease sizing, learning-augmented sizing with unconditional safety, weighted work-conserving fairness (shipped as `weightedFairShare`/`weightedMaxMin`), and a proved **trilemma** lower bound `Δ + N·U ≥ (N−1)L`, with a tight `0<C<N` partial-coordination interpolation across **both** static partitioning and dynamic leasing (`Δ + N·U ≥ (N−1)(L − C·B)`, tight at unit batch) — all machine-checked.
 - **TALE** — *escrow under cost uncertainty.* Token-budget rate limiting for LLMs, where a request's cost — its *output* tokens — is revealed only as it streams. A three-layer escrow; the streaming meter (**shipped as `tokenBudget`**) is window-coupling on the cost axis and the multi-gateway form reduces *byte-identically* to GALE's leased budget.
 
 ## Performance
