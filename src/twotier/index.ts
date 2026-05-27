@@ -166,6 +166,8 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
   const lastDecision = new Map<string, Decision>();
   const lastUse = new Map<string, number>();
   const refilling = new Set<string>();
+  // In-flight on-demand leases per key, so N concurrent misses coalesce onto ONE L2 round trip.
+  const pendingLease = new Map<string, Promise<Decision>>();
 
   const forget = (fk: string): void => {
     credits.delete(fk);
@@ -233,24 +235,45 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
       }
     }
 
-    const have = credits.get(fk) ?? 0;
-    if (have >= cost) {
-      credits.set(fk, have - cost);
-      maybeRefill(fk);
-      return synthAllow(fk, now);
-    }
+    // Serve from local credits; when short, lease a batch from L2 — but coalesce concurrent misses
+    // on the same key onto ONE in-flight lease, so a node never holds more than `batch` outstanding
+    // (which the overshoot bound assumes) and a hot cold key can't stampede L2 with parallel leases.
+    for (;;) {
+      const have = credits.get(fk) ?? 0;
+      if (have >= cost) {
+        credits.set(fk, have - cost);
+        maybeRefill(fk);
+        return synthAllow(fk, now);
+      }
 
-    // Not enough local budget: lease a batch (or `cost` if larger) from L2 in one round trip.
-    const leaseAmount = Math.max(batch, cost);
-    const d = await l2.apply(fk, decisionTransform(strategy, clock.now(), leaseAmount));
-    lastDecision.set(fk, d);
-    if (d.allowed) {
-      evictCredits();
-      credits.set(fk, (credits.get(fk) ?? 0) + leaseAmount - cost);
-      return synthAllow(fk, now);
+      let lease = pendingLease.get(fk);
+      if (lease === undefined) {
+        const leaseAmount = Math.max(batch, cost);
+        lease = l2.apply(fk, decisionTransform(strategy, clock.now(), leaseAmount)).then((d) => {
+          lastDecision.set(fk, d);
+          if (d.allowed) {
+            evictCredits();
+            credits.set(fk, (credits.get(fk) ?? 0) + leaseAmount);
+          }
+          return d;
+        });
+        pendingLease.set(fk, lease);
+        // Free the slot once settled so the next shortage starts a fresh lease (guarding against a
+        // newer lease having replaced it). The separate `.catch` keeps a rejected lease from going
+        // unhandled on this cleanup chain; the awaiter below still observes the rejection.
+        const settled = lease;
+        void settled
+          .catch(() => undefined)
+          .finally(() => {
+            if (pendingLease.get(fk) === settled) pendingLease.delete(fk);
+          });
+      }
+
+      const d = await lease;
+      // L2 globally exhausted and still nothing to serve locally ⇒ surface its denial.
+      if (!d.allowed && (credits.get(fk) ?? 0) < cost) return d;
+      // Otherwise loop: the lease added a batch, so this request now fits (or we lease again).
     }
-    // L2 is globally exhausted — surface its denial (correct retryAfter/resetAt).
-    return d;
   };
   return {
     strategy: strategy as Strategy<unknown>,
