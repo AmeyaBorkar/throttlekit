@@ -6,6 +6,10 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.6.0] — 2026-05-27
+
 ### Added
 
 - **`tokenBudget`** — a streaming token-budget meter for *post-hoc* costs (the LLM-gateway problem:
@@ -24,6 +28,20 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 ### Fixed
 
 - The exported `version` constant was stale at `0.3.0`; synced to the package version.
+
+### Documentation
+
+- README **rebranded** around provability ("rate limiting you can prove") and trimmed from ~220 to
+  ~110 lines — leading with the machine-checked, fleet-size-independent overshoot bound, with the full
+  guides remaining in the GitHub Wiki. npm description refreshed to match; added an `llm` keyword.
+
+### Research
+
+- Research tracks advanced (gated under `research/`, **not** part of the published package): the
+  `0<C<N` trilemma partial-coordination interpolation (`research/gale/TRILEMMA.md`), the L2/L3
+  regret/consistency analysis with explicit constants (`research/cost-uncertainty/REGRET-ANALYSIS.md`),
+  and a discrete-event distributed simulator confirming the Pillar-1 overshoot bound holds for N→512
+  under lease latency and partitions (`research/gale/DISTRIBUTED-SIM-EVAL.md`).
 
 ## [0.5.1] — 2026-05-26
 
@@ -207,7 +225,8 @@ bit-identical by a dual-path conformance suite.
 - Tested with Vitest (unit, boundary, property via fast-check, dual-path conformance, and
   exactly-K concurrency/atomicity on memory and Redis); CI on Node 20/22/24 with a Redis service.
 
-[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/AmeyaBorkar/throttlekit/compare/v0.3.0...v0.4.1

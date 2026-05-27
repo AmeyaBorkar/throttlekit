@@ -5,6 +5,18 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-05-27 — 0.6.0: `tokenBudget` ships + a provability rebrand
+
+Cut **`throttlekit@0.6.0`** — the first release carrying the TALE Layer-1 meter as a public primitive
+(`tokenBudget`), plus this session's version-const fix. Paired it with a **rebrand**: the README now
+leads with the one thing no other JS limiter has — a machine-checked, fleet-size-independent overshoot
+bound — under the line *"rate limiting you can prove,"* trimmed ~220 → ~110 lines (the wiki holds the
+full guides), with a matching npm description and an `llm` keyword. The research advances this session
+(the `0<C<N` interpolation, the L2/L3 regret analysis, the N→512 discrete-event sim) are noted in the
+changelog as gated under `research/`, **not** shipped in the package — the published surface is just
+the library + `tokenBudget`. Minor bump (additive, backward-compatible); held the 1.0 signal since the
+public API may still move.
+
 ## 2026-05-27 — GALE at scale: a discrete-event simulator (N → 512, latency, partitions)
 
 Built a discrete-event simulator (`test/gale/discrete-event-sim.ts`) to carry the Pillar-1 overshoot
