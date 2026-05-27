@@ -20,6 +20,7 @@ export default defineConfig({
     remix: "src/adapters/remix.ts",
     elysia: "src/adapters/elysia.ts",
     trpc: "src/adapters/trpc.ts",
+    nest: "src/adapters/nest.ts",
     otel: "src/observability/index.ts",
     testkit: "src/testkit/index.ts",
   },

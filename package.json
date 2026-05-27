@@ -236,6 +236,16 @@
         "default": "./dist/trpc.cjs"
       }
     },
+    "./nest": {
+      "import": {
+        "types": "./dist/nest.d.ts",
+        "default": "./dist/nest.js"
+      },
+      "require": {
+        "types": "./dist/nest.d.cts",
+        "default": "./dist/nest.cjs"
+      }
+    },
     "./otel": {
       "import": {
         "types": "./dist/otel.d.ts",
