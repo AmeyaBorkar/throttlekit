@@ -92,6 +92,8 @@ const limiter = twoTier({
 
 **Multi-region** is the same mechanism with regions as the leasing nodes and one shared L2 — region-local latency, the *same* verified bound capping worldwide overshoot. Walkthroughs: [Distributed & provable](https://github.com/AmeyaBorkar/throttlekit/wiki/Distributed-and-Provable).
 
+**When a store goes down:** `apply` rejects (never silently allows/denies) and your `fail: "open" | "closed"` policy decides; no store writes partially; the durable backends never lose committed counts, and `twoTier(leased)` keeps serving from local credits through a brief L2 blip. The per-store outage/recovery matrix is in [`docs/FAILURE-MODES.md`](./docs/FAILURE-MODES.md).
+
 ## Overload, fairness, and cost
 
 Primitives that sit *upstream* of the per-key limiters:
