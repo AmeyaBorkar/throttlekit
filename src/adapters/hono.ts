@@ -48,7 +48,8 @@ export type HonoRateLimitOptions = LimiterOrStrategy &
 export function honoRateLimit(options: HonoRateLimitOptions): MiddlewareHandler {
   const gate = createGate(options);
   const trust = trustFrom(options);
-  const keyFn = options.key ?? ((c: Context) => edgeClientIp(c.req.raw, trust));
+  const keyFn =
+    options.key ?? ((c: Context) => edgeClientIp(c.req.raw, trust, options.trustClientIpHeader));
   const costOpt = options.cost ?? 1;
 
   return async (c: Context, next: Next): Promise<Response | undefined> => {

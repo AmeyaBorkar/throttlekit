@@ -23,6 +23,16 @@ export interface CommonAdapterOptions extends TrustProxyConfig {
   emit?: HeaderEmit | false;
   /** Policy name surfaced in structured headers. Defaults to the strategy name. */
   policyName?: string;
+  /**
+   * Edge adapters only: whether to trust the platform-injected `cf-connecting-ip` header as the
+   * client key. Default `true` — correct behind Cloudflare, which **overwrites** any client-supplied
+   * value, and other platforms that inject it. Set `false` when your edge is **not** behind such a
+   * platform, so a client can't spoof the header to rotate rate-limit buckets; the key then comes
+   * from a {@link TrustProxyConfig.trustProxy}-validated `X-Forwarded-For`, or `"anon"` when none is
+   * trusted. (The spoofable rightmost `X-Forwarded-For` is consulted **only** when `trustProxy` is
+   * configured, regardless of this flag.)
+   */
+  trustClientIpHeader?: boolean;
 }
 
 /** Either pass a prebuilt limiter, or the pieces to build one inline. */
@@ -130,23 +140,40 @@ export function nodeClientIp(req: NodeReqLike, trust: TrustProxyConfig): string 
 }
 
 /**
- * Default edge/Web key derivation. Edge platforms expose the trusted client IP directly
- * (Cloudflare's `cf-connecting-ip`), so prefer it; otherwise fall back to `x-forwarded-for`
- * resolved through the trusted-proxy policy. There is no socket peer at the edge, so the rightmost
- * XFF entry stands in as `remoteAddr` for trust-chain selection. With nothing usable, the key is
- * `"anon"` (one shared bucket) rather than a spoofable header.
+ * Default edge/Web key derivation, hardened against header spoofing (audit TK-S01).
+ *
+ * Edge runtimes expose no socket peer, so the client IP can only come from a header:
+ *  - `cf-connecting-ip` — injected (and overwritten) by Cloudflare and similar platforms. Trusted by
+ *    default, because *behind such a platform* a client cannot forge it. Set `trustClientIpHeader`
+ *    to `false` when you are NOT behind a platform that sets it, so a client can't spoof the header
+ *    to mint a fresh rate-limit bucket per request.
+ *  - `x-forwarded-for` — its rightmost entry is fully client-settable, so it is consulted **only**
+ *    when `trustProxy` is configured (a declared trusted proxy chain) and then resolved through that
+ *    policy; without `trustProxy` it is ignored rather than trusted blindly.
+ *
+ * With nothing trustworthy, the key is `"anon"` (one shared bucket) — never a spoofable header.
  */
-export function edgeClientIp(request: Request, trust: TrustProxyConfig): string {
-  const cf = request.headers.get("cf-connecting-ip");
-  if (cf !== null && cf.trim().length > 0) {
-    return clientIp({ remoteAddr: cf.trim() }, trust);
+export function edgeClientIp(
+  request: Request,
+  trust: TrustProxyConfig,
+  trustClientIpHeader = true,
+): string {
+  if (trustClientIpHeader) {
+    const cf = request.headers.get("cf-connecting-ip");
+    if (cf !== null && cf.trim().length > 0) {
+      return clientIp({ remoteAddr: cf.trim() }, trust);
+    }
   }
-  const xff = request.headers.get("x-forwarded-for");
-  if (xff !== null && xff.trim().length > 0) {
-    const parts = xff.split(",").map((p) => p.trim());
-    const remoteAddr = parts[parts.length - 1] ?? "";
-    const upstream = parts.slice(0, -1);
-    return clientIp({ remoteAddr, xForwardedFor: upstream }, trust);
+  // The rightmost X-Forwarded-For entry is attacker-controlled at the edge, so consult it only when
+  // a trusted proxy chain is declared; otherwise refuse to key on it and share one bucket.
+  if (trust.trustProxy !== undefined && trust.trustProxy !== false) {
+    const xff = request.headers.get("x-forwarded-for");
+    if (xff !== null && xff.trim().length > 0) {
+      const parts = xff.split(",").map((p) => p.trim());
+      const remoteAddr = parts[parts.length - 1] ?? "";
+      const upstream = parts.slice(0, -1);
+      return clientIp({ remoteAddr, xForwardedFor: upstream }, trust);
+    }
   }
   return "anon";
 }

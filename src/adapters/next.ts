@@ -69,7 +69,9 @@ export function nextRateLimit(
 ): (request: Request) => Promise<NextRateLimitResult> {
   const gate = createGate(options);
   const trust = trustFrom(options);
-  const keyFn = options.key ?? ((request: Request) => edgeClientIp(request, trust));
+  const keyFn =
+    options.key ??
+    ((request: Request) => edgeClientIp(request, trust, options.trustClientIpHeader));
   const costOpt = options.cost ?? 1;
 
   return async (request: Request): Promise<NextRateLimitResult> => {

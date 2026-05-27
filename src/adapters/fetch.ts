@@ -49,7 +49,9 @@ export function withRateLimit(
 ): (request: Request, ...args: unknown[]) => Promise<Response> {
   const gate = createGate(options);
   const trust = trustFrom(options);
-  const keyFn = options.key ?? ((request: Request) => edgeClientIp(request, trust));
+  const keyFn =
+    options.key ??
+    ((request: Request) => edgeClientIp(request, trust, options.trustClientIpHeader));
   const costOpt = options.cost ?? 1;
 
   return async (request: Request, ...args: unknown[]): Promise<Response> => {
