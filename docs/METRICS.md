@@ -68,6 +68,15 @@ Then search traces by `throttlekit.allowed = false` or facet latency by `throttl
 `{ key, cost, decision, strategy, durationMs, kind }` per check, so you can feed any backend the OTel
 layer doesn't cover. See [Operations](https://github.com/AmeyaBorkar/throttlekit/wiki/Operations).
 
+## Reference Grafana dashboard
+
+A ready-to-import dashboard lives at [`grafana/throttlekit-dashboard.json`](../grafana/throttlekit-dashboard.json):
+check rate by outcome, deny rate, remaining-headroom and store-latency percentiles, and the adaptive-
+concurrency gauges — with `$datasource` and `$strategy` template variables. Import via Grafana →
+Dashboards → New → Import. It targets the Prometheus names above (`throttlekit_checks_total`,
+`throttlekit_remaining_bucket`, …); if your OTel exporter appends a unit suffix to the latency
+histogram (e.g. `throttlekit_store_latency_milliseconds_bucket`), tweak that one panel's metric name.
+
 ## Stability policy
 
 `METRIC_NAMES` and `SPAN_ATTRIBUTES` are frozen `as const` and asserted by
