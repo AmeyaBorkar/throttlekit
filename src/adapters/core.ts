@@ -17,7 +17,12 @@ import { type TrustProxyConfig, clientIp } from "../security/ip";
 
 /** Options shared by every adapter. */
 export interface CommonAdapterOptions extends TrustProxyConfig {
-  /** Store-outage behavior: `"open"` allows, `"closed"` denies. Default `"open"`. */
+  /**
+   * Store-outage behavior: `"open"` allows, `"closed"` denies. Default `"open"` (availability over
+   * enforcement). **Prefer `"closed"` for security-sensitive limiters** (auth, payments, signup) so a
+   * store outage can't be ridden to bypass the limit. Note the policy applies to *any* error the
+   * limiter throws, not only store outages — pair it with `onError`/`onLimited` for visibility.
+   */
   fail?: FailMode;
   /** Header families to emit, or `false` to emit none. Default `{ draft: true }`. */
   emit?: HeaderEmit | false;
