@@ -25,6 +25,8 @@
     "redis",
     "postgres",
     "postgresql",
+    "dynamodb",
+    "aws",
     "lua",
     "throttle",
     "backpressure",
@@ -74,6 +76,16 @@
       "require": {
         "types": "./dist/postgres.d.cts",
         "default": "./dist/postgres.cjs"
+      }
+    },
+    "./dynamodb": {
+      "import": {
+        "types": "./dist/dynamodb.d.ts",
+        "default": "./dist/dynamodb.js"
+      },
+      "require": {
+        "types": "./dist/dynamodb.d.cts",
+        "default": "./dist/dynamodb.cjs"
       }
     },
     "./cloudflare": {
