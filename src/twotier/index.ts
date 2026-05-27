@@ -4,8 +4,13 @@ import { rateLimit } from "../core/limiter";
 import { decisionTransform } from "../core/transform";
 import type { Clock, Decision, Limiter, Store, Strategy } from "../core/types";
 
-export { eoqOptimum, leaseSizer } from "./sizing";
-export type { LeaseSizer, LeaseSizerOptions } from "./sizing";
+export { eoqOptimum, leaseSizer, predictiveLeaseSizer } from "./sizing";
+export type {
+  LeaseSizer,
+  LeaseSizerOptions,
+  PredictiveLeaseSizer,
+  PredictiveLeaseSizerOptions,
+} from "./sizing";
 
 /** L1/L2 coordination mode. See docs and THROTTLEKIT.md §8. */
 export type TwoTierMode = "strict" | "cached-deny" | "leased";

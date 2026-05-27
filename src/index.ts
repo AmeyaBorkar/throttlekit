@@ -47,12 +47,14 @@ export type {
   ConcurrencyGuard,
   Lease,
 } from "./concurrency/adaptive";
-export { eoqOptimum, leaseSizer, twoTier } from "./twotier";
+export { eoqOptimum, leaseSizer, predictiveLeaseSizer, twoTier } from "./twotier";
 export type {
   L1Options,
   LeaseOptions,
   LeaseSizer,
   LeaseSizerOptions,
+  PredictiveLeaseSizer,
+  PredictiveLeaseSizerOptions,
   TwoTierMode,
   TwoTierOptions,
 } from "./twotier";
