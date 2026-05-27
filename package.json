@@ -1,7 +1,7 @@
 {
   "name": "throttlekit",
   "version": "0.5.1",
-  "description": "Rate limiting for Node and the web: GCRA-default, one transform across in-memory/Redis/Postgres (proven bit-identical), and two-tier token leasing with a formally-verified overshoot bound independent of fleet size. Sync API, multi-dimensional checks, fixed-memory DDoS sketches.",
+  "description": "Rate limiting you can prove: a machine-checked, fleet-size-independent overshoot bound on one small core — pure-function algorithms, one atomic store across in-memory/Redis/Postgres (proven bit-identical), a ~320ns sync API, and provable two-tier leasing (GALE/TALE).",
   "type": "module",
   "license": "MIT",
   "author": "Ameya Borkar",
@@ -38,7 +38,8 @@
     "fetch",
     "edge",
     "cloudflare-workers",
-    "ddos"
+    "ddos",
+    "llm"
   ],
   "sideEffects": false,
   "engines": {
