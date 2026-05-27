@@ -145,6 +145,13 @@ multi-gateway TPM sharing inherits the window-coupled fleet-size-independent bou
 of `C` (vs carryover's `C·(B−1)`, which grows with the fleet), at full utilisation — and the
 window-coupled token budget is *byte-identical* to GALE's request-granular `simulateWindowCoupled`.
 
+**Real-trace validation (done).** Replaying the **Azure 2023 LLM inference trace** (the Splitwise /
+ISCA'24 dataset; 19,366 requests, output p50 129 / max 1000, tail 7.8×) through the meter confirms §3 on
+production data: reserve-max's reservation efficiency collapses to **0.05** at a 4096 cap (95% wasted),
+admit-then-count overshoots by **≈14–22% of the budget**, and the streaming meter holds **Δ=0 at full
+efficiency** across every cap. Engine + results: `research/cost-uncertainty/{real-trace-eval.ts,
+REAL-TRACE-EVAL.md}`.
+
 ## 5. Venue & positioning
 
 - **Primary: SIGMETRICS / POMACS or NSDI/OSDI** (systems-measurement; LLM serving is a hot track).

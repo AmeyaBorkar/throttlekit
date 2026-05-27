@@ -1,0 +1,100 @@
+{
+  "source": "https://raw.githubusercontent.com/Azure/AzurePublicDataset/master/data/AzureLLMInferenceTrace_conv.csv",
+  "dataset": "AzureLLMInferenceTrace_conv (2023, Splitwise)",
+  "stats": {
+    "n": 19366,
+    "mean": 211,
+    "p50": 129,
+    "p90": 424,
+    "p99": 601,
+    "max": 1000
+  },
+  "tailRatio": 7.75,
+  "eval": {
+    "L": 50000,
+    "C": 32,
+    "g": 1,
+    "rows": [
+      {
+        "m": 256,
+        "reserveMax": {
+          "overshoot": 0,
+          "efficiency": 0.6018,
+          "util": 0.9961
+        },
+        "admitThenCount": {
+          "overshoot": 7223,
+          "util": 1
+        },
+        "streaming": {
+          "overshoot": 0,
+          "util": 1
+        }
+      },
+      {
+        "m": 512,
+        "reserveMax": {
+          "overshoot": 0,
+          "efficiency": 0.4071,
+          "util": 0.9916
+        },
+        "admitThenCount": {
+          "overshoot": 11140,
+          "util": 1
+        },
+        "streaming": {
+          "overshoot": 0,
+          "util": 1
+        }
+      },
+      {
+        "m": 1024,
+        "reserveMax": {
+          "overshoot": 0,
+          "efficiency": 0.2062,
+          "util": 0.9796
+        },
+        "admitThenCount": {
+          "overshoot": 10709,
+          "util": 1
+        },
+        "streaming": {
+          "overshoot": 0,
+          "util": 1
+        }
+      },
+      {
+        "m": 2048,
+        "reserveMax": {
+          "overshoot": 0,
+          "efficiency": 0.1031,
+          "util": 0.9668
+        },
+        "admitThenCount": {
+          "overshoot": 10709,
+          "util": 1
+        },
+        "streaming": {
+          "overshoot": 0,
+          "util": 1
+        }
+      },
+      {
+        "m": 4096,
+        "reserveMax": {
+          "overshoot": 0,
+          "efficiency": 0.0515,
+          "util": 0.9251
+        },
+        "admitThenCount": {
+          "overshoot": 10709,
+          "util": 1
+        },
+        "streaming": {
+          "overshoot": 0,
+          "util": 1
+        }
+      }
+    ]
+  }
+}
