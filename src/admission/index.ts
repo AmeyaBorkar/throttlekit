@@ -20,6 +20,10 @@ import { requireAtLeast, requireInteger, requirePositive } from "../core/validat
  * - {@link learnedReservation}: an online newsvendor learner for the per-request token *reservation*
  *   that paces admission over a {@link tokenBudget} — it descends onto the cost-optimal quantile with
  *   `O(√T)` regret, while the meter (not the reservation) holds safety unconditionally.
+ * - {@link predictiveReservation}: learning-augmented reservation — blend a per-request output-length
+ *   *prediction* against {@link learnedReservation} with a Hedge meta-learner: accurate hints drive
+ *   cost to the clairvoyant optimum (consistency), adversarial ones fall back to the no-regret
+ *   quantile (robustness), and safety is untouched (the prediction is just a number the meter caps).
  *
  * The throttles and budgets read time only through an injected {@link Clock}, so every decision is
  * reproducible to the millisecond under {@link ManualClock}; the learners ({@link learnedReservation})
@@ -883,6 +887,106 @@ export function learnedReservation(options: LearnedReservationOptions): LearnedR
     },
     get continuous(): number {
       return r;
+    },
+  };
+}
+
+// ── Primitive 6: predictiveReservation (TALE Layer 3 — learning-augmented reservation) ──────────
+
+/** Asymmetric newsvendor / pinball loss: holdCost per token over-reserved, overrunCost per token of overrun. */
+function reservationCost(
+  reservation: number,
+  cost: number,
+  holdCost: number,
+  overrunCost: number,
+): number {
+  return reservation > cost ? holdCost * (reservation - cost) : overrunCost * (cost - reservation);
+}
+
+/** Options for {@link predictiveReservation}. */
+export interface PredictiveReservationOptions extends LearnedReservationOptions {
+  /** Hedge learning rate `η` (expert weights ∝ `exp(−η · cumulative expert loss)`). Default `0.01`. */
+  learningRate?: number;
+}
+
+/** A predictions-with-safety reservation: blend a per-request length hint against the robust learner. */
+export interface PredictiveReservation {
+  /** Commit a reservation for the next request, given its predicted output length. */
+  reserve(prediction: number): number;
+  /** Learn from the realised cost: update both experts' weights and the robust learner. */
+  observe(cost: number): void;
+  /** Current expert weights `[followPrediction, robust]` (sum to 1), for introspection. */
+  readonly weights: readonly [number, number];
+}
+
+/**
+ * **Learning-augmented reservation** (TALE Layer 3) — like {@link learnedReservation}, but able to
+ * exploit a *per-request* output-length prediction when one is available, without trusting it.
+ *
+ * Predicting an LLM completion's exact length is infeasible, but its relative *rank* is learnable
+ * (Fu et al., "Efficient LLM Scheduling by Learning to Rank", NeurIPS'24). This runs two experts each
+ * request — "follow the prediction" and the robust {@link learnedReservation} quantile learner — and a
+ * **Hedge** meta-learner sets convex weights from each expert's realised pinball loss; it plays the
+ * weighted-average reservation. Because the pinball loss is convex, Jensen gives
+ * `loss(blend) ≤ weighted-average expert loss`, and Hedge drives weight onto the better expert:
+ *
+ * - **accurate predictions ⇒ weight → follow ⇒ cost → the clairvoyant optimum** (consistency);
+ * - **adversarial predictions ⇒ weight → robust ⇒ cost → the no-regret quantile** (robustness).
+ *
+ * **Safety is untouched.** The reservation is just a number the {@link tokenBudget} meter overrides at
+ * the budget boundary, so *no* prediction — however adversarial — can breach the budget. This is the
+ * predictions-with-safety guarantee on the cost axis: speed up the common case, never trade away the
+ * hard bound.
+ *
+ * Pure and deterministic — no clock, no RNG. You supply the prediction; if you have none, pass `0`
+ * (or use {@link learnedReservation} directly). Design + proofs: `research/cost-uncertainty/`.
+ *
+ * @example
+ * const policy = predictiveReservation({ holdCost: 1, overrunCost: 4, maxReservation: 4096 });
+ * const r = policy.reserve(predictedOutputLength); // blends the hint with the robust learner
+ * // …run the request under a tokenBudget meter, then:
+ * policy.observe(producedTokens);
+ */
+export function predictiveReservation(
+  options: PredictiveReservationOptions,
+): PredictiveReservation {
+  const h = options.holdCost;
+  const p = options.overrunCost;
+  const minR = options.minReservation ?? 0;
+  const maxR = options.maxReservation;
+  const eta = options.learningRate ?? 0.01;
+  requirePositive("predictiveReservation.learningRate", eta);
+
+  const robust = learnedReservation(options); // validates holdCost, overrunCost, and the bounds
+  let cumFollow = 0;
+  let cumRobust = 0;
+  let lastFollow = minR;
+  let lastRobust = minR;
+
+  /** Hedge weights via a numerically-stable softmax of the negated, η-scaled cumulative losses. */
+  function weights(): [number, number] {
+    const m = Math.min(cumFollow, cumRobust);
+    const ef = Math.exp(-eta * (cumFollow - m));
+    const er = Math.exp(-eta * (cumRobust - m));
+    const z = ef + er;
+    return [ef / z, er / z];
+  }
+
+  return {
+    reserve(prediction: number): number {
+      lastFollow = clampNum(prediction, minR, maxR);
+      lastRobust = robust.reserve();
+      const [wf, wr] = weights();
+      return Math.round(clampNum(wf * lastFollow + wr * lastRobust, minR, maxR));
+    },
+    observe(cost: number): void {
+      // Score each expert on its own counterfactual pinball loss for this request (full information).
+      cumFollow += reservationCost(lastFollow, cost, h, p);
+      cumRobust += reservationCost(lastRobust, cost, h, p);
+      robust.observe(cost);
+    },
+    get weights(): [number, number] {
+      return weights();
     },
   };
 }
