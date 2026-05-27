@@ -40,6 +40,8 @@
     "fetch",
     "edge",
     "cloudflare-workers",
+    "deno",
+    "deno-kv",
     "ddos",
     "llm"
   ],
@@ -86,6 +88,16 @@
       "require": {
         "types": "./dist/dynamodb.d.cts",
         "default": "./dist/dynamodb.cjs"
+      }
+    },
+    "./deno": {
+      "import": {
+        "types": "./dist/deno.d.ts",
+        "default": "./dist/deno.js"
+      },
+      "require": {
+        "types": "./dist/deno.d.cts",
+        "default": "./dist/deno.cjs"
       }
     },
     "./cloudflare": {
