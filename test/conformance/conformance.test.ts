@@ -137,6 +137,12 @@ d("dual-path conformance (JS vs Redis Lua)", () => {
             `${c.name} timeline=${t} step=${s} now=${clock.now()} cost=${cost}`,
           ).toEqual(dJs);
         }
+        // After the timeline, a non-consuming peek must decode the Redis-side state (HASH / ZSET /
+        // string) into the exact JS decision — the dual-path proof extended to peek + readState.
+        const jsPeek = js.peekSync;
+        const redisPeek = redis.peek;
+        if (jsPeek === undefined || redisPeek === undefined) throw new Error("peek expected");
+        expect(await redisPeek(key), `peek ${c.name} timeline=${t}`).toEqual(jsPeek(key));
       }
     });
   }

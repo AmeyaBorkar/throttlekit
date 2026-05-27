@@ -1,6 +1,9 @@
 import { LUA_NOW } from "../core/lua";
-import type { LuaProgram, Strategy, StrategyOutcome } from "../core/types";
+import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
 import { requirePositive } from "../core/validate";
+
+/** Read-only Lua for non-consuming introspection: returns the stored [tokens, last] (no write). */
+const TOKEN_BUCKET_READ_LUA = "return redis.call('HMGET', KEYS[1], 't', 'l')";
 
 export interface TokenBucketOptions {
   /** Bucket capacity: the maximum tokens held, and the largest instantaneous burst. */
@@ -123,5 +126,28 @@ export function tokenBucket(options: TokenBucketOptions): Strategy<TokenBucketSt
         persist: false,
       };
     },
+    peek(state: TokenBucketState | undefined, now: number): Decision {
+      const prevTokens = state?.tokens ?? capacity;
+      const last = state?.last ?? now;
+      const elapsed = now > last ? now - last : 0;
+      const tokens = Math.min(capacity, prevTokens + elapsed * refillPerMs);
+      const remaining = Math.max(0, Math.floor(tokens));
+      const allowed = tokens >= 1; // a cost-1 request would be admitted
+      return {
+        allowed,
+        limit: capacity,
+        remaining,
+        resetAt: now + Math.ceil((capacity - tokens) / refillPerMs),
+        retryAfterMs: allowed ? 0 : Math.ceil((1 - tokens) / refillPerMs),
+      };
+    },
+    readState: {
+      lua: { script: TOKEN_BUCKET_READ_LUA, buildKeys: (key) => [key], buildArgv: () => [] },
+      decode: (raw: unknown): TokenBucketState | undefined => {
+        const a = raw as (string | null)[] | null;
+        if (a == null || a[0] == null || a[1] == null) return undefined;
+        return { tokens: Number(a[0]), last: Number(a[1]) };
+      },
+    } satisfies ReadState<TokenBucketState>,
   };
 }

@@ -2,7 +2,7 @@ import { MemoryStore } from "../stores/memory";
 import { systemClock } from "./clock";
 import { ThrottleKitError } from "./errors";
 import { prefixer } from "./key";
-import { decisionTransform } from "./transform";
+import { decisionTransform, readOnlyTransform } from "./transform";
 import type { Clock, Decision, Limiter, Store, Strategy, Transform } from "./types";
 import { requireCost } from "./validate";
 
@@ -116,6 +116,33 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
         out[i] = store.applySync(keyFor(keys[i] as string), syncTransform, syncNow);
       }
       return out;
+    },
+
+    peek(key: string): Promise<Decision> {
+      const peekFn = strategy.peek;
+      if (peekFn === undefined) {
+        return Promise.reject(
+          new ThrottleKitError(`peek() is not supported by the "${strategy.name}" strategy`),
+        );
+      }
+      const k = keyFor(key);
+      const t = readOnlyTransform(strategy, peekFn, clock.now());
+      // Non-consuming on every backend: persist:false (and the read-only Lua) never writes.
+      if (store.applySync !== undefined) return Promise.resolve(store.applySync(k, t));
+      return store.apply(k, t);
+    },
+
+    peekSync(key: string): Decision {
+      const peekFn = strategy.peek;
+      if (peekFn === undefined) {
+        throw new ThrottleKitError(`peek() is not supported by the "${strategy.name}" strategy`);
+      }
+      if (store.applySync === undefined) {
+        throw new ThrottleKitError(
+          "peekSync requires a synchronous store (e.g. MemoryStore); the configured store is async-only",
+        );
+      }
+      return store.applySync(keyFor(key), readOnlyTransform(strategy, peekFn, clock.now()));
     },
 
     async reset(key: string): Promise<void> {

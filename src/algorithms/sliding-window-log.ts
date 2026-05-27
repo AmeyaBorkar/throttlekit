@@ -1,6 +1,9 @@
 import { LUA_NOW } from "../core/lua";
-import type { LuaProgram, Strategy, StrategyOutcome } from "../core/types";
+import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
 import { requirePositive } from "../core/validate";
+
+/** Read-only Lua for non-consuming introspection: returns all timestamps with scores (no write). */
+const SLIDING_LOG_READ_LUA = "return redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')";
 
 export interface SlidingWindowLogOptions {
   /** Maximum accepted units within any trailing `windowMs`. */
@@ -138,5 +141,42 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
         persist: false,
       };
     },
+    peek(state: number[] | undefined, now: number): Decision {
+      const windowStart = now - windowMs;
+      const prev = state ?? [];
+      let firstLive = 0;
+      while (firstLive < prev.length && (prev[firstLive] as number) <= windowStart) firstLive++;
+      const count = prev.length - firstLive;
+      const oldest = count > 0 ? (prev[firstLive] as number) : now;
+      const resetAt = Math.ceil(oldest + windowMs);
+      const remaining = Math.max(0, limit - count);
+
+      if (count + 1 <= limit) {
+        return { allowed: true, limit, remaining, resetAt, retryAfterMs: 0 };
+      }
+      let retryAfterMs: number;
+      if (count === 0) {
+        retryAfterMs = windowMs;
+      } else {
+        let kMin = count + 1 - limit;
+        if (kMin < 1) kMin = 1;
+        if (kMin > count) kMin = count;
+        const ref = prev[firstLive + kMin - 1] ?? now;
+        retryAfterMs = Math.ceil(ref + windowMs - now);
+        if (retryAfterMs < 1) retryAfterMs = 1;
+      }
+      return { allowed: false, limit, remaining, resetAt, retryAfterMs };
+    },
+    readState: {
+      lua: { script: SLIDING_LOG_READ_LUA, buildKeys: (key) => [key], buildArgv: () => [] },
+      decode: (raw: unknown): number[] | undefined => {
+        const flat = raw as string[] | null;
+        if (flat == null || flat.length === 0) return undefined;
+        // ZRANGE … WITHSCORES → [member, score, …] ascending by score; keep the scores.
+        const out: number[] = [];
+        for (let k = 1; k < flat.length; k += 2) out.push(Number(flat[k]));
+        return out;
+      },
+    } satisfies ReadState<number[]>,
   };
 }

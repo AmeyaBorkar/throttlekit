@@ -1,6 +1,9 @@
 import { LUA_NOW } from "../core/lua";
-import type { LuaProgram, Strategy, StrategyOutcome } from "../core/types";
+import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
 import { requireAtLeast, requireInteger, requirePositive } from "../core/validate";
+
+/** Read-only Lua for non-consuming introspection: returns the whole ring HASH (no write). */
+const SLIDING_WINDOW_READ_LUA = "return redis.call('HGETALL', KEYS[1])";
 
 export interface SlidingWindowOptions {
   /** Maximum units within any trailing `windowMs`. */
@@ -169,5 +172,56 @@ export function slidingWindow(options: SlidingWindowOptions): Strategy<WindowSta
         persist: false,
       };
     },
+    peek(state: WindowState | undefined, now: number): Decision {
+      const c = Math.floor(now / w);
+      let elapsed = now - c * w;
+      if (elapsed < 0) elapsed = 0;
+      let weight = (w - elapsed) / w;
+      if (weight < 0) weight = 0;
+      if (weight > 1) weight = 1;
+
+      const slots = S + 1;
+      const get = (idx: number): number => {
+        if (idx < 0 || state === undefined) return 0;
+        const p = idx % slots;
+        return state.i[p] === idx ? (state.n[p] ?? 0) : 0;
+      };
+      let full = 0;
+      for (let j = c - S + 1; j <= c; j++) full += get(j);
+      const oldest = get(c - S);
+      const estimate = full + oldest * weight;
+      const resetAt = Math.ceil((c + 1) * w + windowMs);
+      const remaining = Math.max(0, Math.floor(limit - estimate));
+
+      if (estimate + 1 <= limit) {
+        return { allowed: true, limit, remaining, resetAt, retryAfterMs: 0 };
+      }
+      const D = estimate + 1 - limit;
+      let retryAfterMs =
+        oldest > 0 && D <= oldest * weight
+          ? Math.ceil((D * w) / oldest)
+          : Math.ceil((c + 1) * w - now);
+      if (retryAfterMs < 1) retryAfterMs = 1;
+      return { allowed: false, limit, remaining, resetAt, retryAfterMs };
+    },
+    readState: {
+      lua: { script: SLIDING_WINDOW_READ_LUA, buildKeys: (key) => [key], buildArgv: () => [] },
+      decode: (raw: unknown): WindowState | undefined => {
+        const flat = raw as string[] | null;
+        if (flat == null || flat.length === 0) return undefined;
+        const slots = S + 1;
+        const i = new Array<number>(slots).fill(-1);
+        const n = new Array<number>(slots).fill(0);
+        // HGETALL returns a flat [field, value, …]; each value is "<tick>:<count>".
+        for (let k = 0; k + 1 < flat.length; k += 2) {
+          const p = Number(flat[k]);
+          const v = flat[k + 1] as string;
+          const sep = v.indexOf(":");
+          i[p] = Number(v.slice(0, sep));
+          n[p] = Number(v.slice(sep + 1));
+        }
+        return { i, n };
+      },
+    } satisfies ReadState<WindowState>,
   };
 }

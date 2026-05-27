@@ -13,6 +13,7 @@ export const version = "0.8.0";
 export type {
   Clock,
   Decision,
+  Forecast,
   Strategy,
   StrategyOutcome,
   Store,
@@ -20,6 +21,7 @@ export type {
   Transform,
   LuaProgram,
   LuaInvocation,
+  ReadState,
   FailMode,
   Limiter,
 } from "./core/types";

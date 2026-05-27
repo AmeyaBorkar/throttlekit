@@ -1,6 +1,9 @@
 import { LUA_NOW } from "../core/lua";
-import type { LuaProgram, Strategy, StrategyOutcome } from "../core/types";
+import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
 import { requireAtLeast, requirePositive } from "../core/validate";
+
+/** Read-only Lua for non-consuming introspection: returns the stored TAT string (no write). */
+const GCRA_READ_LUA = "return redis.call('GET', KEYS[1])";
 
 export interface GcraOptions {
   /** Sustained rate: requests per `periodMs`. */
@@ -114,5 +117,24 @@ export function gcra(options: GcraOptions): Strategy<number> {
         persist: true,
       };
     },
+    peek(state: number | undefined, now: number): Decision {
+      const tat = state ?? now;
+      const tatEff = tat > now ? tat : now;
+      let remaining = Math.floor((tau - (tatEff - now)) / T);
+      if (remaining < 0) remaining = 0;
+      const allowed = remaining >= 1; // a cost-1 request would be admitted
+      return {
+        allowed,
+        limit: burst,
+        remaining,
+        resetAt: Math.ceil(tatEff), // full burst restored once `now` catches up to the TAT
+        retryAfterMs: allowed ? 0 : Math.ceil(tatEff + T - tau - now),
+      };
+    },
+    readState: {
+      lua: { script: GCRA_READ_LUA, buildKeys: (key) => [key], buildArgv: () => [] },
+      decode: (raw: unknown): number | undefined =>
+        raw === null || raw === undefined ? undefined : Number(raw),
+    } satisfies ReadState<number>,
   };
 }

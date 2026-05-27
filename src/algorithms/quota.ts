@@ -1,5 +1,5 @@
 import { LUA_NOW } from "../core/lua";
-import type { LuaProgram, Strategy, StrategyOutcome } from "../core/types";
+import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
 import { requireInteger, requirePositive } from "../core/validate";
 import { type CalendarCadence, MS_PER_DAY, calendarPeriod } from "./calendar";
 import { slidingWindow } from "./sliding-window";
@@ -253,7 +253,32 @@ export function quota(options: QuotaOptions): Strategy {
     };
   };
 
-  const base: Strategy<QuotaState> = { name: "quota", limit, ttlMs, lua, check };
+  const peek = (state: QuotaState | undefined, now: number): Decision => {
+    const { start, reset } = bounds(now);
+    const count = state && state.start === start ? state.count : 0;
+    return {
+      allowed: count + 1 <= limit,
+      limit,
+      remaining: Math.max(0, Math.floor(limit - count)),
+      resetAt: Math.ceil(reset),
+      retryAfterMs: count + 1 <= limit ? 0 : Math.ceil(reset - now),
+    };
+  };
+
+  const readState: ReadState<QuotaState> = {
+    lua: {
+      script: "return redis.call('HMGET', KEYS[1], 's', 'c')",
+      buildKeys: (key) => [key],
+      buildArgv: () => [],
+    },
+    decode: (raw: unknown): QuotaState | undefined => {
+      const a = raw as (string | null)[] | null;
+      if (a == null || a[0] == null || a[1] == null) return undefined;
+      return { start: Number(a[0]), count: Number(a[1]) };
+    },
+  };
+
+  const base: Strategy<QuotaState> = { name: "quota", limit, ttlMs, lua, check, peek, readState };
   // `fixed` has a constant period; surface it as the policy window. Calendar periods vary, so they
   // intentionally report no fixed `windowMs`.
   return cal === "fixed" ? { ...base, windowMs: periodMs } : base;

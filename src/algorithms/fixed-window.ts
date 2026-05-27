@@ -1,6 +1,9 @@
 import { LUA_NOW } from "../core/lua";
-import type { LuaProgram, Strategy, StrategyOutcome } from "../core/types";
+import type { Decision, LuaProgram, ReadState, Strategy, StrategyOutcome } from "../core/types";
 import { requirePositive } from "../core/validate";
+
+/** Read-only Lua for non-consuming introspection: returns the stored [start, count] (no write). */
+const FIXED_WINDOW_READ_LUA = "return redis.call('HMGET', KEYS[1], 's', 'c')";
 
 export interface FixedWindowOptions {
   /** Maximum requests admitted within each window. */
@@ -115,5 +118,25 @@ export function fixedWindow(options: FixedWindowOptions): Strategy<FixedWindowSt
         persist: false,
       };
     },
+    peek(state: FixedWindowState | undefined, now: number): Decision {
+      const windowStart = Math.floor(now / windowMs) * windowMs;
+      const resetAt = windowStart + windowMs;
+      const count = state && state.start === windowStart ? state.count : 0;
+      return {
+        allowed: count + 1 <= limit,
+        limit,
+        remaining: Math.max(0, Math.floor(limit - count)),
+        resetAt: Math.ceil(resetAt),
+        retryAfterMs: count + 1 <= limit ? 0 : Math.ceil(resetAt - now),
+      };
+    },
+    readState: {
+      lua: { script: FIXED_WINDOW_READ_LUA, buildKeys: (key) => [key], buildArgv: () => [] },
+      decode: (raw: unknown): FixedWindowState | undefined => {
+        const a = raw as (string | null)[] | null;
+        if (a == null || a[0] == null || a[1] == null) return undefined;
+        return { start: Number(a[0]), count: Number(a[1]) };
+      },
+    } satisfies ReadState<FixedWindowState>,
   };
 }

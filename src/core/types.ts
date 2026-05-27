@@ -55,6 +55,44 @@ export interface Strategy<S = unknown> {
   check(state: S | undefined, now: number, cost: number): StrategyOutcome<S>;
   /** Optional atomic Redis form. When present, a Lua-capable store runs it in one round trip. */
   readonly lua?: LuaProgram;
+  /**
+   * Pure, non-mutating introspection: the {@link Decision} for the current `state` at `now`
+   * **without consuming**. Unlike {@link Strategy.check}, `remaining`/`resetAt`/`retryAfterMs`
+   * describe the *current* capacity, not a post-consume projection, and no state is advanced.
+   * Optional; the built-in strategies implement it — it is the basis of {@link Limiter.peek}.
+   */
+  peek?(state: S | undefined, now: number): Decision;
+  /**
+   * Pure capacity forecast for the current `state` at `now`, for a request costing `cost`.
+   * Optional; the basis of {@link Limiter.forecast}.
+   */
+  forecast?(state: S | undefined, now: number, cost: number): Forecast;
+  /**
+   * Read-only access to this strategy's stored state for a **Lua-capable** store, which keeps state
+   * in a strategy-specific encoding (HASH / ZSET / string) the generic OCC read path cannot parse.
+   * The Lua reads and returns the raw value; `decode` maps it to `S`. Used by the non-consuming
+   * introspection methods ({@link Limiter.peek} / {@link Limiter.forecast}) so they never write.
+   * Optional; required for those methods to work over a Lua store.
+   */
+  readonly readState?: ReadState<S>;
+}
+
+/** A non-consuming projection of a key's near-future capacity (see {@link Limiter.forecast}). */
+export interface Forecast {
+  /** Whole units of the given `cost` admissible **right now** before the next denial. */
+  spendableNow: number;
+  /** Epoch-ms when capacity next increases by at least one unit (a window reset, or the next token). */
+  nextReplenishAt: number;
+  /** Epoch-ms when the limiter is **fully** replenished to its ceiling from the current state. */
+  fullAt: number;
+}
+
+/** How a {@link Strategy} exposes its stored state to a Lua-capable store for a read-only peek. */
+export interface ReadState<S> {
+  /** A read-only Lua program returning the raw stored value (no writes). */
+  readonly lua: LuaProgram;
+  /** Decode the raw Redis reply into the strategy's state (`undefined` when the key is absent). */
+  decode(raw: unknown): S | undefined;
 }
 
 /**
@@ -170,6 +208,22 @@ export interface Limiter {
    * a synchronous store (e.g. {@link MemoryStore}); throws otherwise.
    */
   checkManySync(keys: readonly string[], cost?: number): Decision[];
+  /**
+   * Non-consuming introspection: the current {@link Decision} for `key` **without spending** —
+   * `remaining` is what's left now, `resetAt` when it refills. The basis of good client retry/UX.
+   * Optional: present on store-backed limiters (`rateLimit`); may be absent on composite limiters
+   * where a non-consuming read isn't well-defined. Requires the strategy to implement `peek`.
+   */
+  peek?(key: string): Promise<Decision>;
+  /** Synchronous {@link Limiter.peek}; only on a synchronous store (e.g. {@link MemoryStore}). */
+  peekSync?(key: string): Decision;
+  /**
+   * Non-consuming capacity forecast for `key`: how many `cost`-sized requests are spendable now,
+   * when capacity next returns, and when it is fully replenished. Optional, like {@link Limiter.peek}.
+   */
+  forecast?(key: string, cost?: number): Promise<Forecast>;
+  /** Synchronous {@link Limiter.forecast}; only on a synchronous store. */
+  forecastSync?(key: string, cost?: number): Forecast;
   /** Forget a key's state. */
   reset(key: string): Promise<void>;
   /**
