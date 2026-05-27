@@ -126,8 +126,12 @@ export interface Store {
   /**
    * Synchronous, allocation-light variant for stores that can guarantee atomicity without
    * awaiting (e.g. the single-threaded in-memory store). Absent on async-only stores.
+   *
+   * `now` (epoch-ms) lets the caller pass the single timestamp it already read so the store doesn't
+   * read the clock a second time (and so the strategy and the store's expiry math see the exact same
+   * instant); when omitted the store reads its own clock.
    */
-  applySync?<S, R>(key: string, transform: Transform<S, R>): R;
+  applySync?<S, R>(key: string, transform: Transform<S, R>, now?: number): R;
   /** Forget a key. */
   reset(key: string): Promise<void>;
   /** Synchronous reset, when supported. */

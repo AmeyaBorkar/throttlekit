@@ -129,8 +129,7 @@ export class MemoryStore implements Store {
     this.#map.set(key, { state, ref: false, slot });
   }
 
-  applySync<S, R>(key: string, transform: Transform<S, R>): R {
-    const now = this.#clock.now();
+  applySync<S, R>(key: string, transform: Transform<S, R>, now = this.#clock.now()): R {
     this.#wheel.advance(now, this.#dropBound);
 
     let entry = this.#map.get(key);

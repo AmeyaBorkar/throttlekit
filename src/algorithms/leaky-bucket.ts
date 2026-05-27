@@ -173,7 +173,8 @@ export function leakyBucket(options: LeakyBucketOptions): Shaper {
           "reserveSync requires a synchronous store (e.g. MemoryStore); the configured store is async-only",
         );
       }
-      return store.applySync(keyFor(key), makeTransform(clock.now(), cost));
+      const now = clock.now();
+      return store.applySync(keyFor(key), makeTransform(now, cost), now);
     },
     async schedule(key: string, cost = 1): Promise<void> {
       const r = await this.reserve(key, cost);

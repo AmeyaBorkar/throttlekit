@@ -62,7 +62,7 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
       if (store.applySync !== undefined) {
         syncNow = clock.now();
         syncCost = cost;
-        return Promise.resolve(store.applySync(k, syncTransform));
+        return Promise.resolve(store.applySync(k, syncTransform, syncNow));
       }
       return store.apply(k, decisionTransform(strategy, clock.now(), cost));
     },
@@ -76,7 +76,7 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
       }
       syncNow = clock.now();
       syncCost = cost;
-      return store.applySync(keyFor(key), syncTransform);
+      return store.applySync(keyFor(key), syncTransform, syncNow);
     },
 
     checkMany(keys: readonly string[], cost = 1): Promise<Decision[]> {
@@ -92,7 +92,7 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
         syncCost = cost;
         const out: Decision[] = new Array(keys.length);
         for (let i = 0; i < keys.length; i++) {
-          out[i] = store.applySync(keyFor(keys[i] as string), syncTransform);
+          out[i] = store.applySync(keyFor(keys[i] as string), syncTransform, syncNow);
         }
         return Promise.resolve(out);
       }
@@ -115,7 +115,7 @@ export function rateLimit<S = unknown>(options: RateLimitOptions<S>): Limiter {
       syncCost = cost;
       const out: Decision[] = new Array(keys.length);
       for (let i = 0; i < keys.length; i++) {
-        out[i] = store.applySync(keyFor(keys[i] as string), syncTransform);
+        out[i] = store.applySync(keyFor(keys[i] as string), syncTransform, syncNow);
       }
       return out;
     },

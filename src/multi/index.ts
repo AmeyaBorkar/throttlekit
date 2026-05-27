@@ -310,7 +310,7 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
         out = dim.strategy.check(state, now, cost);
         return { state, result: out.decision, ttlMs: out.ttlMs, persist: false };
       }) as Transform<unknown, Decision>;
-      store.applySync(fk, peek);
+      store.applySync(fk, peek, now);
       const o = out as StrategyOutcome<unknown>;
       captured.push({ fk, out: o });
       results.push(o.decision);
@@ -330,7 +330,7 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
             ttlMs: c.out.ttlMs,
             persist: true,
           })) as Transform<unknown, Decision>;
-          store.applySync(c.fk, commit);
+          store.applySync(c.fk, commit, now);
         }
       }
     }
