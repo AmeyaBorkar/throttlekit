@@ -67,6 +67,31 @@ requests.
   outage does not loosen this bound; it only defers the re‑lease. See
   [`docs/FORMAL-MODEL.md`](FORMAL-MODEL.md).
 
+## Federation outages (`federate(...)` / `FederatedStore`)
+
+Federation adds a *cross-region* layer — a `GlobalCoordinator` pools the budget
+across regions. Failure modes split between the region's local view and the
+coordinator's global view. See `research/bigger-bets/federation/DESIGN.md` §5
+for the formal failure semantics; tests in `test/federation/failure-modes.test.ts`.
+
+| Failure shape | What happens | What's **lost** | Recovery | Δ (cross-region overshoot) |
+|---|---|---|---|---|
+| **Region partitioned from coordinator** (e.g. cross-region link down) | Region serves out its existing in-process escrow; once empty, fails closed (denies until reachable). `onCoordinatorOutage: "fail-closed"` (default). | Any not-yet-leased capacity in the coordinator that this region might have used. | Heal the link → next lease succeeds; in-process escrow refills. | **0** — by construction, no new admissions during outage. |
+| **Coordinator crash, recovered within the same window** | Same as above; existing escrow keeps serving briefly, then denies. On recovery, leases resume against the original budget remaining. | Nothing committed — the coordinator's remaining budget is preserved across the crash (assuming durable Redis). | Re-attach client → resume. `reconcile()` is idempotent on `windowStart` so retries through the partition converge. | **0** — coordinator's remaining budget is exact across crash. |
+| **Coordinator unavailable across a window boundary** | Every region denies until coordinator returns. When it does, window-N+1's fresh budget is acquired. | All admissions during the outage (federation is fully unavailable). | Coordinator returns → next request leases against the new window's fresh budget. | **0** — zero admissions during the outage. |
+| **Regional store outage** (regional Redis L2 down, while coordinator reachable) | Out of scope at TK-906 — regional escrow lives in process memory. Future (TK-906+): regional Redis backs multi-process escrow; outage reverts to per-process escrow until L2 returns. | Multi-process atomicity within the region. | L2 reconnect → resume. | **0** — coordinator still enforces the global bound. |
+
+**Federation fails closed across every outage shape.** There is no outage
+scenario where Δ exceeds 0; the worst case is full unavailability. This
+matches the `windowCoupled` twoTier safety story one layer up — the
+formal `Roll` rule guarantees regional escrow forfeits at the window
+boundary, so a coordinator outage cannot leak un-leased capacity.
+
+**Optional softer mode**: `onCoordinatorOutage: "regional-only"` (TK-906+)
+falls back to per-region limits during a coordinator outage, accepting Δ
+bounded by the regional limit (rather than the federation limit) in
+exchange for availability. Opt-in only; the default stays fail-closed.
+
 ## Choosing the `fail` policy
 
 ```ts
