@@ -8,7 +8,7 @@
  */
 
 /** The current package version. Kept in sync with package.json. */
-export const version = "0.8.0";
+export const version = "0.8.1";
 
 export type {
   Clock,

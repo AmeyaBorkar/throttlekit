@@ -278,8 +278,7 @@ export async function main(argv: readonly string[], out: Output = consoleOut): P
     return 0;
   }
   if (cmd === "--version") {
-    // Bumped at release time; in development this lags the library version by design.
-    out.log("0.8.0");
+    out.log("0.8.1");
     return 0;
   }
   const rest = parseArgs(argv.slice(1));

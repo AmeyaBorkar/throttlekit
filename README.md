@@ -123,7 +123,7 @@ In-process, single hot key (Node 24, AMD Ryzen AI 9 HX 370, measured 2026-05-28;
 
 ## Tested to be checkable, not just claimed
 
-Dual-path conformance (JS ≡ Lua on thousands of generated timelines), property tests (fast-check), atomicity (N concurrent checks at limit K ⇒ exactly K allowed), and the TLA⁺/TLC formal model re-checked by an exhaustive JS checker in CI. All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **490 tests, 95.2% line coverage**, CI green across Node 20/22/24.
+Dual-path conformance (JS ≡ Lua on thousands of generated timelines, now including `quota`'s civil-calendar Lua and `peek` decoding the Redis-side state), property tests (fast-check), atomicity (N concurrent checks at limit K ⇒ exactly K allowed), and the TLA⁺/TLC formal model re-checked by an exhaustive JS checker in CI. All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **747 tests** (with the Redis/Postgres-gated suites enabled), CI green across Node 20/22/24.
 
 ## Status & license
 

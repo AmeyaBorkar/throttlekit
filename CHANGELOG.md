@@ -8,6 +8,89 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.8.1] — 2026-05-28
+
+A docs-and-DX release that lands the introspection / observability / config / CLI surface 0.8.0
+left for follow-up — every public name added here is pinned by a test or conformance case so it
+behaves as a contract, not a happy-path. Test count **609 → 747** (746 pass + 1 skip with the
+gated Redis/Postgres suites enabled).
+
+### Added
+
+- **`quota()` billing-period strategy** (root export) — a budget that resets on a *real* calendar
+  boundary, distinct from a sliding rate limit. Cadences: `calendar-month` / `-week` / `-day` (fixed
+  UTC offset, leap-correct), `fixed` (anchor-aligned), and `rolling` (delegates to the proven
+  `slidingWindow`). The calendar math is a dependency-free Hinnant civil-date helper **mirrored
+  byte-for-byte in the atomic Redis Lua form** — proven bit-identical by 7 new dual-path conformance
+  cases.
+- **Non-consuming introspection: `Limiter.peek()` / `.peekSync()` / `.forecast()` /
+  `.forecastSync()`** — the current `Decision` and a `{ spendableNow, nextReplenishAt, fullAt }`
+  capacity projection, neither of which spends a unit. Implemented for every built-in strategy. On a
+  Lua store the read uses each strategy's new read-only `readState` Lua (`GET` / `HMGET` / `HGETALL`
+  / `ZRANGE`), never the consuming check script. The post-timeline-peek conformance check proves
+  decode is bit-identical to the JS state for all six strategies.
+- **NestJS `@RateLimit({ limit, period })` decorator** (`throttlekit/nest`) — the ergonomic
+  per-route form, joining the existing `nestRateLimit` guard. Pair with one `createRateLimitGuard(...)`
+  registered via `APP_GUARD`. Dependency-free — reads the ambient `reflect-metadata` NestJS already
+  loads via `globalThis.Reflect`, never importing `@nestjs/common`.
+- **Cloudflare `KVStore`** (`throttlekit/cloudflare`) — explicitly **best-effort**: Workers KV is
+  eventually consistent with no atomic CAS, so it can over-admit under load and is intentionally not
+  run through the atomic conformance suite. Carries loud caveats; use Durable Objects or D1 for an
+  exact bound.
+- **`tapDecisions(limiter, onDecision)`** (root export) — the lowest-level observability primitive: a
+  dependency-free callback fired once per completed check with `{ key, cost, decision, strategy,
+  durationMs, kind }`. A throwing tap can never break the limiter. `withAnalytics` and
+  `instrumentLimiter` are higher-level consumers of the same idea.
+- **Stable OpenTelemetry contract** (`throttlekit/otel`) — `METRIC_NAMES` and `SPAN_ATTRIBUTES` are
+  exported `as const` and pinned by a contract test; renames now require a deliberate major bump,
+  protecting downstream dashboards/alerts. Adds `recordDecisionOnSpan(span, decision, strategy,
+  extra?)` for trace-level rate-limit visibility (search by `throttlekit.allowed=false`,
+  dependency-free via a structural `SpanLike`).
+- **`.throttlekit.yaml` rate-limit-as-code** — new `throttlekit/config` entry. `loadConfig(text,
+  { store? })` returns ready-to-use named limiters; declare strategies and policies as data, inject
+  the live `Store` at load time. Includes a small **zero-dep** YAML-subset parser (block maps,
+  scalars, inline `{}`, `#` comments) so the loader preserves the project's zero-runtime-deps
+  guarantee. JSON config auto-detected.
+- **`throttlekit` CLI** (new `bin`) — `throttlekit benchmark` (in-process micro-bench across the
+  three single-state strategies), `throttlekit doctor` (Node version + optional-peer detection +
+  validates a local `.throttlekit.yaml`/`.json`), `throttlekit replay <log.jsonl>` (re-runs a
+  JSON-lines decision log through a configured limiter and reports admit/deny + top denied keys).
+  All commands take a pluggable `Output` so they're unit-tested without touching `process.stdout`.
+- **`docs/FAILURE-MODES.md`** — a per-store outage/recovery matrix (Memory, Redis, Postgres,
+  DynamoDB, D1, Deno KV, Durable Object) × twoTier modes; every cell cross-checked against the store
+  code. Linked from the README and the wiki Operations page.
+- **`docs/METRICS.md`** — the stable OTel metrics & span-attributes reference, including the
+  Prometheus `.` → `_` mapping and the stability policy.
+- **`grafana/throttlekit-dashboard.json`** — an importable Prometheus dashboard (check rate by
+  outcome, deny rate, remaining-headroom and store-latency percentiles, adaptive-concurrency
+  gauges), built on `METRIC_NAMES` with `$datasource` and `$strategy` template variables.
+
+### Changed
+
+- **Refreshed reproducible benchmark numbers** in `SCOREBOARD.md` and the README Performance
+  section — `checkSync` (GCRA) now **186 ns/op (5.37M ops/s)** post-audit, up from the 320 ns/op
+  the pre-audit numbers reported. Methodology, exact machine spec, dates, the Docker-on-Windows
+  network caveat, and every place ThrottleKit *loses* are spelled out.
+- **Migration guides** (wiki Migrating page) expanded to full mapping tables for
+  `express-rate-limit`, `rate-limiter-flexible`, and the new `@upstash/ratelimit`, plus a peek/quota
+  recipes addendum.
+- **Wrapper introspection forwarding (regression fix).** Adding `peek`/`forecast`/`close` to
+  `Limiter` in this release would have silently dropped them through the existing `withAnalytics`
+  and `instrumentLimiter` wrappers; a new shared `forwardIntrospection()` helper threads them
+  through all three wrappers (including the new `tapDecisions`), guarded by a test.
+- **`parseDuration`** (`"30s"` / `"1m"` / `"1h"` / `"1d"` / ms) lifted to `src/core/duration.ts` —
+  shared by the NestJS decorator and the config loader.
+
+### Notes
+
+- Workers KV is now offered as `KVStore` only as an **explicitly best-effort** option (not run
+  through the conformance suite). The exact stores on Cloudflare are still Durable Objects and D1.
+- The OpenTelemetry layer (`throttlekit/otel`) stays type-only on `@opentelemetry/api`; the new
+  `recordDecisionOnSpan` is dependency-free via a structural `SpanLike`.
+- Two non-blocking small-bet tasks are deferred to 0.8.2: continuous-bench CI regression gate, and
+  property-based fuzzing of the Lua dual-path. The three GALE/TALE-adjacent research bigger bets
+  remain research-track.
+
 ## [0.8.0] — 2026-05-28
 
 Full-reach release: four new exact backends, seven new framework/transport bindings, a fleet-shared
