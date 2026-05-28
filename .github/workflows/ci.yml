@@ -50,3 +50,26 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  bench-gate:
+    name: Bench regression gate (informational)
+    runs-on: ubuntu-latest
+    # `continue-on-error: true` is deliberate while the gate calibrates against shared-runner
+    # variance: it surfaces the per-row table on the PR but does not block merges. Tighten by
+    # removing this once we've seen enough runs to confirm <10% noise on ubuntu-latest, OR move
+    # to a dedicated/self-hosted runner.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run bench:gate
+        run: npm run bench:gate
+        env:
+          # 10% is the spec target; the gate prints + exits non-zero on any row that regresses
+          # above this, while continue-on-error keeps the PR mergeable until the gate has been
+          # tuned to runner noise. Override locally with `BENCH_REGRESSION_THRESHOLD=1.25 ...`.
+          BENCH_REGRESSION_THRESHOLD: "1.10"
