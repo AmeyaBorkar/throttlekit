@@ -8,6 +8,62 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.8.4] — 2026-05-28
+
+**Federation completion: PostgresCoordinator.** A drop-in `GlobalCoordinator`
+implementation backed by a single Postgres primary, alongside the existing
+`RedisCoordinator`. Same window-coupling guarantee (Δ = 0, K-INDEPENDENT
+bound), same `federate(...)` surface — pick whichever store your ops team
+already runs. Versioned as a patch because the surface is purely additive:
+a new class on the existing `throttlekit/federation` subpath; no existing
+API changes. Test count **845 → 857** (12 new gated Postgres conformance
+tests; same 793 pass count under default `npm run check`).
+
+### Added
+
+- **`PostgresCoordinator`** (`src/federation/postgres-coordinator.ts` — TK-1301..TK-1304).
+  Implements `GlobalCoordinator` against a single Postgres primary; drop-in
+  replacement for `RedisCoordinator`. Schema (one `tk_fed_state` table)
+  created lazily on first call — no migration tool needed. Atomicity via
+  single-transaction `INSERT ON CONFLICT DO UPDATE` + `SELECT FOR UPDATE` +
+  `UPDATE` (window roll handled in-place by CASE on `expires_at`).
+  Idempotency markers as `BIGINT[]` mirror Redis's `rec_<windowStart>`
+  HASH fields. Server-time anchoring via `clock_timestamp()` (Postgres
+  analog to Redis `TIME` — node clock skew is irrelevant for the bound).
+  Background GC sweep via JS `setInterval` (configurable; default 60s
+  sweep, 24h retention; opt-out via `gcIntervalMs: 0`).
+
+  Latency / throughput trade-off vs Redis: ~1-3 ms per lease vs ~0.5-1 ms;
+  5K-20K leases/sec vs 100K+. HA story: synchronous replication +
+  automated failover (Patroni / pg_auto_failover) vs Sentinel / Cluster.
+
+- **`PostgresCoordinator` conformance tests** (TK-1302). 12 cases mirroring
+  `RedisCoordinator` 1:1 — lease/reconcile semantics, idempotency,
+  per-key budget overrides, constructor validation, window-roll behavior,
+  identifier safety on `tableName`. Gated on `THROTTLEKIT_TEST_POSTGRES`
+  (e.g. `postgres://user:pass@localhost:5433/db`).
+
+- **`examples/federation-postgres.ts`** (TK-1303). Parallel to
+  `examples/federation.ts`: 3-region skewed workload demonstrating Δ = 0
+  + recovery vs static-partition, with the only change being
+  `PostgresCoordinator` in place of `RedisCoordinator`. Same admit
+  counts expected; the bound is identical across backends.
+
+- **`docs/FAILURE-MODES.md`** federation section refreshed (TK-1303):
+  new Postgres-primary-failover row in the outage table; new
+  "Choosing a coordinator backend" subsection comparing
+  latency / throughput / HA / durability axes.
+
+- **Wiki: new `PostgresCoordinator` quick start** in the
+  `Federation` page, plus the coordinator-backends table updated to
+  show Postgres as Shipped 0.8.4.
+
+### Design references
+
+- `research/postgres-coordinator/DESIGN.md` — full design lock for
+  TK-1301; schema, atomicity model, server-time anchoring,
+  garbage-collection strategy, failure-mode parity with Redis.
+
 ## [0.8.3] — 2026-05-28
 
 **The federation patch.** Ships `federate(...)` — cross-cluster rate limiting with a
