@@ -204,3 +204,14 @@ in TypeScript and finds **exactly 31** distinct states for config 1 and
 **exactly 441** for config 3 — the same numbers TLC reports — while asserting
 `Overshoot` on every state and that the bound is attained (tightness). It runs in
 CI (no Java) in ~150 ms.
+
+## Related specs in this directory
+
+- `GaleWindowCoupledLeasing.tla` — the GALE refinement: credits expire on the L2
+  window boundary, collapsing per-window overshoot to zero **independent of
+  fleet size N**. JS twin: `test/gale/leasing-variants.test.ts`.
+- `GaleFederatedLeasing.tla` — the cross-cluster federation lift of
+  `GaleWindowCoupledLeasing` (`Nodes → Regions`, `credits → escrow`,
+  `l2 → globalBudget`); proves `admitted ≤ Limit` **independent of region
+  count K**. Design + counts:
+  `research/bigger-bets/federation/DESIGN.md`. JS twin lands in TK-905.
