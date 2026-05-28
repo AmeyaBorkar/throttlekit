@@ -1025,13 +1025,14 @@ export type {
   LeaseAsAdmissionOptions,
 } from "./lease-shim";
 
-// ── Primitive 8: unifiedAdmission (rate ⊕ concurrency ⊕ cost composition, TK-1004) ──────────────
+// ── Primitive 8: unifiedAdmission (rate ⊕ concurrency ⊕ cost composition, TK-1004 / TK-1005) ────
 
 /**
  * Compose rate / concurrency / cost admission axes into one Decision via
  * {@link combineDecisions}. Sequential by default (concurrency → rate → cost,
- * first deny short-circuits); the Lua-fused opt-in lands in TK-1005. See
- * `research/bigger-bets/unified/DESIGN.md` §4.2 (D-U4, D-U13).
+ * first deny short-circuits); opt into `backend: "lua-fused"` for atomic
+ * Redis EVALSHA fusion of rate + cost (TK-1005, gcra+tokenBucket only in
+ * 0.9.0; D-U14). See `research/bigger-bets/unified/DESIGN.md` §4.2, §6.
  */
 export { unifiedAdmission } from "./unified";
 export type {
@@ -1041,3 +1042,13 @@ export type {
   UnifiedAdmitter,
   UnifiedAxis,
 } from "./unified";
+export {
+  FUSED_GCRA_TOKEN_BUCKET_LUA,
+  FusedDispatcher,
+} from "./fused-lua";
+export type {
+  FusedAdmissionOptions,
+  FusedAdmissionResult,
+  FusedCostConfig,
+  FusedRateConfig,
+} from "./fused-lua";

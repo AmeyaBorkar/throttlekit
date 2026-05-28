@@ -1,8 +1,9 @@
 import type { ConcurrencyGuard } from "../concurrency/adaptive";
 import { systemClock } from "../core/clock";
 import { ALLOW_FULL, combineDecisions } from "../core/combine";
-import { NotImplementedError, ThrottleKitError } from "../core/errors";
+import { ThrottleKitError } from "../core/errors";
 import type { Clock, Decision, Limiter } from "../core/types";
+import { type FusedAdmissionOptions, FusedDispatcher } from "./fused-lua";
 import { type LeaseAdmitter, leaseAsAdmission } from "./lease-shim";
 
 /** The three axes a unified admission can compose. Used as the key type for {@link UnifiedAdmitter.lastDecisions}. */
@@ -18,10 +19,20 @@ export interface UnifiedAdmissionOptions {
   cost?: Limiter;
   /**
    * `"sequential"` (default) runs the three axes in turn; first deny short-circuits.
-   * `"lua-fused"` collapses rate + cost into one Redis EVALSHA — lands in TK-1005;
-   * throws {@link NotImplementedError} at construction in 0.9.0 until then.
+   * `"lua-fused"` (TK-1005) collapses rate + cost into one Redis EVALSHA — requires
+   * the {@link UnifiedAdmissionOptions.fused} option group; throws if `fused` is missing.
+   * Concurrency stays in-process in either backend (its state is local).
    */
   backend?: "sequential" | "lua-fused";
+  /**
+   * Required when `backend: "lua-fused"`. Specifies the Redis client and the per-axis
+   * strategy params for the fused atomic script. The `rate` / `cost` Limiters above
+   * are NOT used in fused mode (the script runs the transitions directly against the
+   * Redis client) — pass them anyway only if you want to fall back to sequential at
+   * the call site by re-wrapping; or omit them.
+   * Scope (D-U14): 0.9.0 supports gcra + tokenBucket only; other pairs throw.
+   */
+  fused?: FusedAdmissionOptions;
   /** Injectable time source. Defaults to {@link systemClock}; forwarded to the lease shim. */
   clock?: Clock;
 }
@@ -102,13 +113,19 @@ const NOOP_RELEASE = (): void => {};
  * to the underlying lease's `release`; the caller MUST call it once when the
  * work finishes (or always-call from a `finally` block — release is idempotent).
  *
- * **`backend: "lua-fused"`** throws {@link NotImplementedError} in 0.9.0; lands
- * in TK-1005. Sequential is the universal default.
+ * **`backend: "lua-fused"`** (TK-1005) collapses rate + cost into one Redis
+ * EVALSHA via the {@link UnifiedAdmissionOptions.fused} option group; concurrency
+ * stays in-process. Sequential is the universal default.
  */
 export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmitter {
-  const { rate, concurrency, cost, backend = "sequential", clock = systemClock } = options;
+  const { rate, concurrency, cost, backend = "sequential", fused, clock = systemClock } = options;
 
-  if (rate === undefined && concurrency === undefined && cost === undefined) {
+  if (
+    backend === "sequential" &&
+    rate === undefined &&
+    concurrency === undefined &&
+    cost === undefined
+  ) {
     throw new ThrottleKitError(
       "unifiedAdmission: at least one of `rate`, `concurrency`, or `cost` must be configured",
     );
@@ -118,10 +135,20 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       `unifiedAdmission.backend: expected "sequential" | "lua-fused", got ${String(backend)}`,
     );
   }
+  let fusedDispatcher: FusedDispatcher | undefined;
   if (backend === "lua-fused") {
-    // TK-1005 lands this; design is §6 of DESIGN.md. Until then, fail loud.
-    throw new NotImplementedError(
-      'unifiedAdmission: backend "lua-fused" lands in TK-1005 (Redis-only opt-in). Use the default "sequential" backend or wait for 0.9.0.',
+    if (fused === undefined) {
+      throw new ThrottleKitError(
+        'unifiedAdmission: backend "lua-fused" requires the `fused` option group with { client, rate, cost }',
+      );
+    }
+    // FusedDispatcher's constructor validates the strategy choices + numeric ranges.
+    fusedDispatcher = new FusedDispatcher(fused);
+  } else if (fused !== undefined) {
+    // Caller passed `fused` without selecting the lua-fused backend — almost
+    // certainly a config mistake (the dispatcher would never be used). Fail loud.
+    throw new ThrottleKitError(
+      'unifiedAdmission: `fused` option group requires backend: "lua-fused"',
     );
   }
 
@@ -199,14 +226,35 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       const { key = "", cost: requestCost = 1 } = opts ?? {};
       resetLast();
 
-      // Step 1 — concurrency (synchronous).
+      // Step 1 — concurrency (synchronous, both backends).
       const concStep = startWithConcurrency();
       if (concStep.decision !== undefined) {
         return { decision: concStep.decision, release: NOOP_RELEASE };
       }
       const leaseRelease = concStep.leaseRelease;
 
-      // Step 2 — rate (async).
+      // Step 2 — rate + cost.
+      if (fusedDispatcher !== undefined) {
+        // Lua-fused path: one Redis EVALSHA covers both axes atomically.
+        let result: Awaited<ReturnType<FusedDispatcher["dispatch"]>>;
+        try {
+          result = await fusedDispatcher.dispatch(key, requestCost);
+        } catch (err) {
+          // Redis hiccup: release any held slot before bubbling up.
+          leaseRelease?.({ dropped: false });
+          throw err;
+        }
+        lastRate = result.rate;
+        lastCost = result.cost;
+        if (!result.combined.allowed) {
+          leaseRelease?.({ dropped: false });
+          // Combined Decision still folds in concurrency (which allowed; ALLOW_FULL-ish).
+          return { decision: combineSnapshot(), release: NOOP_RELEASE };
+        }
+        return finalize(leaseRelease);
+      }
+
+      // Sequential path — rate (async).
       if (rate !== undefined) {
         const d = await rate.check(key, 1);
         lastRate = d;
@@ -217,7 +265,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
         }
       }
 
-      // Step 3 — cost (async).
+      // Sequential path — cost (async).
       if (cost !== undefined) {
         const d = await cost.check(key, requestCost);
         lastCost = d;
@@ -233,6 +281,15 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
     admitSync(opts?: UnifiedAdmitOptions): UnifiedAdmission {
       const { key = "", cost: requestCost = 1 } = opts ?? {};
       resetLast();
+
+      // The lua-fused path is inherently async (Redis EVALSHA round-trip), so
+      // admitSync isn't a valid mode there — fail loud rather than silently
+      // dropping to a thenable. Callers needing sync must use sequential.
+      if (fusedDispatcher !== undefined) {
+        throw new ThrottleKitError(
+          'unifiedAdmission.admitSync: not supported with backend "lua-fused" (Redis EVALSHA is async). Use admit() or switch to backend "sequential".',
+        );
+      }
 
       // Step 1 — concurrency.
       const concStep = startWithConcurrency();

@@ -28,7 +28,7 @@ import { gcra } from "../../src/algorithms/gcra";
 import { tokenBucket } from "../../src/algorithms/token-bucket";
 import { adaptiveConcurrency } from "../../src/concurrency/adaptive";
 import { ManualClock } from "../../src/core/clock";
-import { NotImplementedError, ThrottleKitError } from "../../src/core/errors";
+import { ThrottleKitError } from "../../src/core/errors";
 import { rateLimit } from "../../src/core/limiter";
 import type { Decision, Limiter, Strategy } from "../../src/core/types";
 
@@ -47,11 +47,25 @@ describe("unifiedAdmission — construction validation", () => {
     expect(() => unifiedAdmission({ rate, backend: "bogus" as any })).toThrow(RangeError);
   });
 
-  it('throws NotImplementedError when backend is "lua-fused" (TK-1005)', () => {
+  it('throws when backend is "lua-fused" but `fused` option group is missing (TK-1005)', () => {
     const clock = new ManualClock(0);
     const rate = rateLimit({ strategy: gcra({ limit: 5, periodMs: 60_000 }), clock });
-    expect(() => unifiedAdmission({ rate, backend: "lua-fused" })).toThrow(NotImplementedError);
-    expect(() => unifiedAdmission({ rate, backend: "lua-fused" })).toThrow(/TK-1005/);
+    expect(() => unifiedAdmission({ rate, backend: "lua-fused" })).toThrow(ThrottleKitError);
+    expect(() => unifiedAdmission({ rate, backend: "lua-fused" })).toThrow(/`fused` option group/);
+  });
+
+  it("throws when `fused` is set but backend is not lua-fused (config mistake)", () => {
+    const clock = new ManualClock(0);
+    const rate = rateLimit({ strategy: gcra({ limit: 5, periodMs: 60_000 }), clock });
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately probing the runtime validation
+    const fakeFused: any = {
+      client: {},
+      rate: { strategy: "gcra", limit: 100, periodMs: 60_000 },
+      cost: { strategy: "tokenBucket", capacity: 100, refillPerSec: 1 },
+    };
+    expect(() => unifiedAdmission({ rate, backend: "sequential", fused: fakeFused })).toThrow(
+      /`fused` option group requires backend: "lua-fused"/,
+    );
   });
 
   it('defaults backend to "sequential" when omitted', () => {

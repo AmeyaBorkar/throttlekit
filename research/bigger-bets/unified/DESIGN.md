@@ -553,16 +553,26 @@ shape.
 
 For all-Redis backends (rate + cost both backed by Redis stores;
 concurrency stays in-process), one Lua script atomically evaluates both
-the rate and cost transitions in a single round trip:
+the rate and cost transitions in a single round trip. **0.9.0 ships the
+GCRA (rate) + tokenBucket (cost) pair only** (D-U14) — the LLM-gateway
+canonical combination. The script lives at
+`src/admission/fused-lua.ts` as `FUSED_GCRA_TOKEN_BUCKET_LUA`; the
+`FusedDispatcher` (same file) pumps `EVALSHA → EVAL on NOSCRIPT`
+against an arbitrary `RedisClientLike`. Other strategy pairs throw at
+construction with a clear error.
 
 ```text
 tk:v1:fused-rc:check
-   KEYS[1] = rate key
-   KEYS[2] = cost key
-   ARGV[1] = now (epoch-ms; 0 ⇒ use server TIME)
+   KEYS[1] = rate key (GCRA TAT)
+   KEYS[2] = cost key (tokenBucket HASH)
+   ARGV[1] = now (epoch-ms; 0 ⇒ use server TIME — LUA_NOW sentinel)
    ARGV[2] = rate.cost (request weight on the rate axis; usually 1)
-   ARGV[3] = cost.cost (tokens; the LLM cost)
-   ARGV[4..] = strategy params (limit, periodMs, capacity, refill, …)
+   ARGV[3] = rate.periodMs
+   ARGV[4] = rate.limit
+   ARGV[5] = rate.burst
+   ARGV[6] = cost.cost (tokens; the LLM cost)
+   ARGV[7] = cost.capacity
+   ARGV[8] = cost.refillPerSec
    returns [
      allowed (0/1),                                  // AND of rate.allowed and cost.allowed
      limit, remaining, resetAt, retryAfterMs,        // combineDecisions of rate ⊕ cost
@@ -570,6 +580,10 @@ tk:v1:fused-rc:check
      cost_allowed (0/1), cost_remaining, cost_resetAt, cost_retryAfterMs,
    ]
 ```
+
+Per-axis `limit` is omitted from the tuple — the dispatcher fills it
+in from the configured `burst` (rate axis) and `capacity` (cost axis),
+both constant per dispatcher instance.
 
 The script is **two existing pure-Lua transitions glued together** via
 the field-by-field algebra in §4.1 (which is purely arithmetic — `min`,
@@ -1019,6 +1033,8 @@ implementation revisits — add a one-line "Why changed."
 | **D-U11** | 0.10.1 joint-LP runtime ships iff `regret(marginal-AND) − regret(joint-LP) ≥ 5%` on TK-1007's calibration workload, else hold and document the negative result (DR-11, DR-19). | §7.2 | Locked — threshold is the gate, not the result |
 | **D-U12** | `Decision.bindingAxis` is OUT of 0.9.0 (breaking change). Use OTel attribute `tk.binding_axis` (TK-1008) and `UnifiedAdmitter.lastDecisions()` instead. Revisit at 1.0. | §8.4 | Locked unless 1.0 ships |
 | **D-U13** | `UnifiedAdmitter` exposes BOTH `admit() → Promise<UnifiedAdmission>` (async; universal) AND `admitSync() → UnifiedAdmission` (sync; throws if any axis lacks `checkSync`) — mirroring the project's existing `Limiter.check` / `Limiter.checkSync` pattern. *Why changed (TK-1004 impl):* the original §4.2 / §8.3 spec showed only `admit()` synchronously; this would have either forced all-sync backends (restrictive) or hidden a thenable behind a sync-looking return (confusing). The Limiter idiom is the cleanest fit. The `close?(): Promise<void>` field in the prior spec is *dropped* — the unified admitter owns none of its inputs, so there's nothing to close. | §4.2, §8.3 | Locked unless a use case demands single-method dispatch |
+| **D-U14** | The Lua-fused backend ships in 0.9.0 with **GCRA (rate axis) + tokenBucket (cost axis) only** — the canonical LLM-gateway combination. Other strategy pairs throw at `FusedDispatcher` construction with a clear error. *Why scoped:* §6 originally implied a generic fusion across arbitrary Lua-equipped strategies, but generating a composite script that re-namespaces two arbitrary scripts' `KEYS` / `ARGV` references at runtime is fragile (Lua's global tables can't be re-bound mid-script). A hand-written pair-specific script is correct, fast, auditable, and covers the production case. Other pairs (`tokenBucket+tokenBucket`, `fixedWindow+tokenBucket`, etc.) can be added as 0.9.x patches as demand surfaces. | §6, §8.3 | Locked unless a customer reports a non-LLM-shaped pair use case |
+| **D-U15** | `unifiedAdmission` introduces a dedicated `fused: { client, rate, cost, useServerTime? }` option group for the lua-fused backend — the user passes the Redis client + per-axis strategy params explicitly (parallel to, not derived from, the `rate?: Limiter` / `cost?: Limiter` fields above). *Why explicit:* introspecting a Limiter's underlying RedisStore would require adding a private `store` getter to the `Limiter` interface (a breaking-shape change), and even then we'd need to enforce client identity across both Limiters. Explicit options make the contract testable and matched (the user is responsible for keeping the rate / cost limiter prefixes consistent with the fused config's prefixes). | §8.3 | Locked unless API ergonomics complaint emerges from users |
 
 When implementation reveals a decision needs to change, edit the row in
 place and add a one-line "Why changed" — do not silently rewrite. Same
