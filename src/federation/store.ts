@@ -30,6 +30,7 @@ import type {
   FederatedStoreOptions,
   GlobalCoordinator,
   Region,
+  RegionalEscrow,
 } from "./types";
 import { type FederationEngine, createFederationEngine } from "./window-coupled";
 
@@ -45,6 +46,7 @@ export class FederatedStore implements Store {
   readonly onCoordinatorOutage: CoordinatorOutageMode;
 
   readonly #regional: Store;
+  readonly #regionalEscrow: RegionalEscrow | undefined;
   readonly #coordinator: GlobalCoordinator;
   readonly #strategy: Strategy<unknown>;
   readonly #sizer: { recommend(): number } | undefined;
@@ -55,6 +57,7 @@ export class FederatedStore implements Store {
       throw new RangeError(`batch must be a finite number >= 1, got ${String(options.batch)}`);
     }
     this.#regional = options.regional;
+    this.#regionalEscrow = options.regionalEscrow;
     this.#coordinator = options.coordinator;
     this.#strategy = options.strategy;
     this.region = options.region;
@@ -67,6 +70,7 @@ export class FederatedStore implements Store {
       region: options.region,
       batch: this.batch,
       regional: options.regional,
+      ...(options.regionalEscrow !== undefined ? { regionalEscrow: options.regionalEscrow } : {}),
       onCoordinatorOutage: this.onCoordinatorOutage,
       ...(options.clock !== undefined ? { clock: options.clock } : {}),
       ...(options.prefix !== undefined ? { prefix: options.prefix } : {}),
@@ -128,6 +132,15 @@ export class FederatedStore implements Store {
    */
   get regional(): Store {
     return this.#regional;
+  }
+
+  /**
+   * The regional escrow (L2), for tests + telemetry. `undefined` when the
+   * engine is running in the legacy in-process-only mode. Not part of the
+   * `Store` contract.
+   */
+  get regionalEscrow(): RegionalEscrow | undefined {
+    return this.#regionalEscrow;
   }
 
   /** The federated strategy, for tests + telemetry. */

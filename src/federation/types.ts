@@ -201,11 +201,18 @@ export interface FederatedStoreOptions {
    */
   strategy: Strategy<unknown>;
   /**
-   * The region's local Store. Reserved for TK-906 multi-process per-region
-   * escrow; at the TK-904 commit it is accepted but unused — escrow lives
-   * in process memory inside the federation engine.
+   * The region's local Store. Used for the `Store.reset()` plumbing that
+   * `FederatedStore.reset()` delegates to. As of 0.8.5 the engine itself
+   * no longer consults this — pass {@link FederatedStoreOptions.regionalEscrow}
+   * for the new multi-process per-region escrow path (TK-1306).
    */
   regional: Store;
+  /**
+   * Regional escrow (L2) for multi-process per-region atomicity (TK-1306,
+   * 0.8.5). See {@link FederateOptions.regionalEscrow} for full semantics.
+   * When undefined, the engine uses in-process escrow only.
+   */
+  regionalEscrow?: RegionalEscrow;
   /** The cross-region lease coordinator. */
   coordinator: GlobalCoordinator;
   /** This region's identity (used in coordinator keys + telemetry). */

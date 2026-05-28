@@ -16,13 +16,15 @@
  *   Store contract (for layering inside `twoTier(leased)` or any other
  *   `Store`-consuming code) get identical semantics.
  *
- * Scope at this commit (TK-904):
- * - Per-process escrow only — multi-process regions share via the regional
- *   Redis through twoTier(leased) wrapping a `federate(...)` Limiter (the
- *   "recursive twoTier" composition). The `regional` Store parameter is
- *   reserved for TK-906 where a Redis-backed regional escrow lifts the
- *   federation to multi-process atomicity.
- * - JS-only — Redis Lua atomicity for the coordinator lands in TK-906.
+ * Multi-process atomicity (TK-1306, 0.8.5): when a {@link RegionalEscrow} is
+ * provided, the engine routes leases through it as an L2 cache between the
+ * in-process L1 and the coordinator (L3). Multiple processes in the same
+ * region share the L2 escrow atomically, bounding in-flight per-region
+ * escrow by `perKeyBudget` rather than `M × batch`. When `regionalEscrow` is
+ * undefined, the engine uses the legacy 0.8.4 in-process-only flow
+ * (backward-compat).
+ *
+ * Scope at this commit (TK-1306):
  * - Strategies with `windowMs` defined (`fixedWindow`, `slidingWindow`,
  *   `quota` with fixed cadence). Pure-rate strategies (gcra/tokenBucket)
  *   aren't supported here because the window-coupling rule needs a
@@ -37,7 +39,7 @@ import { ThrottleKitError } from "../core/errors";
 import { prefixer } from "../core/key";
 import type { Clock, Decision, Limiter, Store, Strategy } from "../core/types";
 import { requireCost } from "../core/validate";
-import type { CoordinatorOutageMode, GlobalCoordinator, Region } from "./types";
+import type { CoordinatorOutageMode, GlobalCoordinator, Region, RegionalEscrow } from "./types";
 
 /** Default escrow lease size — see DESIGN.md §3.2 / §6.3. */
 const DEFAULT_BATCH = 16;
@@ -63,17 +65,35 @@ export interface FederateOptions<S = unknown> {
    */
   batch?: number;
   /**
-   * Optional regional Store for multi-process per-region escrow. UNUSED at
-   * this commit (TK-904); reserved for TK-906 where Redis-backed regional
-   * escrow with atomic Lua is added. Passing a Store here today is
-   * accepted but has no effect.
+   * Soft-deprecated as of 0.8.5: kept accepted for backward compat with the
+   * 0.8.3+ `FederatedStore` API which used it for `reset()` plumbing, but
+   * the engine no longer consults this field. Pass {@link regionalEscrow}
+   * instead for the new multi-process per-region escrow path (TK-1306).
    */
   regional?: Store;
   /**
+   * Regional escrow (L2) for multi-process per-region atomicity (TK-1306,
+   * 0.8.5). When provided, the engine routes leases through this layer
+   * between the in-process L1 and the coordinator (L3) — multiple
+   * processes in the same region share it atomically, bounding in-flight
+   * per-region escrow by `perKeyBudget` instead of `M × batch`.
+   *
+   * Also enables the `"regional-only"` outage mode: when the coordinator
+   * is unreachable, the engine continues serving from the L2 balance until
+   * depleted (availability-over-precision opt-in).
+   *
+   * When undefined, the engine uses in-process escrow only (legacy 0.8.4
+   * behavior, fully backward-compatible).
+   *
+   * See {@link RegionalEscrow} and `research/regional-escrow/DESIGN.md`.
+   */
+  regionalEscrow?: RegionalEscrow;
+  /**
    * Behavior when `coordinator.lease()` throws. Default `"fail-closed"`
-   * (safety > availability). `"regional-only"` lands fully in TK-906 along
-   * with the regional Store; at this commit it falls back to `"fail-closed"`
-   * with documented behavior (no regional fallback yet).
+   * (safety > availability). `"regional-only"` (TK-1306, 0.8.5) requires
+   * a {@link regionalEscrow} — the engine continues serving from the L2
+   * balance during the outage; once coordinator recovers, normal lease
+   * + reconcile resumes.
    */
   onCoordinatorOutage?: CoordinatorOutageMode;
   /** Injected clock for deterministic tests. Defaults to {@link systemClock}. */
@@ -140,6 +160,7 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
   const batch = options.batch ?? DEFAULT_BATCH;
   const onOutage = options.onCoordinatorOutage ?? "fail-closed";
   const keyFor = prefixer(options.prefix);
+  const regionalEscrow = options.regionalEscrow;
 
   if (strategy.windowMs === undefined) {
     throw new RangeError(
@@ -186,11 +207,29 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
       // Drop any pending lease from the prior window — it would credit the wrong window.
       e.pending = undefined;
 
-      if (leftover > 0 && e.lastReconciledWindowStart !== oldStart) {
+      if (e.lastReconciledWindowStart !== oldStart) {
         e.lastReconciledWindowStart = oldStart;
-        // Best-effort: a reconcile failure cannot violate the safety bound; at
-        // worst we lose the leftover capacity next window (DESIGN.md §3.1 / §5).
-        void coordinator.reconcile(key, leftover, oldStart).catch(() => undefined);
+        if (regionalEscrow !== undefined) {
+          // Multi-process path: capture L2 leftover (first releaser wins) and add this
+          // process's L1 leftover, then reconcile the union up to L3. For M=1 this is
+          // identical to the 0.8.4 path (all leftover recovered). For M>1, processes
+          // other than the L2-release winner lose their L1 leftover — documented
+          // utilization cost (the federation bound Δ = 0 is preserved either way).
+          void (async () => {
+            try {
+              const l2Leftover = await regionalEscrow.release(key, oldStart);
+              const total = leftover + l2Leftover;
+              if (total > 0) await coordinator.reconcile(key, total, oldStart);
+            } catch {
+              // Best-effort; swallow.
+            }
+          })();
+        } else if (leftover > 0) {
+          // Single-process path: reconcile L1 leftover directly (existing 0.8.4 behavior).
+          // A reconcile failure cannot violate the safety bound; at worst we lose the
+          // leftover capacity next window (DESIGN.md §3.1 / §5).
+          void coordinator.reconcile(key, leftover, oldStart).catch(() => undefined);
+        }
       }
     }
     return e;
@@ -215,19 +254,66 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
 
     // Lease until balance >= cost or coordinator denies.
     while (e.balance < cost) {
+      // L2 fast path: try regional escrow before reaching the coordinator.
+      // Skip on a regional-store outage (caught below); the engine then falls
+      // through to L3, matching the legacy 0.8.4 path for that window.
+      if (regionalEscrow !== undefined) {
+        const wanted = Math.max(batch, cost) - e.balance;
+        if (wanted > 0) {
+          let l2Granted = 0;
+          try {
+            l2Granted = await regionalEscrow.lease(key, wanted);
+          } catch {
+            // Regional L2 unavailable — fall through to L3 lease for this round.
+          }
+          // Re-resolve entry after await (window may have rolled, or reset() ran).
+          const current = entries.get(key);
+          if (current === undefined) return check(rawKey, cost);
+          e = current;
+          if (l2Granted > 0) {
+            e.balance += l2Granted;
+            continue;
+          }
+        }
+      }
+
+      // L2 empty or unavailable: lease from coordinator (L3). Refill L2 from the grant
+      // so other processes share it; then immediately lease our share back from L2.
       let lease = e.pending;
       if (lease === undefined) {
+        const windowStart = e.windowStart;
         const expiresAt = e.windowExpiresAt;
-        // Lease the FULL batch (or at least `cost` if cost > batch — guarantees forward progress).
         const tokens = Math.max(batch, cost);
-        lease = coordinator.lease(key, tokens, expiresAt).catch(() => {
-          // Coordinator outage: per onOutage mode. Both fail-closed and
-          // regional-only currently collapse to "treat as 0 grant" because
-          // the regional-only path (regional Store enforcement) lands in TK-906.
-          if (onOutage === "fail-closed" || onOutage === "regional-only") return 0;
-          // Future modes: re-throw so the surface can surface the error.
-          return 0;
-        });
+        lease = (async (): Promise<number> => {
+          let granted: number;
+          try {
+            granted = await coordinator.lease(key, tokens, expiresAt);
+          } catch {
+            // Coordinator outage: per onOutage mode. Both "fail-closed" and
+            // "regional-only" return 0 here at Phase B; the L2 fast-path
+            // above keeps serving during outage for both modes. Phase 3
+            // (TK-1306c) adds the health-recheck loop that distinguishes
+            // the two — regional-only resumes coord.lease on recovery;
+            // fail-closed never gates on outage state.
+            if (onOutage === "fail-closed" || onOutage === "regional-only") return 0;
+            return 0;
+          }
+          if (granted <= 0) return 0;
+
+          if (regionalEscrow !== undefined) {
+            try {
+              // Push the grant to L2 (additive) and immediately lease our share back.
+              await regionalEscrow.refill(key, granted, windowStart);
+              return await regionalEscrow.lease(key, tokens);
+            } catch {
+              // L2 unavailable during refill: degrade to L1-only for this grant
+              // (matches 0.8.4 behavior; the federation bound is still preserved
+              // because the grant is already counted against the coordinator).
+              return granted;
+            }
+          }
+          return granted;
+        })();
         e.pending = lease;
       }
 
@@ -247,7 +333,7 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
         e.balance += grant;
         continue;
       }
-      // Coordinator denied — global budget is exhausted for this window.
+      // Coordinator denied AND L2 empty — global budget is exhausted for this window.
       return denied(now, e.windowExpiresAt, e.balance);
     }
 
