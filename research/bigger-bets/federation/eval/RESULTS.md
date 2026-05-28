@@ -117,7 +117,7 @@ would replace this with real network RTT. **Based on the latency-sweep
 result** (utilization independent of RTT), the cloud-cluster numbers
 should match the docker-compose numbers within network jitter for any
 RTT ≤ 1× window length. Cloud-run is filed as a 0.9.x follow-up; the
-local run captured here is sufficient for the 0.9.0 release.
+local run captured here is sufficient for the 0.8.3 release.
 
 ## How to regenerate
 

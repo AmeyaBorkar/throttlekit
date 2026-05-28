@@ -8,12 +8,15 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
-## [0.9.0] — 2026-05-28
+## [0.8.3] — 2026-05-28
 
-**The federation release.** Ships `federate(...)` — cross-cluster rate limiting with a
+**The federation patch.** Ships `federate(...)` — cross-cluster rate limiting with a
 formally-verified, K-INDEPENDENT overshoot bound — and the production-grade
-`RedisCoordinator` that backs it. Test count **769 → 851** (793 pass + 58 skipped with
-all Redis/Postgres-gated suites enabled).
+`RedisCoordinator` that backs it. Versioned as a patch within the 0.8 line (rather than
+the originally-planned 0.9.0 minor bump) because the new surface is purely additive:
+the existing 0.8.x API is unchanged, `throttlekit/federation` is a NEW subpath, and
+no consumer code needs to migrate to upgrade. Test count **769 → 845** (793 pass + 52
+skipped without `THROTTLEKIT_TEST_REDIS`/`PG`; all pass with the gated suites enabled).
 
 ### Added
 
@@ -112,7 +115,7 @@ all Redis/Postgres-gated suites enabled).
 
 - `FederatedStoreOptions` now requires `strategy` and accepts `clock` — small refinement
   vs the TK-902 skeleton surface, with no real-world impact (no production users; the
-  skeleton was published as part of 0.9.0).
+  skeleton was published as part of 0.8.3).
 
 ## [0.8.2] — 2026-05-28
 

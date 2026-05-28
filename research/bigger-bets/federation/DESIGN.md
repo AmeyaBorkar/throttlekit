@@ -371,7 +371,7 @@ across the entire federation until the Redis returns. The mitigations:
 - **Raft-via-etcd** (1.0.x). The HA-without-SPOF option. More complex;
   the same `GlobalCoordinator` interface fits.
 
-For 0.9.0, the SPOF is documented; users in regulated environments
+For 0.8.3, the SPOF is documented; users in regulated environments
 should opt for Sentinel or `PostgresCoordinator` (when it lands).
 
 **`windowMs` at construction.** RedisCoordinator takes `windowMs` as a
@@ -592,7 +592,7 @@ This design is the gate for `TK-902` to begin. The chain:
 4. **TK-905** — `test(federation): TLA⁺ BFS twin in test/gale/federated/` (CI-runnable twin of `spec/GaleFederatedLeasing.tla`).
 5. **TK-906** — `feat(federation): RedisCoordinator default implementation`.
 6. **TK-907**–**TK-911** — failure modes, dual-path property tests, eval, docs.
-7. **TK-912** — release 0.9.0.
+7. **TK-912** — release 0.8.3 (versioned as a patch since the surface is purely additive; see PLAN.md DR-07).
 
 The chain is linear because each step assumes the prior step's contracts.
 Trying to parallelize would merge-churn on the same interface files (the

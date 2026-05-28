@@ -31,7 +31,7 @@ enumerates the bisectable commits each release decomposes into.
 
 | Order | Bet | Target release | Why this position |
 |---|---|---|---|
-| 1 | **#77 Cross-cluster federation** (L2-replica reconciliation) | **0.9.0** | Unblocks the archival GALE / TALE papers (the publishability memo flags the multi-region eval as "the only true systems blocker"); ships a real production feature in the same motion. Highest dual-payoff. |
+| 1 | **#77 Cross-cluster federation** (L2-replica reconciliation) | **0.8.3** | Unblocks the archival GALE / TALE papers (the publishability memo flags the multi-region eval as "the only true systems blocker"); ships a real production feature in the same motion. Highest dual-payoff. *Versioned as a patch within the 0.8 line — see DR-07.* |
 | 2 | **#79 Unified admission** (rate-limit + adaptiveConcurrency + tokenBudget fusion) | **0.10.0** | Highest-leverage user-facing primitive for LLM gateways — they want one decision, not three. Carries a genuine open theory question (does the joint optimum beat the marginal product?); a positive answer is a follow-up paper. |
 | 3 | **#78 Versioned Lua wire protocol + Go/Rust ports** | **1.0.0** | Pure adoption work; weakly coupled to the research story. Doing it last lets #77 and #79 evolve the wire protocol freely; locking it down then is the natural `1.0` moment. |
 
@@ -88,7 +88,7 @@ These are the standing rules — they're not bet-specific.
 
 ## 3  Bet #77 — Cross-cluster federation
 
-> **Target release: 0.9.0.** Estimated effort: 3–4 weeks of focused work.
+> **Target release: 0.8.3** (originally planned as 0.9.0; downgraded to a patch ship per DR-07 — surface is purely additive). Estimated effort: 3–4 weeks of focused work.
 
 ### 3.1 The problem
 
@@ -172,9 +172,9 @@ MVP ships `RedisCoordinator` (single global Redis). Documented SPOF.
 | **TK-909** `chore(eval): fly.io / GCP eval scaffolding (Docker compose + replay harness)` | `research/bigger-bets/federation/eval/{docker-compose.yml, replay.ts}` | Local docker compose smoke test; cloud eval is separate |
 | **TK-910** `docs(eval): run real-cluster eval; commit measured numbers under research/` | Runs the eval on 3 regions; commits the JSON + writeup | Eval data committed; markdown writeup |
 | **TK-911** `docs: update FAILURE-MODES.md + new wiki Federation page + example` | Docs sweep | Wiki commits accumulate locally |
-| **TK-912** `chore(release): prepare 0.9.0` | Version bump, CHANGELOG, README/SCOREBOARD touch-ups | Full release prep |
+| **TK-912** `chore(release): prepare 0.8.3` | Version bump, CHANGELOG, README/SCOREBOARD touch-ups | Full release prep |
 
-### 3.6 Definition of done (the 0.9.0 release gate)
+### 3.6 Definition of done (the 0.8.3 release gate)
 
 - `federate({ regions, coordinator, ... })` ships in `src/federation`; public
   exports added to `src/index.ts`
@@ -189,9 +189,9 @@ MVP ships `RedisCoordinator` (single global Redis). Documented SPOF.
   bullet updated
 - Example: `examples/federation.ts` showing a 3-region setup against
   Docker-composed Redis
-- CHANGELOG `[0.9.0]` entry; release authorized + published
+- CHANGELOG `[0.8.3]` entry; release authorized + published
 
-### 3.7 What I'm explicitly not doing in 0.9.0
+### 3.7 What I'm explicitly not doing in 0.8.3
 
 - **CRDT-style gossip coordinator** — option (C) above. Worth the follow-up
   but the staleness-Δ math is its own research.
@@ -402,7 +402,7 @@ too far would create churn.
 
 | ID | Label | Maps to | State |
 |---|---|---|---|
-| (meta) | **TK-823** Federation — ship 0.9.0 | bet #77 | in_progress when this plan lands |
+| (meta) | **TK-823** Federation — ship 0.8.3 | bet #77 | in_progress when this plan lands |
 | (meta) | **TK-825** Unified admission — ship 0.10.0 | bet #79 | pending; soft-ordered after TK-823 |
 | (meta) | **TK-824** Polyglot — ship 1.0.0 | bet #78 | pending; soft-ordered after TK-825 |
 | (meta) | **TK-1200** HotNets paper — assemble + submit by Jul 16 | parallel | pending; runs in parallel with TK-823 |
@@ -410,7 +410,7 @@ too far would create churn.
 
 Sub-task chain for federation (each implies the prior is complete):
 TK-901 → TK-902 → TK-903 → TK-904 → TK-905 → TK-906 → TK-907 → TK-908 →
-TK-909 → TK-910 → TK-911 → TK-912 (release 0.9.0). The chain is linear because
+TK-909 → TK-910 → TK-911 → TK-912 (release 0.8.3). The chain is linear because
 each step assumes the prior step's interfaces / proof / store exist; trying
 to parallelize would produce merge churn on the same interface files.
 
@@ -421,11 +421,12 @@ to parallelize would produce merge churn on the same interface files.
 | ID | Decision | Date | Status |
 |---|---|---|---|
 | DR-01 | Federation architecture = option D (federated escrow with window-coupling at the regional boundary). | 2026-05-28 | Locked unless a CRDT proof emerges that strictly dominates |
-| DR-02 | Global coordinator = `GlobalCoordinator` interface; MVP impl = single global Redis (SPOF documented). Postgres / Raft are future impls. | 2026-05-28 | Locked for 0.9.0 |
-| DR-03 | Wire protocol stays implicit at v1 through 0.9.0 and 0.10.0; #78 freezes v1 explicitly at 1.0.0. | 2026-05-28 | Locked |
+| DR-02 | Global coordinator = `GlobalCoordinator` interface; MVP impl = single global Redis (SPOF documented). Postgres / Raft are future impls. | 2026-05-28 | Locked for 0.8.3 |
+| DR-03 | Wire protocol stays implicit at v1 through 0.8.3 / 0.9.0 / 0.10.0; #78 freezes v1 explicitly at 1.0.0. | 2026-05-28 | Locked |
 | DR-04 | Unified-admission backend = sequential (default) + Redis-Lua fused (opt-in). | 2026-05-28 | Locked unless a benchmark shows fused is universally cheaper |
 | DR-05 | Polyglot ports = separate repos, vendored Lua + sha256 checksum verify in CI. | 2026-05-28 | Locked for 1.0.0 |
 | DR-06 | HotNets paper runs as a parallel single-developer track, not a serial dependency on the bets. | 2026-05-28 | Locked unless the paper hits a research-blocker that the bets can resolve |
+| DR-07 | Federation (#77) ships as **0.8.3 patch** not 0.9.0 minor. Rationale: the surface is purely additive (new `throttlekit/federation` subpath; no change to existing 0.8.x API). A patch is the most accurate semver signal — consumers can upgrade without migration. 0.9.0 is freed for the next user-facing breaking change. *Why changed: weighed at release-prep time; the additive nature didn't warrant a minor bump.* | 2026-05-28 | Locked |
 
 When implementation reveals a decision needs to change, edit the row in place
 and add a one-line "Why changed" under it — do not silently rewrite.
