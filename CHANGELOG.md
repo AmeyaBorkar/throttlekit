@@ -8,7 +8,7 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
-## [0.9.0] — 2026-05-28
+## [0.9.0] — 2026-05-29
 
 **Unified admission — one Decision across rate, concurrency, and cost.**
 The 0.9.0 deliverable: `unifiedAdmission(...)` composes the three

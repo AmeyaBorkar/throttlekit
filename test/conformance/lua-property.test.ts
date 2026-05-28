@@ -89,7 +89,11 @@ d("dual-path conformance (property-based, JS vs Redis Lua)", () => {
   let attempt = 0;
 
   beforeAll(async () => {
-    client = new Redis(url as string, { maxRetriesPerRequest: 2, lazyConnect: false, db: 0 });
+    // Dedicated DB 2 — the seeded grid (test/conformance/conformance.test.ts)
+    // also lives on DB 0 with flushdb on setup, and under parallel test
+    // execution that flushdb would wipe our keys mid-property-attempt.
+    // DB 2 is dedicated to this file (TK-1009 release-cycle fix).
+    client = new Redis(url as string, { maxRetriesPerRequest: 2, lazyConnect: false, db: 2 });
     await client.flushdb();
   });
 

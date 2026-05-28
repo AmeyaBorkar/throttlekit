@@ -19,7 +19,11 @@ d("checkMany over RedisStore", () => {
   let client: Redis;
 
   beforeAll(async () => {
-    client = new Redis(url as string, { db: 8 });
+    // Dedicated DB 6 — federation/redis-coordinator.test.ts lives on DB 8
+    // with flushDb on setup + afterEach, and under parallel test execution
+    // that flushDb would wipe these keys mid-test. DB 6 is dedicated to
+    // this file (TK-1009 release-cycle fix).
+    client = new Redis(url as string, { db: 6 });
     await client.flushdb();
   });
 
