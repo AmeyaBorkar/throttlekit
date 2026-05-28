@@ -10,22 +10,37 @@
  *
  * ## Algorithm (the streaming realisation)
  *
- * Each tenant has a *dynamic guaranteed share* `gᵢ = ⌊wᵢ/W·L⌋` recomputed from the current active
- * set on every check (`W` = total weight of active tenants). The check is hierarchical:
+ * Each tenant has a *dynamic guaranteed share* `gᵢ = ⌊wᵢ/W·L_effective⌋` recomputed from the
+ * current active set on every check (`W` = total weight of active tenants;
+ * `L_effective` = the credits visible to this process — see "L1 vs L2" below). The check is
+ * hierarchical:
  *
- * 1. **Within guarantee** (`used + cost ≤ gᵢ`): always allowed, subject to the hard global cap
- *    `Σ used + cost ≤ L`. This is the T2 sharing-incentive promise.
+ * 1. **Within guarantee** (`used + cost ≤ gᵢ`): always allowed, subject to the hard cap
+ *    `Σ used + cost ≤ L_effective`. This is the T2 sharing-incentive promise.
  * 2. **Borrow phase** (`used + cost > gᵢ`): the asker tries to grow into surplus that other tenants
- *    have not yet claimed against their own guarantee. The pessimistic surplus available to the
- *    asker is
+ *    have not yet claimed against their own guarantee. The pessimistic surplus available is
  *
  *    ```text
- *      borrowAvailable = max(0, (L − Σ used) − Σⱼ≠ᵢ max(0, gⱼ − usedⱼ))
+ *      borrowAvailable = max(0, (L_effective − Σ used) − Σⱼ≠ᵢ max(0, gⱼ − usedⱼ))
  *    ```
  *
  *    i.e. the unallocated budget minus what would still need to be served to *other* backlogged
- *    tenants' guarantees. If `cost ≤ borrowAvailable`, the request is admitted; otherwise denied
- *    (with retryAfter = window remainder).
+ *    tenants' guarantees. If `cost ≤ borrowAvailable`, the request is admitted; otherwise denied.
+ *
+ * ## L1 vs L2: what `L_effective` means
+ *
+ * Two configurations share the same fairness algorithm but differ in where `L_effective` comes
+ * from:
+ *
+ * - **L1-only (single-process)** — `L_effective` is just `options.limit`; the whole budget is
+ *   visible to this one process. The bound is `Σ used ≤ L` within the process.
+ * - **L2-backed (multi-process)** — when an L2 `Store` is configured, `L_effective` starts at 0
+ *   each window and grows lazily: when a check needs more credits than the local pool holds, the
+ *   WFE leases `quantum` credits (or `cost` if larger) atomically from a shared L2 counter
+ *   (a `fixedWindow({ limit: L, windowMs })` against the same key on every process). The L2
+ *   counter's atomicity bounds the *global* total at `L` across processes; within a process the
+ *   leased-and-used credits feed the same fairness math. See DESIGN.md §6.3 / §6.4 for the
+ *   multi-process T1/T2/T4 bounds (each cross-process bound picks up a `quantum`-scaled slack).
  *
  * ## What the streaming algorithm does and does not promise vs the batch ideal
  *
@@ -33,24 +48,24 @@
  * maximal split given the *complete* demand vector. Streaming WFE can only know each tenant's
  * declared demand at their check sites; the asymptotic behaviour matches:
  *
- * - **T1 safety** — `Σ used ≤ L` always (guarantee floor + L_remaining cap). ✓
- * - **T2 sharing-incentive** — every active tenant is admissible up to `gᵢ` before any other tenant
- *   can borrow beyond their `gⱼ`. ✓
+ * - **T1 safety** — `Σ used ≤ L` always (guarantee floor + L_remaining cap; L2 atomicity for the
+ *   cross-process case). ✓
+ * - **T2 sharing-incentive** — every active tenant is admissible up to `gᵢ` before any other
+ *   tenant can borrow beyond their `gⱼ`, within a process and against the process's `L_effective`.
+ *   Across processes, T2 scales by the process's leased share; see DESIGN.md §6.4. ✓
  * - **T3 work-conservation** — surplus from idle tenants flows to backlogged ones, but only when
  *   `gⱼ − usedⱼ` for all `j` ≠ asker has been pessimistically reserved. A tenant who stops mid-
  *   window keeps their guaranteed reserve until the window rolls — the safe choice when we cannot
  *   distinguish "stopped" from "about to ask again." Work-conservation is therefore realised
  *   between *truly absent* tenants (who never join the active set), not between *paused* ones; the
- *   gap is the documented streaming-vs-batch trade. End-of-window T3 holds (everything reserved
- *   that was not used is forfeited at window roll).
- * - **T4 bounded unfairness** — `0` in this algorithm: there is no quantum slack at the streaming
- *   layer (each guarantee is recomputed exactly). The DRR quantum from the research model
- *   (`PILLAR4-fairness.md`) is a *multi-process* concept (it controls cross-process lease size); it
- *   does not appear in this single-process algorithm. See DR-P4-2 ("Why changed") in `DESIGN.md`.
+ *   gap is the documented streaming-vs-batch trade. End-of-window T3 holds.
+ * - **T4 bounded unfairness** — `0` at the L1 layer (exact integer guarantees per check).
+ *   `Σₚ Q⁽ᵖ⁾ · (1/wᵢ + 1/wⱼ)` across processes in L2 mode (the DRR quantum bound, scaled by the
+ *   number of processes contending for the shared pool).
  *
- * The cost is `O(N)` per check, with `N` = active tenants this window (a linear scan to compute
- * `W` and the reserve sum). For the bounded-`N` production case (`N ≤ 1024` via `l1.maxKeys`),
- * the bookkeeping is sub-microsecond per call.
+ * The cost is `O(N)` per check (L1 mode) or `O(N) + 1 RTT` per check that triggers a lease (L2
+ * mode), with `N` = active tenants this window. For the bounded-`N` production case (`N ≤ 1024`
+ * via `l1.maxKeys`), the L1 bookkeeping is sub-microsecond per call.
  *
  * ## What it is not
  *
@@ -58,8 +73,6 @@
  *   sharing-incentive, work-conserving, AND strategy-proof at once. WFE takes the first two and
  *   concedes the third honestly. A tenant *can* over-declare demand to claim surplus; window-
  *   coupling bounds the gain to one window.
- * - **Not multi-process.** Single-pool only at 0.9.1 (DR-P4-13 / TK-1310). Multi-process WFE backed
- *   by a shared `Store` (the §6.3 design in `DESIGN.md`) is the next commit in the TK-1310 chain.
  * - **Not federated.** Cross-region pooling is the 0.10.x track (DR-P4-7); compose WFE with
  *   `federate(...)` via the `l2: federated` slot once shipped.
  * - **Not hierarchical.** Flat tenant set, single weight per tenant. Nested weights (teams-within-
@@ -76,9 +89,12 @@
  * overload case in Workload C of EVALUATION.md).
  */
 
+import { fixedWindow } from "../algorithms/fixed-window";
 import { systemClock } from "../core/clock";
-import type { Clock, Decision } from "../core/types";
-import { requireCost, requirePositive } from "../core/validate";
+import { ThrottleKitError } from "../core/errors";
+import { decisionTransform } from "../core/transform";
+import type { Clock, Decision, Store } from "../core/types";
+import { requireCost, requireInteger, requirePositive } from "../core/validate";
 
 /** Options for {@link weightedFairEscrow}. */
 export interface WeightedFairEscrowOptions {
@@ -91,6 +107,26 @@ export interface WeightedFairEscrowOptions {
    * the exact work-conserving generalisation of {@link fairShare} / {@link weightedFairShare}).
    */
   weightOf?: (tenant: string) => number;
+  /**
+   * **L2 backing (multi-process)** — when provided, the shared budget lives in this `Store`
+   * (any distributed store: Redis, Postgres, MemoryStore for tests). Each process atomically
+   * leases credits from the shared counter via the existing `fixedWindow({ limit: L, windowMs })`
+   * strategy (DR-P4-5 — no new Lua); per-tenant fairness arithmetic stays in-process. When omitted,
+   * the limiter is single-process and the full `limit` is visible immediately.
+   */
+  l2?: Store;
+  /**
+   * L2-only: the per-process **lease size** — how many credits to acquire from the shared store
+   * at a time. Larger quantum = fewer round trips, looser cross-process T4 bound
+   * (`Σₚ Q⁽ᵖ⁾ · (1/wᵢ + 1/wⱼ)`). Must be a positive integer. Required when `l2` is set; ignored
+   * when omitted. There is no default — tune it to your latency-vs-fairness budget.
+   */
+  quantum?: number;
+  /**
+   * L2-only: the shared store's key for this WFE instance. All processes sharing a budget MUST
+   * use the same key. Default `"tk:wfe:pool"`.
+   */
+  l2Key?: string;
   /**
    * Bounded tenant set. Same role as `twoTier.l1.maxKeys`: caps the in-process per-tenant state
    * map to prevent unbounded growth on untrusted tenant input. Default unbounded; set on public
@@ -112,16 +148,18 @@ export interface WeightedFairEscrowLimiter {
    * the global pool — matches {@link weightedFairShare}'s contract so client-facing 429-rendering
    * is consistent.
    *
-   * Single-process / L1-only at 0.9.1; multi-process backing (an L2 `Store`) is the next commit
-   * in the TK-1310 chain (see `DESIGN.md` §6.3).
+   * Synchronous only when L1-only (no `l2` configured); with `l2` configured the lease step is
+   * async and {@link WeightedFairEscrowLimiter.checkSync} throws.
    */
   checkSync(tenant: string, cost?: number): Decision;
-  /** Promise-returning form of {@link WeightedFairEscrowLimiter.checkSync}; resolves synchronously. */
+  /** Promise-returning form; required path when `l2` is configured. */
   check(tenant: string, cost?: number): Promise<Decision>;
   /**
    * Reset one tenant's per-window usage (it leaves the active set), or — with no argument — the
    * whole window. The freed `used` is returned to the unallocated pool, so other backlogged
-   * tenants can grow into it on subsequent checks.
+   * tenants can grow into it on subsequent checks. **L2 note:** in L2 mode this does NOT reset
+   * the shared store — it only resets in-process accounting. The shared store rolls itself at the
+   * next window boundary; call `store.reset(l2Key)` explicitly to force a global reset.
    */
   reset(tenant?: string): void;
   /**
@@ -135,11 +173,16 @@ export interface WeightedFairEscrowLimiter {
 export interface WeightedFairEscrowStats {
   /** Window start (epoch-ms, `floor(now/windowMs)·windowMs`); -Infinity if no check has happened. */
   readonly windowStart: number;
-  /** Global per-window budget `L` (constant). */
+  /** Configured per-window budget `L` (constant). */
   readonly limit: number;
-  /** Effective unallocated pool: `L − Σ used`. Drops as tenants consume; resets at window roll. */
+  /**
+   * Effective `L_effective` visible to this process. In L1-only mode = `limit`; in L2 mode it
+   * grows lazily as the process leases from the shared store, capped at `limit`.
+   */
+  readonly effectiveLimit: number;
+  /** Effective unallocated pool: `effectiveLimit − Σ used`. */
   readonly pool: number;
-  /** Total used across all tenants this window. */
+  /** Total used across all tenants this window (in this process). */
   readonly totalUsed: number;
   /** Per-tenant snapshot: weight + used (current cumulative consumption in this window). */
   readonly tenants: ReadonlyArray<{
@@ -160,6 +203,7 @@ interface TenantEntry {
  * fair proportion, with idle tenants' surplus reclaimed by backlogged ones.
  *
  * @example
+ * // Single-process WFE (no `l2`):
  * import { weightedFairEscrow } from "throttlekit/twotier";
  *
  * const escrow = weightedFairEscrow({
@@ -167,9 +211,21 @@ interface TenantEntry {
  *   windowMs: 60_000,
  *   weightOf: (tenant) => tenantWeights[tenant] ?? 1,
  * });
- *
  * const d = await escrow.check("tenant-A", 5);
- * if (!d.allowed) return reject(d);
+ *
+ * @example
+ * // Multi-process WFE — one shared L2 counter, atomic leases:
+ * import { weightedFairEscrow, MemoryStore } from "throttlekit";
+ * import { RedisStore } from "throttlekit/redis";
+ *
+ * const escrow = weightedFairEscrow({
+ *   limit: 10_000,
+ *   windowMs: 60_000,
+ *   weightOf: (t) => tenantWeights[t] ?? 1,
+ *   l2: new RedisStore({ client }),
+ *   quantum: 100,                                     // per-process lease size
+ *   l2Key: "tk:wfe:my-gateway",                       // same on every process
+ * });
  *
  * @example
  * // Composes with unifiedAdmission's cost axis:
@@ -190,59 +246,69 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
   const maxKeys = options.l1?.maxKeys ?? Number.POSITIVE_INFINITY;
   const clock = options.clock ?? systemClock;
 
+  // L2 backing — validate up front to fail fast on misconfiguration.
+  const l2 = options.l2;
+  let quantum = 0;
+  if (l2 !== undefined) {
+    if (options.quantum === undefined) {
+      throw new RangeError(
+        "weightedFairEscrow: `quantum` is required when `l2` is configured (DR-P4-2 — controls the per-process lease size to the shared store)",
+      );
+    }
+    requirePositive("weightedFairEscrow.quantum", options.quantum);
+    requireInteger("weightedFairEscrow.quantum", options.quantum);
+    quantum = options.quantum;
+  }
+  const l2Key = options.l2Key ?? "tk:wfe:pool";
+
+  // The same shared-store strategy every process leases against. Using fixedWindow keeps the wire
+  // surface zero-add: this is the same script (and JS transform) that has shipped since 0.7.x and
+  // is conformance-pinned in `test/conformance/`.
+  const sharedStrategy = l2 !== undefined ? fixedWindow({ limit: L, windowMs }) : undefined;
+
   // -Infinity guarantees the first call (at any finite `now`) opens a fresh, epoch-aligned window.
   let windowStart = Number.NEGATIVE_INFINITY;
+  // `L_effective` is what this process sees as its budget for the fairness math. In L1 mode it
+  // equals `L`; in L2 mode it starts at 0 each window and grows via leases.
+  let lEffective = l2 === undefined ? L : 0;
   // Insertion order preserved so eviction is approximate-FIFO when `l1.maxKeys` is set.
   const tenants = new Map<string, TenantEntry>();
 
   function rollWindow(now: number): void {
     if (now >= windowStart + windowMs) {
       windowStart = Math.floor(now / windowMs) * windowMs;
+      lEffective = l2 === undefined ? L : 0;
       tenants.clear();
     }
   }
 
-  /** Per-tenant dynamic guaranteed share `gᵢ = ⌊wᵢ/W·L⌋` for the current active set. */
+  /** Per-tenant dynamic guaranteed share `gᵢ = ⌊wᵢ/W·L_effective⌋` for the current active set. */
   function guaranteedShare(weight: number, totalWeight: number): number {
-    return Math.floor((weight / totalWeight) * L);
+    return Math.floor((weight / totalWeight) * lEffective);
   }
 
-  function checkSync(tenant: string, cost = 1): Decision {
-    if (typeof tenant !== "string" || tenant.length === 0) {
-      throw new TypeError("weightedFairEscrow: tenant must be a non-empty string");
-    }
-    requireCost(cost);
-    const w = weightOf(tenant);
-    requirePositive("weightedFairEscrow.weight", w);
-
-    const now = clock.now();
-    rollWindow(now);
-    const resetAt = Math.ceil(windowStart + windowMs);
-
-    let entry = tenants.get(tenant);
-    if (entry === undefined) {
-      if (tenants.size >= maxKeys) {
-        // Approximate-FIFO eviction: drop the oldest entry. Its `used` is forgotten; the global
-        // pool effectively grows by that amount because L_remaining is recomputed from Σ used.
-        const oldest = tenants.keys().next();
-        if (!oldest.done) tenants.delete(oldest.value);
-      }
-      entry = { weight: w, used: 0 };
-      tenants.set(tenant, entry);
-    } else {
-      entry.weight = w; // refresh; weights may drift between checks (takes effect this check)
-    }
-
-    // Aggregate the current active set in a single scan: total weight + total used + the
-    // pessimistic reserve for other tenants' guarantees.
+  /** Aggregate the active set in one scan: total weight + total used. */
+  function aggregate(): { totalWeight: number; totalUsed: number } {
     let totalWeight = 0;
     let totalUsed = 0;
     for (const t of tenants.values()) {
       totalWeight += t.weight;
       totalUsed += t.used;
     }
-    const gAsker = guaranteedShare(w, totalWeight);
-    const lRemaining = L - totalUsed;
+    return { totalWeight, totalUsed };
+  }
+
+  /**
+   * Run the L1 fairness algorithm against the current `lEffective`. The algorithm is identical
+   * across L1 and L2 modes; what changes is only how `lEffective` is grown (synchronously fixed
+   * at `L` for L1; lazily leased from L2). Returns the Decision; if denied, the caller (in L2
+   * mode) may try a lease and re-run.
+   */
+  function decide(entry: TenantEntry, cost: number, now: number): Decision {
+    const resetAt = Math.ceil(windowStart + windowMs);
+    const { totalWeight, totalUsed } = aggregate();
+    const gAsker = guaranteedShare(entry.weight, totalWeight);
+    const lRemaining = lEffective - totalUsed;
 
     // T1 hard cap — never over-admit globally, no matter how the fairness math shakes out.
     if (cost > lRemaining) {
@@ -256,7 +322,6 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     }
 
     if (entry.used + cost <= gAsker) {
-      // Within the asker's guaranteed share. Always allowed.
       entry.used += cost;
       return {
         allowed: true,
@@ -276,9 +341,6 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
       reserve += Math.max(0, gj - t.used);
     }
     const borrowAvailable = Math.max(0, lRemaining - reserve);
-    // The asker is borrowing the excess `(used + cost) − gAsker`; cap by `borrowAvailable` AND by
-    // `lRemaining` (T1 already enforced cost ≤ lRemaining, so the second is redundant — but keep
-    // it explicit; future changes to the borrow rule must not accidentally drop the T1 cap).
     const wanted = entry.used + cost - gAsker;
     const grantable = Math.min(wanted, borrowAvailable, lRemaining);
     const realizedCeiling = gAsker + grantable;
@@ -303,29 +365,125 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     };
   }
 
+  function bootstrapTenant(tenant: string, w: number): TenantEntry {
+    if (tenants.size >= maxKeys) {
+      const oldest = tenants.keys().next();
+      if (!oldest.done) tenants.delete(oldest.value);
+    }
+    const entry: TenantEntry = { weight: w, used: 0 };
+    tenants.set(tenant, entry);
+    return entry;
+  }
+
+  function validateInputs(tenant: string, cost: number): number {
+    if (typeof tenant !== "string" || tenant.length === 0) {
+      throw new TypeError("weightedFairEscrow: tenant must be a non-empty string");
+    }
+    requireCost(cost);
+    const w = weightOf(tenant);
+    requirePositive("weightedFairEscrow.weight", w);
+    return w;
+  }
+
+  function checkSync(tenant: string, cost = 1): Decision {
+    if (l2 !== undefined) {
+      throw new ThrottleKitError(
+        "weightedFairEscrow.checkSync is unavailable when `l2` is configured (L2 lease is async); use check()",
+      );
+    }
+    const w = validateInputs(tenant, cost);
+    const now = clock.now();
+    rollWindow(now);
+    let entry = tenants.get(tenant);
+    if (entry === undefined) entry = bootstrapTenant(tenant, w);
+    else entry.weight = w;
+    return decide(entry, cost, now);
+  }
+
+  async function check(tenant: string, cost = 1): Promise<Decision> {
+    const w = validateInputs(tenant, cost);
+    const now = clock.now();
+    rollWindow(now);
+    let entry = tenants.get(tenant);
+    if (entry === undefined) entry = bootstrapTenant(tenant, w);
+    else entry.weight = w;
+
+    if (l2 === undefined) {
+      return decide(entry, cost, now);
+    }
+
+    // L2 path. Top up `lEffective` by leasing from the shared store whenever the local budget is
+    // insufficient to satisfy the T1 cap (`L_remaining ≥ cost`). The borrow phase's reserve math
+    // is bounded by `lEffective`, so growing it grows both `gᵢ` and the reserve in lockstep —
+    // leasing past T1 satisfaction doesn't help the borrow-blocked-by-reserve case and would only
+    // pull more credits out of the shared pool unnecessarily. Documented in DESIGN.md §6.3.
+    for (;;) {
+      const { totalUsed } = aggregate();
+      const lRem = lEffective - totalUsed;
+      if (lRem >= cost) break;
+      const needed = cost - lRem;
+      const leaseAmount = Math.max(needed, quantum);
+      // Use the existing fixedWindow strategy as the atomic leasing primitive (DR-P4-5). The
+      // transform wraps the strategy's pure transition + the Lua acceleration; the store runs it
+      // atomically against the shared `l2Key`.
+      const leased = await (l2 as Store).apply(
+        l2Key,
+        decisionTransform(
+          // sharedStrategy is set whenever l2 is set; the `!` reflects that invariant for TS.
+          // biome-ignore lint/style/noNonNullAssertion: invariant — sharedStrategy paired with l2 in the closure
+          sharedStrategy!,
+          now,
+          leaseAmount,
+        ),
+      );
+      if (!leased.allowed) {
+        // The shared store says no — surface its retryAfter as the tenant's denial. We do NOT
+        // grow lEffective for a denied lease.
+        const resetAt = Math.ceil(windowStart + windowMs);
+        return {
+          allowed: false,
+          limit: Math.max(0, entry.used),
+          remaining: 0,
+          resetAt,
+          retryAfterMs: leased.retryAfterMs,
+        };
+      }
+      lEffective += leaseAmount;
+      // Loop to recompute lRem; one iteration usually suffices, but `lEffective + L` could be
+      // capped if the shared store's window has rolled mid-lease — re-check.
+      if (lEffective >= L) break; // nothing more to lease beyond the global cap
+    }
+
+    return decide(entry, cost, now);
+  }
+
   return {
     checkSync,
-    check(tenant: string, cost = 1): Promise<Decision> {
-      return Promise.resolve(checkSync(tenant, cost));
-    },
+    check,
     reset(tenant?: string): void {
       if (tenant === undefined) {
         windowStart = Number.NEGATIVE_INFINITY;
+        lEffective = l2 === undefined ? L : 0;
         tenants.clear();
         return;
       }
       tenants.delete(tenant);
     },
     stats(): WeightedFairEscrowStats {
-      // Build as a mutable array, then return widened to the `Readonly` snapshot type — same
-      // pattern adaptive concurrency / federation use for read-only return shapes.
       const snapshot: Array<{ tenant: string; weight: number; used: number }> = [];
       let tot = 0;
       for (const [k, t] of tenants) {
         tot += t.used;
         snapshot.push({ tenant: k, weight: t.weight, used: t.used });
       }
-      return { windowStart, limit: L, pool: L - tot, totalUsed: tot, tenants: snapshot };
+      return {
+        windowStart,
+        limit: L,
+        effectiveLimit: lEffective,
+        pool: lEffective - tot,
+        totalUsed: tot,
+        tenants: snapshot,
+      };
     },
   };
 }

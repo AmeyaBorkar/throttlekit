@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ManualClock } from "../../src/core/clock";
+import { MemoryStore } from "../../src/stores/memory";
 import { weightedFairEscrow } from "../../src/twotier/weighted-fair-escrow";
 
 /**
@@ -370,5 +371,203 @@ describe("weightedFairEscrow — T1 safety invariant (the load-bearing property)
       calls++;
       if (calls % 100 === 0) clock.advance(60_001);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// L2 multi-process path (DESIGN.md §6.3 / DR-P4-5). The shared budget lives in a `Store`;
+// each WFE instance leases `quantum` credits at a time from a fixedWindow strategy against the
+// same `l2Key`. MemoryStore acts as a process-local stand-in; the full Redis-gated conformance
+// + property gate arrives in TK-1311.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("weightedFairEscrow — L2 input validation", () => {
+  it("requires quantum when l2 is set", () => {
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    expect(() =>
+      weightedFairEscrow({
+        limit: 100,
+        windowMs: 1000,
+        l2: store,
+        clock,
+      }),
+    ).toThrow(/quantum.*required.*l2/i);
+  });
+
+  it("rejects non-positive or non-integer quantum", () => {
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    expect(() =>
+      weightedFairEscrow({ limit: 100, windowMs: 1000, l2: store, quantum: 0, clock }),
+    ).toThrow(/quantum.*positive/i);
+    expect(() =>
+      weightedFairEscrow({ limit: 100, windowMs: 1000, l2: store, quantum: 1.5, clock }),
+    ).toThrow(/quantum.*integer/i);
+  });
+
+  it("checkSync throws when l2 is set (lease is async)", () => {
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    const escrow = weightedFairEscrow({
+      limit: 100,
+      windowMs: 1000,
+      l2: store,
+      quantum: 10,
+      clock,
+    });
+    expect(() => escrow.checkSync("t", 1)).toThrow(/checkSync.*unavailable.*l2/i);
+  });
+});
+
+describe("weightedFairEscrow — L2 single-process correctness", () => {
+  it("single process with L2 backing behaves identically to L1 for admit/deny outcomes", async () => {
+    // Same demand vector, same weights, same L → admit/deny pattern matches L1-only.
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    const escrow = weightedFairEscrow({
+      limit: 10,
+      windowMs: 1000,
+      weightOf: (t) => (t === "high" ? 4 : 1),
+      l2: store,
+      quantum: 10,
+      clock,
+    });
+
+    // Warm-up parity with the L1 test.
+    expect((await escrow.check("high", 1)).allowed).toBe(true);
+    expect((await escrow.check("low", 1)).allowed).toBe(true);
+
+    let high = 1;
+    let low = 1;
+    for (let i = 0; i < 18; i++) {
+      const t = i % 2 === 0 ? "high" : "low";
+      const d = await escrow.check(t, 1);
+      if (d.allowed) {
+        if (t === "high") high++;
+        else low++;
+      }
+    }
+    expect(high).toBe(8);
+    expect(low).toBe(2);
+  });
+
+  it("leases lazily — checks don't lease until the local pool runs short", async () => {
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    const escrow = weightedFairEscrow({
+      limit: 1000,
+      windowMs: 1000,
+      l2: store,
+      quantum: 100,
+      clock,
+    });
+
+    // First check needs at least 1 credit; quantum=100 ⇒ leases 100 in one shot.
+    await escrow.check("t", 1);
+    expect(escrow.stats().effectiveLimit).toBe(100);
+
+    // Subsequent within-quantum checks don't trigger more leases.
+    for (let i = 0; i < 50; i++) await escrow.check("t", 1);
+    expect(escrow.stats().effectiveLimit).toBe(100);
+    expect(escrow.stats().totalUsed).toBe(51);
+
+    // Crossing the quantum boundary triggers a second lease.
+    for (let i = 0; i < 50; i++) await escrow.check("t", 1);
+    expect(escrow.stats().effectiveLimit).toBeGreaterThanOrEqual(200);
+    expect(escrow.stats().totalUsed).toBe(101);
+  });
+
+  it("propagates L2 lease denial when the shared budget is exhausted", async () => {
+    // Two WFE instances sharing the same store + key — simulates two processes.
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    const key = "test:wfe:shared";
+    const a = weightedFairEscrow({
+      limit: 100,
+      windowMs: 1000,
+      l2: store,
+      quantum: 100,
+      l2Key: key,
+      clock,
+    });
+    const b = weightedFairEscrow({
+      limit: 100,
+      windowMs: 1000,
+      l2: store,
+      quantum: 50,
+      l2Key: key,
+      clock,
+    });
+
+    // A leases the whole 100 in one shot.
+    await a.check("ta", 1);
+    expect(a.stats().effectiveLimit).toBe(100);
+
+    // B tries to lease — store has 0 remaining; lease denied; check denied.
+    const d = await b.check("tb", 1);
+    expect(d.allowed).toBe(false);
+    expect(b.stats().effectiveLimit).toBe(0); // no successful lease
+  });
+});
+
+describe("weightedFairEscrow — L2 two-process T1 invariant", () => {
+  it("Σ used across both processes never exceeds L (the multi-process safety bound)", async () => {
+    // Two WFE instances sharing one store. Drive 200 random calls and assert global Σ used ≤ L
+    // at every step. The atomic fixedWindow inside the store is what bounds this — the in-process
+    // accounting could lie, but the shared counter cannot.
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    const L = 50;
+    const key = "test:wfe:t1-shared";
+
+    const procA = weightedFairEscrow({
+      limit: L,
+      windowMs: 60_000,
+      l2: store,
+      quantum: 5,
+      l2Key: key,
+      clock,
+    });
+    const procB = weightedFairEscrow({
+      limit: L,
+      windowMs: 60_000,
+      l2: store,
+      quantum: 5,
+      l2Key: key,
+      clock,
+    });
+
+    for (let i = 0; i < 200; i++) {
+      const proc = i % 2 === 0 ? procA : procB;
+      const tenant = i % 3 === 0 ? "x" : i % 3 === 1 ? "y" : "z";
+      await proc.check(tenant, 1);
+
+      const totalA = procA.stats().totalUsed;
+      const totalB = procB.stats().totalUsed;
+      expect(totalA + totalB).toBeLessThanOrEqual(L);
+    }
+  });
+});
+
+describe("weightedFairEscrow — L2 stats", () => {
+  it("effectiveLimit reflects the lazy lease accumulation", async () => {
+    const clock = new ManualClock(1_700_000_000_000);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    const escrow = weightedFairEscrow({
+      limit: 100,
+      windowMs: 1000,
+      l2: store,
+      quantum: 10,
+      clock,
+    });
+
+    expect(escrow.stats().effectiveLimit).toBe(0); // no lease yet
+
+    await escrow.check("t", 1);
+    expect(escrow.stats().effectiveLimit).toBe(10); // first lease
+
+    await escrow.check("t", 11); // crosses quantum boundary, needs 2nd lease
+    expect(escrow.stats().effectiveLimit).toBeGreaterThanOrEqual(20);
   });
 });
