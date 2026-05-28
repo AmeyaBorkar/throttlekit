@@ -20,6 +20,20 @@ export class StoreUnavailableError extends ThrottleKitError {
 }
 
 /**
+ * Thrown by a placeholder code path that has been declared but not yet
+ * implemented. Used during incremental rollout (e.g. the `FederatedStore`
+ * skeleton in TK-902 throws this from `apply()` until TK-903/904 land the
+ * real behavior). Catching this specifically lets tests and integrators
+ * distinguish "this is a known stub" from a generic ThrottleKitError.
+ */
+export class NotImplementedError extends ThrottleKitError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "NotImplementedError";
+  }
+}
+
+/**
  * Convenience error for callers that prefer throwing over inspecting a {@link Decision}.
  * Carries the denying decision and its `retryAfterMs`.
  */

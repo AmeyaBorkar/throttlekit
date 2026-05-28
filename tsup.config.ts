@@ -25,6 +25,7 @@ export default defineConfig({
     testkit: "src/testkit/index.ts",
     config: "src/config/index.ts",
     cli: "src/cli/bin.ts",
+    federation: "src/federation/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
