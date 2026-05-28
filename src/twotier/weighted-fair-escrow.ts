@@ -282,9 +282,14 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     }
   }
 
-  /** Per-tenant dynamic guaranteed share `gᵢ = ⌊wᵢ/W·L_effective⌋` for the current active set. */
+  /**
+   * Per-tenant dynamic guaranteed share `gᵢ = ⌊wᵢ·L_effective/W⌋` for the current active set.
+   * Multiplication-first to avoid the float-precision trap of `(w/W)*L` (e.g. `(6/11)*99 =
+   * 53.999...` floors to 53, not 54). The integer-first form `(w·L)/W` keeps the numerator exact
+   * up to MAX_SAFE_INTEGER and floors correctly.
+   */
   function guaranteedShare(weight: number, totalWeight: number): number {
-    return Math.floor((weight / totalWeight) * lEffective);
+    return Math.floor((weight * lEffective) / totalWeight);
   }
 
   /** Aggregate the active set in one scan: total weight + total used. */
@@ -342,7 +347,13 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     }
     const borrowAvailable = Math.max(0, lRemaining - reserve);
     const wanted = entry.used + cost - gAsker;
-    const grantable = Math.min(wanted, borrowAvailable, lRemaining);
+    // Cap per-call borrow at the call's own `cost` — this is the DRR quantum semantics adapted
+    // to variable-cost calls (a call of size c borrows at most c beyond its guarantee, matching
+    // Shreedhar-Varghese's q-per-round bound). It also keeps the T4 bound at
+    // |aᵢ/wᵢ − aⱼ/wⱼ| ≤ max_cost · (1/wᵢ + 1/wⱼ) — for the common cost=1 case the bound is the
+    // canonical DRR bound. Without the cap, a single call could borrow the entire slack `L − Σg`,
+    // dilating the spread to `(L − Σg)/w_min`.
+    const grantable = Math.min(wanted, cost, borrowAvailable, lRemaining);
     const realizedCeiling = gAsker + grantable;
 
     if (entry.used + cost <= realizedCeiling) {

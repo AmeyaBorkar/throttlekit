@@ -392,14 +392,17 @@ function validateAllocation(
 }
 
 /**
- * Each tenant's **guaranteed weighted share** `floor(w_i / W * limit)` (`W` = total weight) — the
+ * Each tenant's **guaranteed weighted share** `floor(w_i · limit / W)` (`W` = total weight) — the
  * static slice a weighted max-min split never drops a backlogged tenant below. Sums to `<= limit`.
+ *
+ * Integer-first form (`w · limit / W` then floor) to avoid the float-precision trap of
+ * `(w / W) · limit` — e.g. `(6/11) * 99 = 53.999...` floors to 53 instead of 54.
  */
 export function guaranteedShare(weights: readonly number[], limit: number): number[] {
   requireAtLeast("guaranteedShare.limit", limit, 0);
   for (const w of weights) requirePositive("guaranteedShare.weight", w);
   const W = sumOf(weights);
-  return weights.map((w) => Math.floor((w / W) * limit));
+  return weights.map((w) => Math.floor((w * limit) / W));
 }
 
 /** Continuous weighted max-min (water-filling): raise λ, give tenant i `min(d_i, w_i·λ)`. O(n log n). */
@@ -573,9 +576,10 @@ export function weightedFairShare(options: WeightedFairShareOptions): WeightedFa
 
     // Weighted equal split across everyone active so far, floored — but at least 1 so a tenant is
     // never handed a zero cap. W is the live active-weight sum (grows as tenants appear this window).
+    // Integer-first to avoid the float-precision trap of `(w/W)*L` (e.g. `(6/11)*99 = 53.999…`).
     let activeWeight = 0;
     for (const wv of weights.values()) activeWeight += wv;
-    const fairCap = Math.max(1, Math.floor((w / activeWeight) * limit));
+    const fairCap = Math.max(1, Math.floor((w * limit) / activeWeight));
 
     const allowed = total + cost <= limit && tenantUsed + cost <= fairCap;
     if (allowed) {
