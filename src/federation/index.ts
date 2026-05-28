@@ -20,6 +20,8 @@
  *                                lease: { batch: 8, windowCoupled: true } });
  */
 
+export { PostgresCoordinator } from "./postgres-coordinator";
+export type { PostgresCoordinatorOptions } from "./postgres-coordinator";
 export { RedisCoordinator } from "./redis-coordinator";
 export type { RedisCoordinatorOptions } from "./redis-coordinator";
 export { FederatedStore } from "./store";
