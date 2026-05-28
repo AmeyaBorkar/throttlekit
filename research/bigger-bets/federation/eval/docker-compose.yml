@@ -1,0 +1,68 @@
+# Federation eval — local cluster simulator (TK-909)
+#
+# Spins up four Redis instances representing:
+#   - regional1, regional2, regional3: the three regional L2 stores
+#     (reserved for TK-906 multi-process regional escrow; unused by replay.ts at TK-909).
+#   - global-coordinator: the cross-region GlobalCoordinator backend (RedisCoordinator).
+#
+# Cross-region latency injection: the replay script wraps the global-coordinator
+# client with a LatencyProxy (configurable via REGION_LATENCY_MS env var).
+# This keeps the docker-compose dependency-free — no toxiproxy or tc-qdisc
+# capabilities required — and works equally well on Linux/Mac/Windows.
+#
+# Usage:
+#   docker compose -f research/bigger-bets/federation/eval/docker-compose.yml up -d
+#   npx tsx research/bigger-bets/federation/eval/replay.ts > result.json
+#   docker compose -f research/bigger-bets/federation/eval/docker-compose.yml down
+#
+# All four Redis containers expose distinct host ports so the replay can
+# connect from the host. Ports avoid the standard 6379 (memory:
+# local-test-redis says port 6379 is taken by another project) and the
+# 6380 used by ThrottleKit's main test suite.
+
+version: "3.9"
+
+services:
+  regional1:
+    image: redis:7-alpine
+    container_name: tk-fed-regional1
+    ports:
+      - "16381:6379"
+    command: redis-server --appendonly no --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 10
+
+  regional2:
+    image: redis:7-alpine
+    container_name: tk-fed-regional2
+    ports:
+      - "16382:6379"
+    command: redis-server --appendonly no --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 10
+
+  regional3:
+    image: redis:7-alpine
+    container_name: tk-fed-regional3
+    ports:
+      - "16383:6379"
+    command: redis-server --appendonly no --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 10
+
+  global-coordinator:
+    image: redis:7-alpine
+    container_name: tk-fed-coordinator
+    ports:
+      - "16380:6379"
+    command: redis-server --appendonly no --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 10
