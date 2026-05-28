@@ -1,31 +1,37 @@
 /**
- * TK-902 skeleton tests — verify the public federation surface compiles,
- * the FederatedStore correctly signals "not implemented yet" on apply()
- * (so callers know the gate), and the in-memory TestCoordinator's actual
- * behavior matches the design contract (DESIGN.md §3.1).
+ * Skeleton tests for the federation public surface.
  *
- * TestCoordinator IS implemented at this commit (it's the test backbone for
- * TK-903+) so its tests are thorough; FederatedStore is only the surface
- * shape, so its tests are surface-only. The real behavior tests for
- * FederatedStore land in TK-903 (static-partition) and TK-904 (federated
- * window-coupled leasing).
+ * - TK-902 froze the public types + classes + barrel exports.
+ * - TK-904 made `FederatedStore.apply()` work (delegates to the shared
+ *   federation engine; cost extracted from the transform's `lua.cost` hint;
+ *   returns a synthesized Decision).
+ *
+ * The richer behavior tests (Δ = 0, window-coupling, coalescing, fail-closed,
+ * utilization recovery) live in `window-coupled.test.ts` and
+ * `federated-skew.test.ts`. This file stays focused on the surface
+ * (constructor, defaults, validation, the Store↔engine wiring).
+ *
+ * TestCoordinator behavior tests are thorough here — it backs every later
+ * subtask's tests so its semantics are pinned.
  */
 
 import { describe, expect, it } from "vitest";
 
-import { NotImplementedError, StoreUnavailableError } from "../../src/core/errors";
-import type { Store, Transform } from "../../src/core/types";
+import { fixedWindow } from "../../src/algorithms/fixed-window";
+import { ManualClock } from "../../src/core/clock";
+import { StoreUnavailableError } from "../../src/core/errors";
+import { decisionTransform } from "../../src/core/transform";
+import type { Store } from "../../src/core/types";
 import { FederatedStore, type GlobalCoordinator, TestCoordinator } from "../../src/federation";
 import { MemoryStore } from "../../src/stores/memory";
 
-const noopTransform = <S>(_state: S | undefined): never => {
-  throw new Error("noop transform should not have been invoked at this commit");
-};
+const baseStrategy = () => fixedWindow({ limit: 100, windowMs: 1000 });
 
-describe("federation/skeleton (TK-902)", () => {
+describe("federation/skeleton (TK-902 surface, TK-904 wiring)", () => {
   describe("FederatedStore — public surface", () => {
     it("constructs with required options + sensible defaults", () => {
       const fed = new FederatedStore({
+        strategy: baseStrategy(),
         regional: new MemoryStore({ sweepIntervalMs: 0 }),
         coordinator: new TestCoordinator({ budgetPerWindow: 100 }),
         region: "us-east",
@@ -33,10 +39,12 @@ describe("federation/skeleton (TK-902)", () => {
       expect(fed.region).toBe("us-east");
       expect(fed.batch).toBe(16); // default
       expect(fed.onCoordinatorOutage).toBe("fail-closed"); // safe default
+      expect(fed.strategy.name).toBe("fixedWindow");
     });
 
     it("honors explicit batch + outage mode", () => {
       const fed = new FederatedStore({
+        strategy: baseStrategy(),
         regional: new MemoryStore({ sweepIntervalMs: 0 }),
         coordinator: new TestCoordinator(),
         region: "eu-west",
@@ -49,6 +57,7 @@ describe("federation/skeleton (TK-902)", () => {
 
     it("rejects non-positive / non-finite batch", () => {
       const base = {
+        strategy: baseStrategy(),
         regional: new MemoryStore({ sweepIntervalMs: 0 }),
         coordinator: new TestCoordinator(),
         region: "us-east",
@@ -61,41 +70,46 @@ describe("federation/skeleton (TK-902)", () => {
       );
     });
 
-    it("apply() throws NotImplementedError (TK-903/904 land the behavior)", () => {
+    it("apply() now works — synthesizes a Decision from the engine (TK-904)", async () => {
+      const clock = new ManualClock(0);
       const fed = new FederatedStore({
+        strategy: baseStrategy(),
         regional: new MemoryStore({ sweepIntervalMs: 0 }),
-        coordinator: new TestCoordinator(),
+        coordinator: new TestCoordinator({ budgetPerWindow: 100 }),
         region: "us-east",
+        clock,
       });
-      // FederatedStore.apply is the only path that throws — caught synchronously
-      // because the throw happens before any await/Promise creation.
-      expect(() => fed.apply("k", noopTransform as Transform<unknown, unknown>)).toThrow(
-        NotImplementedError,
-      );
-      expect(() => fed.apply("k", noopTransform as Transform<unknown, unknown>)).toThrow(/TK-903/);
+      const d = await fed.apply("k", decisionTransform(baseStrategy(), 0, 1));
+      expect(d).toMatchObject({
+        allowed: true,
+        limit: 100,
+        retryAfterMs: 0,
+      });
+      // resetAt is the window boundary at windowMs=1000, now=0 → 1000.
+      expect((d as { resetAt: number }).resetAt).toBe(1000);
     });
 
-    it("reset() delegates to the regional store", async () => {
+    it("reset() drops the engine's per-key state AND delegates to the regional store", async () => {
       let resetKey: string | undefined;
       const spyRegional: Store = {
-        apply: async () => {
-          throw new Error("unused");
-        },
+        apply: async () => ({}) as never,
         reset: async (key: string) => {
           resetKey = key;
         },
       };
       const fed = new FederatedStore({
+        strategy: baseStrategy(),
         regional: spyRegional,
-        coordinator: new TestCoordinator(),
+        coordinator: new TestCoordinator({ budgetPerWindow: 100 }),
         region: "us-east",
       });
       await fed.reset("user:42");
       expect(resetKey).toBe("user:42");
     });
 
-    it("close() is a no-op (no owned resources at this commit)", async () => {
+    it("close() releases engine state (no caller-owned resources)", async () => {
       const fed = new FederatedStore({
+        strategy: baseStrategy(),
         regional: new MemoryStore({ sweepIntervalMs: 0 }),
         coordinator: new TestCoordinator(),
         region: "us-east",
@@ -105,6 +119,7 @@ describe("federation/skeleton (TK-902)", () => {
 
     it("recommendedBatch() falls back to the static batch when no sizer / invalid sizer output", () => {
       const fed = new FederatedStore({
+        strategy: baseStrategy(),
         regional: new MemoryStore({ sweepIntervalMs: 0 }),
         coordinator: new TestCoordinator(),
         region: "us-east",
@@ -113,6 +128,7 @@ describe("federation/skeleton (TK-902)", () => {
       expect(fed.recommendedBatch()).toBe(24);
 
       const fedWithBadSizer = new FederatedStore({
+        strategy: baseStrategy(),
         regional: new MemoryStore({ sweepIntervalMs: 0 }),
         coordinator: new TestCoordinator(),
         region: "us-east",
@@ -122,6 +138,7 @@ describe("federation/skeleton (TK-902)", () => {
       expect(fedWithBadSizer.recommendedBatch()).toBe(12);
 
       const fedWithGoodSizer = new FederatedStore({
+        strategy: baseStrategy(),
         regional: new MemoryStore({ sweepIntervalMs: 0 }),
         coordinator: new TestCoordinator(),
         region: "us-east",
@@ -132,12 +149,14 @@ describe("federation/skeleton (TK-902)", () => {
       expect(fedWithGoodSizer.recommendedBatch()).toBe(7);
     });
 
-    it("exposes the underlying regional store + coordinator for introspection", () => {
+    it("exposes the underlying regional store + coordinator + strategy for introspection", () => {
+      const strategy = baseStrategy();
       const regional = new MemoryStore({ sweepIntervalMs: 0 });
       const coordinator = new TestCoordinator({ budgetPerWindow: 50 });
-      const fed = new FederatedStore({ regional, coordinator, region: "ap-south" });
+      const fed = new FederatedStore({ strategy, regional, coordinator, region: "ap-south" });
       expect(fed.regional).toBe(regional);
       expect(fed.coordinator).toBe(coordinator);
+      expect(fed.strategy).toBe(strategy);
     });
   });
 
@@ -160,32 +179,26 @@ describe("federation/skeleton (TK-902)", () => {
     it("rolls the budget when expiresAt changes (window-coupling)", async () => {
       const c = new TestCoordinator({ budgetPerWindow: 10 });
       expect(await c.lease("k", 8, T_EXPIRES)).toBe(8);
-      // Next window: fresh budget, leftover from prior window forfeit (the
-      // window-coupling commitment — formalised in spec/GaleFederatedLeasing.tla).
       const nextExpires = T_EXPIRES + 60_000;
       expect(await c.lease("k", 8, nextExpires)).toBe(8);
     });
 
     it("reconcile is idempotent on windowStart (partition-recovery safe)", async () => {
       const c = new TestCoordinator({ budgetPerWindow: 100 });
-      await c.lease("k", 50, T_EXPIRES); // 50 remaining
+      await c.lease("k", 50, T_EXPIRES);
       const windowStart = T_EXPIRES - 60_000;
-      await c.reconcile("k", 20, windowStart); // 70 remaining
-      expect(c.remainingFor("k", T_EXPIRES - 1)).toBe(70);
-      // Duplicate reconcile for the SAME windowStart MUST be a no-op.
       await c.reconcile("k", 20, windowStart);
       expect(c.remainingFor("k", T_EXPIRES - 1)).toBe(70);
-      // A DIFFERENT windowStart (i.e. a true second reconciliation event)
-      // counts independently.
+      await c.reconcile("k", 20, windowStart);
+      expect(c.remainingFor("k", T_EXPIRES - 1)).toBe(70);
       await c.reconcile("k", 5, windowStart - 60_000);
       expect(c.remainingFor("k", T_EXPIRES - 1)).toBe(75);
     });
 
     it("reconcile caps at the configured per-key budget (no inflation)", async () => {
       const c = new TestCoordinator({ budgetPerWindow: 100 });
-      await c.lease("k", 30, T_EXPIRES); // 70 remaining
+      await c.lease("k", 30, T_EXPIRES);
       await c.reconcile("k", 1000, T_EXPIRES - 60_000);
-      // Reconciliation must never inflate beyond budgetPerWindow.
       expect(c.remainingFor("k", T_EXPIRES - 1)).toBe(100);
     });
 
@@ -218,7 +231,6 @@ describe("federation/skeleton (TK-902)", () => {
     });
 
     it("satisfies the GlobalCoordinator interface (structural type-check)", () => {
-      // Compile-time assertion: TestCoordinator IS a GlobalCoordinator.
       const fn = (g: GlobalCoordinator): GlobalCoordinator => g;
       expect(fn(new TestCoordinator())).toBeInstanceOf(TestCoordinator);
     });

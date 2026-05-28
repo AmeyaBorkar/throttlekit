@@ -2,36 +2,36 @@
  * `FederatedStore` — a `Store` that fronts a regional `Store` with a
  * cross-region `GlobalCoordinator` (the "L3" of the recursive twoTier stack).
  *
- * This commit (TK-902) ships the public surface only. `apply()` throws
- * `NotImplementedError` — the static-partition impl lands in TK-903, and the
- * window-coupled federated leasing in TK-904. Until then this class exists
- * to freeze the constructor + property surface so downstream tests and
- * docs can reference stable types.
+ * As of TK-904 this class is a Store wrapper around the same federation
+ * engine that backs `federate(...)` — `apply()` runs the engine's lease
+ * logic and synthesizes Decisions, ignoring the strategy embedded in the
+ * caller's transform (the engine's own strategy, supplied at construction,
+ * is authoritative).
  *
- * Behavior summary (committed in DESIGN.md §3.2):
+ * Two equivalent surfaces:
+ * - `federate({ strategy, coordinator, region, batch })` → Limiter
+ *   (primary API; parallel to rateLimit / twoTier).
+ * - `new FederatedStore({ strategy, coordinator, regional, region, batch })`
+ *   → Store (composes with twoTier(leased) for the recursive-twoTier
+ *   in-process L1 + regional escrow + global L3 stack).
  *
- * 1. Try the regional store (no global coordinator hit).
- *    On admit -> return its Decision verbatim.
- * 2. On regional-store exhaustion -> coordinator.lease(key, batch, expiresAt).
- *    On grant > 0 -> credit the regional store, retry step 1.
- *    On grant = 0 -> return denied (regional Decision).
- *    On coordinator throw -> per `onCoordinatorOutage` (fail-closed default).
- * 3. At each global window boundary -> coordinator.reconcile(key, leftover,
- *    windowStart). Idempotent on windowStart.
+ * Both share `createFederationEngine` internally so they are bit-identical
+ * for any given configuration.
  *
- * `applySync` and `resetSync` are deliberately ABSENT: federated coordination
- * always crosses a region boundary, which is intrinsically async (cross-region
- * RTT 80–150 ms). Callers needing sync paths use a non-federated store.
+ * `applySync` and `resetSync` are deliberately ABSENT: federated
+ * coordination always crosses a region boundary, which is intrinsically
+ * async (cross-region RTT 80–150 ms). Callers needing sync use a
+ * non-federated store.
  */
 
-import { NotImplementedError } from "../core/errors";
-import type { Store, Transform } from "../core/types";
+import type { Decision, Store, Strategy, Transform } from "../core/types";
 import type {
   CoordinatorOutageMode,
   FederatedStoreOptions,
   GlobalCoordinator,
   Region,
 } from "./types";
+import { type FederationEngine, createFederationEngine } from "./window-coupled";
 
 /** Default lease batch size, see {@link FederatedStoreOptions.batch}. */
 const DEFAULT_BATCH = 16;
@@ -46,7 +46,9 @@ export class FederatedStore implements Store {
 
   readonly #regional: Store;
   readonly #coordinator: GlobalCoordinator;
+  readonly #strategy: Strategy<unknown>;
   readonly #sizer: { recommend(): number } | undefined;
+  readonly #engine: FederationEngine;
 
   constructor(options: FederatedStoreOptions) {
     if (options.batch !== undefined && (!Number.isFinite(options.batch) || options.batch < 1)) {
@@ -54,48 +56,64 @@ export class FederatedStore implements Store {
     }
     this.#regional = options.regional;
     this.#coordinator = options.coordinator;
+    this.#strategy = options.strategy;
     this.region = options.region;
     this.batch = options.batch ?? DEFAULT_BATCH;
     this.#sizer = options.sizer;
     this.onCoordinatorOutage = options.onCoordinatorOutage ?? "fail-closed";
+    this.#engine = createFederationEngine({
+      strategy: options.strategy,
+      coordinator: options.coordinator,
+      region: options.region,
+      batch: this.batch,
+      regional: options.regional,
+      onCoordinatorOutage: this.onCoordinatorOutage,
+      ...(options.clock !== undefined ? { clock: options.clock } : {}),
+      ...(options.prefix !== undefined ? { prefix: options.prefix } : {}),
+    });
   }
 
   /**
-   * Federated apply — runs `transform` atomically against the regional store,
-   * drawing fresh escrow from the global coordinator on regional exhaustion.
+   * Federated apply — runs the federation engine and synthesizes a
+   * Decision. The cost is extracted from the caller's transform (its
+   * attached `lua.cost`, populated by `decisionTransform(...)`); a transform
+   * without that hint is treated as cost = 1.
    *
-   * **Not yet implemented.** Throws `NotImplementedError` until TK-903 lands
-   * the static-partition baseline and TK-904 lands the window-coupled
-   * federated leasing impl.
+   * IMPORTANT: the strategy in the caller's transform is ignored — the
+   * federation's own strategy (passed at construction) is authoritative
+   * for window boundaries and the Decision's `limit`. This is consistent
+   * with how the L3 enforces the global bound in DESIGN.md §3.2; the
+   * caller-supplied transform is consulted only for the cost.
    */
-  apply<S, R>(_key: string, _transform: Transform<S, R>): Promise<R> {
-    throw new NotImplementedError(
-      `FederatedStore.apply is not yet implemented (lands in TK-903 / TK-904); region="${this.region}"`,
-    );
+  async apply<S, R>(key: string, transform: Transform<S, R>): Promise<R> {
+    const cost = readCostHint(transform);
+    const decision = await this.#engine.check(key, cost);
+    // R is `Decision` in every practical caller (rateLimit / twoTier);
+    // we cast to satisfy the generic contract.
+    return decision as unknown as R;
   }
 
   /**
-   * Forget a key in the regional store. The coordinator's global counter is
-   * NOT reset by this call — that's an explicit administrative action, not a
-   * per-key one, because resetting global state without coordination would
-   * race other regions. Forgetting only the regional state is the safe
-   * default that matches twoTier semantics.
+   * Forget a key in the federation's per-process state AND in the regional
+   * store (when wired). The coordinator's global counter is NOT reset —
+   * that's an administrative action, not a per-key one, because resetting
+   * global state without coordination would race other regions.
    */
   async reset(key: string): Promise<void> {
+    await this.#engine.reset(key);
     await this.#regional.reset(key);
   }
 
   /**
    * Release resources this FederatedStore *owns*. The regional store and
-   * coordinator are caller-provided; they are NOT closed here (same rule as
-   * twoTier). Today there is nothing to release; TK-904 will add a window-
-   * boundary reconcile timer and close() will release it.
+   * coordinator are caller-provided; they are NOT closed here. The engine's
+   * per-key entries are dropped.
    */
   async close(): Promise<void> {
-    // No owned resources yet. The window-boundary reconcile timer lands in TK-904.
+    await this.#engine.close();
   }
 
-  // ---- Introspection helpers, used by later subtasks' tests ----
+  // ---- Introspection helpers, used by tests + telemetry ----
 
   /**
    * The coordinator instance, for tests + telemetry that need to assert
@@ -112,9 +130,14 @@ export class FederatedStore implements Store {
     return this.#regional;
   }
 
+  /** The federated strategy, for tests + telemetry. */
+  get strategy(): Strategy<unknown> {
+    return this.#strategy;
+  }
+
   /**
    * The current adaptive lease size (or {@link FederatedStore.batch} when no
-   * sizer is configured). Used by TK-904 to decide each `lease()` size.
+   * sizer is configured). The engine reads this at lease time.
    */
   recommendedBatch(): number {
     if (this.#sizer === undefined) return this.batch;
@@ -123,3 +146,21 @@ export class FederatedStore implements Store {
     return Math.floor(r);
   }
 }
+
+/**
+ * Pull the cost from a `Transform` that was built via `decisionTransform(...)`.
+ * Falls back to 1 for transforms without a `lua` invocation attached (which
+ * is the canonical "decision-shaped" carrier of the cost).
+ */
+function readCostHint<S, R>(transform: Transform<S, R>): number {
+  // Transforms built via decisionTransform attach a `lua` invocation that
+  // carries the `cost`. We treat absence as "default cost 1".
+  const lua = (transform as { lua?: { cost?: number } }).lua;
+  const c = lua?.cost;
+  if (typeof c === "number" && Number.isFinite(c) && c > 0) return c;
+  return 1;
+}
+
+// Re-export Decision type to make the strange-but-true "FederatedStore.apply
+// returns a Decision" relationship obvious from this file's surface.
+export type { Decision };

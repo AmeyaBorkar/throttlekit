@@ -89,17 +89,72 @@ as K grows.
 
 ## 3  Federated window-coupled leasing (TK-904)
 
-> Filled in when TK-904 ships. Expected pattern: `U_capacity → 1.0` for all
-> `s ∈ [0, 1]` at the cost of `Batch − 1` boundary tokens per region per
-> window (negligible relative to L for typical deployments).
+Measured 2026-05-28 by `test/federation/federated-skew.test.ts`. Reproducible:
 
-| skew | offered | admitted | U_capacity | U_offered | Δ_static→fed |
+```sh
+npx vitest run test/federation/federated-skew.test.ts --reporter=verbose
+```
+
+Same model as §1 (K = 3, L = 300, fixedWindow, one window), batch = 16:
+
+| skew | offered | admitted | U_capacity | static U | Δ_static→fed |
 |---:|---:|---:|---:|---:|---:|
-| 0.00 | TBD | TBD | TBD | TBD | TBD |
-| 0.25 | TBD | TBD | TBD | TBD | TBD |
-| 0.50 | TBD | TBD | TBD | TBD | TBD |
-| 0.75 | TBD | TBD | TBD | TBD | TBD |
-| 1.00 | TBD | TBD | TBD | TBD | TBD |
+| 0.00 | 300 | 276 | 0.920 | 1.000 | **−0.080** |
+| 0.25 | 300 | 285 | 0.950 | 0.833 | **+0.117** |
+| 0.50 | 300 | 278 | 0.927 | 0.667 | **+0.260** |
+| 0.75 | 300 | 287 | 0.957 | 0.500 | **+0.457** |
+| 1.00 | 300 | 300 | 1.000 | 0.333 | **+0.667** |
+
+Δ = 0 holds across every row: `admitted ≤ L = 300` always. The
+contribution narrative is the bottom-right corner — under max skew
+federation admits **3× as many requests** as the static partition.
+
+### 3.1 Where the −0.080 at s = 0 comes from
+
+At uniform load each region asks for `L/K = 100` admissions. With
+batch = 16 a region runs `⌈100/16⌉ = 7` leases = 112 tokens — but only
+admits 100; the remaining 12 sit as un-served regional escrow at the
+window's end. With K = 3 regions racing for the global budget, the LAST
+region to lease gets squeezed (the global budget only holds `L = 300`
+tokens). Concretely:
+
+- Region 1: leases 112; admits 100; un-served 12.
+- Region 2: leases 112; admits 100; un-served 12.
+- Region 3: only `L − 224 = 76` tokens remain in the global budget;
+  leases 76 in pieces; admits 76. Un-served 0.
+
+Total: 276 admitted, 24 un-served. Math:
+`L − (K−1) · (batch−1)` = `300 − 2 · 15` = `270` is the worst-case
+lower bound (which we beat at 276 because the partial last-lease still
+admits 12).
+
+**This is the federation cost.** It is bounded, monotone-decreasing in
+batch size (smaller batch → smaller overhead, more cross-region RTTs),
+and zero at high skew (one region uses the whole budget without
+fragmentation). The corresponding "with smaller batch (B=4)" test in
+`federated-skew.test.ts` shows the s = 1 row reaches `> 0.95`
+trivially; tightening batch further closes the s = 0 gap.
+
+### 3.2 Where the +0.667 at s = 1 comes from
+
+At max skew ALL load lands on us-east. The federation lets us-east
+draw the FULL global budget through repeated leases — no other region
+holds slices. Federation admits all 300; static admits L/K = 100. The
++0.667 difference is the entire capacity the static partition leaves
+on the table.
+
+### 3.3 The takeaway
+
+| | s = 0 (uniform) | s = 1 (max skew) |
+|---|---:|---:|
+| Static partition | **1.000** | 0.333 |
+| Federated window-coupled | 0.920 | **1.000** |
+
+Federation costs ~8% at uniform load (the batch overhead) and recovers
+67% at max skew. The crossover is at `s ≈ 0.1` — anywhere the load is
+non-trivially skewed, federation wins. Real production loads are
+almost never s = 0; federation is the right default for any
+non-trivial deployment.
 
 ## 4  Real-cluster (TK-910)
 

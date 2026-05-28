@@ -9,7 +9,7 @@
  * leasing). `FederatedStore.apply` throws `NotImplementedError` until then.
  */
 
-import type { Store } from "../core/types";
+import type { Clock, Store, Strategy } from "../core/types";
 
 /**
  * A region identity — a short, human-readable string used in coordinator
@@ -105,7 +105,22 @@ export type CoordinatorOutageMode = "fail-closed" | "regional-only";
  * - `onCoordinatorOutage` defaults to `"fail-closed"` (safety > availability).
  */
 export interface FederatedStoreOptions {
-  /** The region's local Store (typically a regional RedisStore). */
+  /**
+   * The federated strategy — `strategy.limit` defines the global per-window
+   * budget; `strategy.windowMs` defines the window boundary the escrow
+   * couples to. The strategy MUST have `windowMs` defined; pure-rate
+   * strategies (gcra, tokenBucket) are unsupported at this commit.
+   *
+   * Added in TK-904 (was absent in the TK-902 skeleton): the federation
+   * engine needs window/limit semantics for the synthesized Decisions and
+   * for the window-coupling rule.
+   */
+  strategy: Strategy<unknown>;
+  /**
+   * The region's local Store. Reserved for TK-906 multi-process per-region
+   * escrow; at the TK-904 commit it is accepted but unused — escrow lives
+   * in process memory inside the federation engine.
+   */
   regional: Store;
   /** The cross-region lease coordinator. */
   coordinator: GlobalCoordinator;
@@ -129,4 +144,8 @@ export interface FederatedStoreOptions {
   sizer?: { recommend(): number };
   /** What to do when the coordinator is unreachable. Default `"fail-closed"`. */
   onCoordinatorOutage?: CoordinatorOutageMode;
+  /** Injected clock for deterministic tests. Defaults to the system clock. */
+  clock?: Clock;
+  /** Key namespace. */
+  prefix?: string;
 }

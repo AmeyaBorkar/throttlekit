@@ -31,3 +31,5 @@ export type {
   GlobalCoordinator,
   Region,
 } from "./types";
+export { federate } from "./window-coupled";
+export type { FederateOptions } from "./window-coupled";
