@@ -8,6 +8,57 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.8.2] — 2026-05-28
+
+A small, focused follow-up release that lands the two non-blocking small bets the 0.8.1 CHANGELOG
+flagged as deferred, plus the stale-number sweep that audit missed. Test count **747 → 769**
+(768 pass + 1 skip with the gated Redis/Postgres suites enabled).
+
+### Added
+
+- **Property-based fuzzing of the Lua dual-path** (TK-826) — a new `test/conformance/lua-property.test.ts`
+  uses fast-check to generate shrinkable `(start, [{deltaMs, cost}])` timelines and drives each of
+  the 6 Lua-backed strategies (`gcra`, `tokenBucket`, `fixedWindow`, `slidingWindow`,
+  `slidingWindowLog`, `quota`) through both the JS executor and the atomic Redis Lua executor,
+  asserting bit-identical Decision streams. On any divergence fast-check shrinks to a minimal
+  counterexample and prints it alongside the Redis key — a 1-line repro instead of a 900-step
+  seeded log. **Complements (not replaces) the existing seeded grid:** the grid pins 18 specific
+  cases × 40×25 deterministic timelines plus the post-timeline non-consuming peek; the property
+  pass explores a much larger input space with shrinkable arbitraries focused on the consuming
+  `check` path. Gated on `THROTTLEKIT_TEST_REDIS`.
+- **`bench:gate` regression gate + CI integration** (TK-827) — a small in-process micro-benchmark
+  (`bench/gate.ts`, three sync single-state strategies, best-of-N=10, ITERS=2M) that compares
+  current ns/op to a committed `bench/baseline.json` and exits non-zero on any row that regresses
+  beyond `BENCH_REGRESSION_THRESHOLD` (default 1.10). Two new scripts: `npm run bench:gate`
+  (compare) and `npm run bench:baseline` (write a fresh baseline; commit alongside the change that
+  intentionally moves the numbers). A new informational `bench-gate` job in CI surfaces the
+  per-row delta table on every PR — initially with `continue-on-error: true` while we calibrate
+  the threshold against shared-runner noise. Pure-function tests for the comparator + table
+  formatter are in `test/bench/gate.test.ts`.
+
+### Changed
+
+- **Stale `~320 ns/op` figures swept** (TK-829, 0.8.1 audit follow-up) — the 0.8.1 audit moved the
+  canonical `checkSync` figure to 186 ns/op in SCOREBOARD + the README Performance section, but
+  three current-state claims still read `~320 ns/op`: the README hero, the README "Why ThrottleKit"
+  bullet, and the package.json description (npm metadata). All three corrected. CHANGELOG.md's
+  "up from the 320 ns/op the pre-audit numbers reported" line and JOURNEY.md's 2026-05-26 entry
+  are chronological history and stay unchanged.
+
+### Notes for operators
+
+- The bench gate's `continue-on-error: true` is deliberate while we collect runner-variance data.
+  Once we've confirmed <10% noise on `ubuntu-latest`, the flag will be removed and the gate becomes
+  a hard fail. Locally `BENCH_REGRESSION_THRESHOLD=1.25 npm run bench:gate` widens the band; commit
+  a refreshed `bench/baseline.json` whenever a perf change is intentional.
+- Wall-clock-vs-simulated-clock note for the new property test: the strategies' Lua sets
+  `PEXPIRE = resetAt - now` (a memory micro-optimization), which means a `ManualClock`-driven test
+  that awaits a peek after the timeline can lose to wall-clock elapse while simulated time stays
+  put. That race is purely a test artifact (in production wall clock IS the limiter clock, so an
+  expired key after `resetAt` is indistinguishable from a fresh window — the correct outcome), so
+  the property test deliberately scopes itself to per-step `check` equality and leaves peek/readState
+  bit-identity to the seeded grid where the timing is bounded.
+
 ## [0.8.1] — 2026-05-28
 
 A docs-and-DX release that lands the introspection / observability / config / CLI surface 0.8.0
