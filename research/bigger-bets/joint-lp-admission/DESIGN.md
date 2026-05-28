@@ -1,0 +1,453 @@
+# Joint-LP admission policy — DESIGN (0.10.1)
+
+> Status: **design lock** (TK-1319). Implementation is TK-1320..TK-1323.
+> Ship is **conditional on DR-19** (ε ≥ 5%) — **MET**: TK-1007 measured
+> ε = 25.33% mean. Default behavior is **unchanged**; joint-LP is strictly
+> opt-in (`policy: "joint-lp"`).
+>
+> Decision records: **D-JLP-1 .. D-JLP-12** in §11.
+> Research basis: `research/bigger-bets/unified/THEORY.md` + `…/sim.ts` (TK-1007).
+
+---
+
+## 0. Why this doc exists
+
+`unifiedAdmission` (0.9.0) composes rate / concurrency / cost by **marginal-AND**:
+admit iff each configured axis independently allows. THEORY.md (TK-1007) proves
+marginal-AND leaves money on the table in the **cost-binding regime** (cost is the
+bottleneck, request types differ in cost-efficiency): it admits a low-value
+high-cost request that burns budget a high-value request needed. The
+revenue-management fix is a **bid-price filter** (joint-LP): admit iff the
+request's value clears the shadow price of the budget it consumes.
+
+Measured gap vs the clairvoyant fluid-LP oracle, across the arrival-correlation
+sweep ρ ∈ {−1, −0.5, 0, +0.5, +1}:
+
+| ρ | regret(marginal-AND) | regret(joint-LP) | ε = M − J |
+|---|---|---|---|
+| −1.0 | 40.00% | 0.00% | **+40.00%** |
+| −0.5 | 40.00% | 0.70% | **+39.30%** |
+|  0.0 | 40.50% | 1.01% | **+39.49%** |
+| +0.5 | 41.50% | 1.16% | **+40.34%** |
+| +1.0 | 32.50% | 65.00% | **−32.50%** (the foil — §7) |
+
+Mean ε = **25.33%** ≫ DR-19's 5% gate ⇒ **SHIP** (opt-in). Reproduce:
+`npx tsx research/bigger-bets/unified/sim.ts` (deterministic; Mulberry32 seeded
+on ρ and seed index).
+
+Release is **minor** (`0.10.0 → 0.10.1`): additive `policy` + `value` + a new
+zero-dep solver module. `policy` defaults to `"marginal"` — existing callers are
+byte-for-byte unaffected (D-JLP-2).
+
+---
+
+## 1. Problem statement
+
+Two-budget admission: a **rate** budget `R` (requests/window) and a **cost**
+budget `C` (e.g. tokens/window). Request type `i` has cost `cᵢ` and value `vᵢ`.
+Marginal-AND admits iff `rate.remaining ≥ 1 ∧ cost.remaining ≥ cᵢ` — greedy, no
+notion of value-per-budget. When cost binds, greedily admitting a cheap-to-pass
+but cost-heavy low-value request starves later high-value requests.
+
+**Joint-LP** computes shadow prices `(p_R, p_C)` from the fluid LP relaxation and
+admits iff **budget-feasible AND** `vᵢ ≥ p_R·1 + p_C·cᵢ` (the bid-price test).
+The filter rejects requests whose value doesn't clear the marginal value of the
+budget they'd consume — preserving budget for the requests that do. Joint-LP is
+**strictly more selective** than marginal-AND (D-JLP-5): every joint-LP admit is
+also a marginal admit, so it never *over*-admits.
+
+---
+
+## 2. Literature synthesis
+
+- **Talluri & van Ryzin 1998**, *An Analysis of Bid-Price Controls for Network
+  Revenue Management* (Mgmt Sci 44(11)): static bid prices from the deterministic
+  (fluid) LP are **asymptotically optimal under a stationary regime** — and,
+  crucially, *fail under non-stationarity*. This is exactly our ρ=+1 foil (§7).
+- **Devanur & Hayes 2009**, *The AdWords problem … under random permutations*
+  (EC'09): a one-pass **sample-then-price** primal-dual policy is `1−ε`
+  competitive under random permutation of arrivals — approximate stationarity,
+  not i.i.d. Real arrival streams sit far closer to random-permutation than to
+  ρ=+1's absorbing chain, which is why the foil is not a production blocker (§7).
+- **Mehta et al. 2007 / Buchbinder et al. 2007**: online primal-dual,
+  multi-resource bid prices. The formal grounding for the optional online dual
+  update (§6, deferred).
+
+DR-19 (PLAN §8) reclassified joint-LP from "research-only" to "productizable
+now": the *bound* is literature-established; TK-1007's job was only to calibrate
+the *magnitude* ε for LLM-gateway workloads. ε = 25.33% clears the gate.
+
+---
+
+## 3. The fluid LP and its dual
+
+Primal (admit fraction `xᵢ ∈ [0,1]` per type, arrival weight `wᵢ`):
+
+```
+max   Σ wᵢ vᵢ xᵢ
+s.t.  Σ wᵢ xᵢ        ≤ R        (rate,  dual p_R ≥ 0)
+      Σ wᵢ cᵢ xᵢ     ≤ C        (cost,  dual p_C ≥ 0)
+      0 ≤ xᵢ ≤ 1
+```
+
+By LP duality / complementary slackness, the optimal bid-price test is
+`admit type i  ⟺  vᵢ ≥ p_R + p_C·cᵢ`. For the THEORY.md example (small:
+c=100,v=1,w=0.5; large: c=10000,v=50,w=0.5; R=1000, C=50000) the optimum is
+`x* = (1, 0)` with `p_R = 0, p_C = 0.01` — admit every small, reject every large.
+These two numbers are the **canonical unit-test fixture** (§9.1).
+
+---
+
+## 4. The in-library solver — `src/admission/fluid-lp.ts` (NEW)
+
+Strict zero-runtime-deps ⇒ **no LP library**. The 2-constraint LP is solved by
+**vertex enumeration** — the working implementation already exists as
+`solveFluidLP()` in `research/bigger-bets/unified/sim.ts:149-232`. **Port it
+verbatim** (adapt only types/exports); do not redesign the math (D-JLP-7).
+
+```ts
+/** One request archetype in the workload model. */
+export interface WorkloadType {
+  /** Cost-axis weight per admit (matches Limiter.check(key, cost)'s 2nd arg). */
+  cost: number;
+  /** Business value of admitting one (revenue, priority, …). */
+  value: number;
+  /** Arrival weight / probability. Need not sum to 1 — normalized internally. */
+  weight: number;
+}
+
+export interface FluidLpInput {
+  types: WorkloadType[];
+  /** Rate budget R per window (admits/window). */
+  rateBudget: number;
+  /** Cost budget C per window (cost units/window). */
+  costBudget: number;
+}
+
+export interface FluidLpSolution {
+  /** Bid prices: admit type i iff value ≥ duals.rate + duals.cost * cost. */
+  duals: { rate: number; cost: number };
+  /** Optimal admit fraction per input type (same order as input.types). */
+  admitFractions: number[];
+  /** Optimal objective Σ wᵢ vᵢ xᵢ (telemetry / tests). */
+  objective: number;
+}
+
+/**
+ * Solve the 2-budget fluid LP by enumerating the candidate dual regimes
+ * {neither binds, rate binds, cost binds, both bind}, solving the small system
+ * for each, and selecting the feasible solution with the optimal objective.
+ * Hand-written, zero-dep, O(types · constant). Reference impl + derivation:
+ * research/bigger-bets/unified/sim.ts:149-232 and THEORY.md §2.
+ */
+export function solveFluidLp(input: FluidLpInput): FluidLpSolution;
+```
+
+Validation: `types` non-empty; all `cost`/`value`/`weight` finite and ≥ 0;
+`rateBudget`/`costBudget` > 0. Throw `ThrottleKitError` otherwise.
+
+---
+
+## 5. `unifiedAdmission` integration (exact edits)
+
+### 5.1 `UnifiedAdmissionOptions` (add to `src/admission/unified.ts:13-38`)
+
+```ts
+  /**
+   * Admission policy. `"marginal"` (DEFAULT) = the 0.9.0 marginal-AND behavior
+   * (each axis allows independently). `"joint-lp"` = additionally apply a
+   * bid-price filter (admit iff value ≥ p_R + p_C·cost) on top of marginal
+   * feasibility — opt-in, research-backed (research/bigger-bets/joint-lp-admission).
+   */
+  policy?: "marginal" | "joint-lp";
+  /**
+   * Required iff `policy: "joint-lp"`. Supply EXACTLY ONE of:
+   *  - `duals`: precomputed bid prices (you solved the LP elsewhere); or
+   *  - `workload`: a model the library solves at construction via solveFluidLp().
+   */
+  jointLp?: {
+    duals?: { rate: number; cost: number };
+    workload?: FluidLpInput;
+  };
+```
+
+### 5.2 `UnifiedAdmitOptions` (add to `src/admission/unified.ts:41-52`)
+
+```ts
+  /**
+   * The request's value vᵢ for the joint-LP bid-price test. Ignored unless
+   * `policy: "joint-lp"`. Default 1.
+   */
+  value?: number;
+```
+
+### 5.3 `UnifiedAdmission` (add to `src/admission/unified.ts:55-66`)
+
+```ts
+  /**
+   * True iff the admission was denied specifically by the joint-LP bid-price
+   * filter (all per-axis budgets had slack, but value < p_R + p_C·cost).
+   * Absent/false under `policy: "marginal"` or any axis-bound denial. Lets the
+   * TK-1008 OTel `tk.binding_axis` attribute report "policy".
+   */
+  policyDenied?: boolean;
+```
+
+### 5.4 Construction-time wiring (in `unifiedAdmission()`, after the backend validation block, ~line 153)
+
+```ts
+  const policy = options.policy ?? "marginal";
+  let duals: { rate: number; cost: number } | undefined;
+  if (policy === "joint-lp") {
+    if (cost === undefined) {
+      throw new ThrottleKitError('unifiedAdmission: policy "joint-lp" requires a `cost` axis');
+    }
+    const jl = options.jointLp;
+    const hasDuals = jl?.duals !== undefined;
+    const hasWorkload = jl?.workload !== undefined;
+    if (hasDuals === hasWorkload) { // both or neither
+      throw new ThrottleKitError(
+        'unifiedAdmission: policy "joint-lp" requires exactly one of jointLp.duals or jointLp.workload',
+      );
+    }
+    duals = hasDuals ? jl!.duals! : solveFluidLp(jl!.workload!).duals;
+  } else if (options.jointLp !== undefined) {
+    throw new ThrottleKitError('unifiedAdmission: `jointLp` requires policy: "joint-lp"');
+  }
+```
+
+### 5.5 The bid-price gate (admit path)
+
+Apply **after** rate+cost both allow (marginal feasibility confirmed), **before**
+`finalize()`. Both backends, both async (`admit`, after line 276) and sync
+(`admitSync`, after line 319). `value` comes from `opts`; `requestCost` is
+already in scope.
+
+```ts
+      // joint-LP bid-price filter (only when configured; pure JS, backend-agnostic).
+      if (duals !== undefined) {
+        const value = opts?.value ?? 1;
+        const bid = duals.rate * 1 + duals.cost * requestCost;
+        if (value < bid) {
+          leaseRelease?.({ dropped: false });           // release the held slot (upstream-style deny)
+          const denied = denyByPolicy(combineSnapshot()); // allowed:false, remaining:0; keep limit/resetAt
+          return { decision: denied, release: NOOP_RELEASE, policyDenied: true };
+        }
+      }
+      return finalize(leaseRelease);
+```
+
+Helper (module-scope):
+
+```ts
+/** Turn an all-axes-allowed snapshot into a policy denial: flip allowed, zero
+ *  remaining + retryAfter; preserve limit/resetAt so headers stay coherent. */
+function denyByPolicy(d: Decision): Decision {
+  return { ...d, allowed: false, remaining: 0, retryAfterMs: 0 };
+}
+```
+
+`finalize()` returns `policyDenied` absent (⇒ falsy). `lastDecisions()` is
+unchanged — under a policy denial every per-axis Decision is `allowed:true`, and
+`policyDenied` is the signal that the *filter* (not an axis) bound. (D-JLP-4.)
+
+> **D-JLP-6 — the gate is pure JS, applied after the rate/cost step in BOTH
+> backends.** It needs only `value`, `requestCost`, and the static `duals`, so
+> `"lua-fused"` works too (the fused script returns the combined rate+cost
+> Decision; the JS bid-price test runs on top).
+
+---
+
+## 6. Online dual update (Devanur-Hayes) — scoped, default OFF (D-JLP-8)
+
+The roadmap title (TK-1320) names "static duals + online primal-dual". v1 ships
+**static duals as the primary, fully-supported path** (solved once from the
+`workload` model, or supplied directly). The online sample-then-price variant —
+observe the first `W` arrivals to estimate type frequencies, re-solve the LP,
+then freeze the duals — is **deferred** to a clearly-bounded follow-up
+(`jointLp.adaptive?: { sampleWindow: number }`), because:
+
+1. The empirical SHIP verdict (ε = 25.33%) was measured on **static** fluid-LP
+   duals; that's what's validated.
+2. Online estimation adds a stateful warm-up path + its own property tests.
+
+Recorded as future work in §12. Do **not** implement it in TK-1320 unless the
+static path is complete and `npm run check` is green with budget to spare.
+
+---
+
+## 7. The ρ = +1 foil — honest caveat (do NOT bury this, D-JLP-9)
+
+At ρ = +1 the arrival chain is **absorbing**: one type forever. Realizations are
+bimodal (all-small or all-large). On all-large, joint-LP rejects every request
+(large fails the bid-price test) → revenue 0 → 100% regret; marginal-AND admits
+5 large (cost cap) → 50% regret. So at ρ=+1 marginal-AND **wins** (joint-LP ε is
+**negative**, −32.5%). This is the **textbook fluid-LP failure under
+non-stationarity** (Talluri-van Ryzin 1998).
+
+Why it does **not** block the opt-in ship:
+
+1. **Real workloads aren't absorbing.** An aggregator's window mixes tenants and
+   types; empirical lag-1 autocorrelation sits in ≈ [−0.2, +0.5], where ε is a
+   consistent +39–40%.
+2. **Devanur-Hayes 2009**: under random-permutation arrivals (approximate
+   stationarity), the primal-dual policy is `1−ε` competitive — real streams are
+   near-random-permutation, far from ρ=+1.
+3. **Opt-in.** `policy: "joint-lp"` is user-explicit; default stays marginal.
+   Degenerate-workload operators simply don't enable it.
+
+This caveat must appear verbatim-in-spirit in: the CHANGELOG [0.10.1] entry, the
+wiki joint-LP section (TK-1322), and a FAILURE-MODES "operational caveat" row.
+The empirical-regret test (§9.2) **regression-guards the foil** (asserts
+joint-LP *is* worse at ρ=+1) so we never silently "fix" the honest result.
+
+---
+
+## 8. (reserved)
+
+---
+
+## 9. Test substrate (TK-1321)
+
+1. **Solver unit — `test/admission/fluid-lp.test.ts`**: the THEORY.md fixture →
+   assert `duals ≈ { rate: 0, cost: 0.01 }` (tolerance 1e-9), `admitFractions ≈
+   [1, 0]`, `objective ≈ 0.5` (per-arrival) / scaled total. Plus: rate-binds-only
+   regime, both-bind regime, neither-binds (all `x=1`, duals 0), single-type,
+   validation throws.
+2. **Empirical regret — `test/admission/joint-lp-regret.test.ts`** (the DR-19
+   gate, as a committed test): import/reuse the `sim.ts` harness; assert
+   **mean ε over ρ ∈ {−1,−0.5,0,+0.5} ≥ 0.05** (the non-degenerate regimes; the
+   committed value is ≈ 0.398 so the 5% gate has huge margin) AND assert the
+   **ρ=+1 foil**: `regret(joint-LP) > regret(marginal-AND)` at ρ=+1 (§7
+   regression guard). Deterministic seed (Mulberry32) → exact, no flake.
+3. **Property — `test/admission/joint-lp-properties.test.ts`** (fast-check,
+   numRuns 100-200):
+   - **monotonicity**: for fixed `(duals, cost)`, if `v1 ≥ v2` then admit(v1) ⇒
+     admit(v2) is *false*-direction… i.e. higher value is never *less* likely to
+     pass the bid-price test (the test is monotone-increasing in value).
+   - **subset/strictness (D-JLP-5)**: under identical limiter state, every
+     joint-LP admit is also a marginal admit (joint-LP never over-admits).
+   - **default-unchanged (D-JLP-2)**: `policy:"marginal"` (and omitted) is
+     identical, decision-for-decision, to the pre-0.10.1 path over random
+     workloads (golden-compare against a marginal-only admitter).
+   - **duals=0 ≡ marginal**: `jointLp.duals = { rate:0, cost:0 }` makes the
+     bid-price test `value ≥ 0` (always true) ⇒ behaves as marginal.
+4. **Dual-path — `test/admission/joint-lp-dual-path.test.ts`** (Redis-gated, port
+   6380): the bid-price filter yields identical admit/deny on `"sequential"` and
+   `"lua-fused"` for the same `(value, cost)` stream (D-JLP-6).
+
+---
+
+## 10. Docs (TK-1322)
+
+- **Wiki `Unified-Admission.md`**: a "Joint-LP policy (opt-in)" section — the
+  bid-price intuition, the `workload`/`duals` API, the ε=25.33% result table,
+  and the §7 ρ=+1 caveat. Example: an LLM gateway with small/large completions.
+- **`docs/FAILURE-MODES.md`**: an "operational caveat" row — *joint-LP can
+  under-perform marginal-AND under highly autocorrelated (near-absorbing)
+  workloads; default marginal-AND is the safe choice; see §7.*
+- **README**: one line under unified admission noting the opt-in policy + link.
+- Wiki commits accumulate locally on `tk-wiki master`; push at the 0.10.1 tag.
+
+---
+
+## 11. Decision records
+
+- **D-JLP-1 — Joint-LP ships as opt-in 0.10.1, separate from 0.10.0.** DR-16
+  sequencing; clean changelog; the conditional-ship gate gets its own release
+  note. (User-approved, 2026-05-29.)
+- **D-JLP-2 — Default `policy: "marginal"`; existing callers byte-unchanged.**
+  Property-tested (§9.3 default-unchanged + duals=0≡marginal).
+- **D-JLP-3 — In-library zero-dep solver (`solveFluidLp`), workload model as
+  primary input; static `duals` as escape hatch.** Best DX without an LP
+  dependency. (User-approved, 2026-05-29.)
+- **D-JLP-4 — Policy denial is signaled by `policyDenied`, NOT by widening
+  `UnifiedAxis`.** Under a policy deny every axis Decision is `allowed:true`;
+  `policyDenied` distinguishes filter-bound from axis-bound. Additive; preserves
+  the 0.9.0 `lastDecisions()` shape.
+- **D-JLP-5 — Joint-LP is strictly more selective than marginal-AND.** Every
+  joint-LP admit ⊆ marginal admits; the filter only ever *removes* admits, so it
+  cannot break any existing safety/limit property. Property-tested.
+- **D-JLP-6 — Bid-price gate is pure JS, applied post rate+cost in BOTH
+  backends.** Works under `"lua-fused"` unchanged. See §5.5.
+- **D-JLP-7 — Port `solveFluidLP` from `sim.ts:149-232` verbatim; do not
+  redesign the math.** The vertex-enumeration LP is already validated by TK-1007.
+- **D-JLP-8 — Online primal-dual is deferred, default OFF.** v1 = static duals
+  (what ε=25.33% validated). Online sample-then-price is bounded future work
+  (§6, §12).
+- **D-JLP-9 — The ρ=+1 foil is documented everywhere and regression-tested.**
+  Never silently "fixed". See §7, §9.2.
+- **D-JLP-10 — `value` defaults to 1 on `UnifiedAdmitOptions`.** A workload that
+  doesn't set per-request value collapses joint-LP to a cost-threshold filter
+  (still valid; documented).
+- **D-JLP-11 — `policy:"joint-lp"` requires a `cost` axis** (the bid-price test
+  is over the cost budget). Rate axis optional. Fail loud at construction.
+- **D-JLP-12 — Ship is conditional on DR-19 (ε ≥ 5%); MET at 25.33%.** If a
+  future re-measure dropped below 5%, the release note documents the negative
+  result and holds — but the gate is currently green with >5× margin.
+
+---
+
+## 12. Open questions / future work
+
+1. **Online primal-dual dual update** (Devanur-Hayes sample-then-price):
+   `jointLp.adaptive = { sampleWindow }`. Estimate type frequencies from the
+   first `W` arrivals, re-solve, freeze. Needs a warm-up state machine + its own
+   property suite. Candidate: 0.10.2.
+2. **3-axis joint LP** (rate + cost + a *concurrency* shadow price). The current
+   LP is 2-budget; concurrency is instantaneous, not windowed, so it doesn't fit
+   the same fluid relaxation cleanly. Research.
+3. **Per-tenant duals** (pair with Pillar 4 WFE): different bid prices per tenant
+   class. Composition study.
+
+---
+
+## 13. References
+
+- Talluri & van Ryzin 1998, *An Analysis of Bid-Price Controls for Network
+  Revenue Management*, Management Science 44(11).
+- Devanur & Hayes 2009, *The AdWords Problem: Online Keyword Matching with
+  Budgeted Bidders under Random Permutations*, EC'09.
+- Mehta, Saberi, Vazirani, Vazirani 2007; Buchbinder, Jain, Naor 2007
+  (online primal-dual, multi-resource bid prices).
+- `research/bigger-bets/unified/THEORY.md` + `sim.ts` (TK-1007) — the ε
+  measurement, the foil analysis, the reference solver.
+
+---
+
+## Appendix A — Task breakdown & PARALLEL DISPATCH DAG (for the coding phase)
+
+```
+PHASE B0 (BARRIER — land first):
+  B0  this DESIGN.md committed                                     (TK-1319 commit)
+
+PHASE B1 (FAN-OUT — independent):
+  B1a src/admission/fluid-lp.ts        solveFluidLp (port sim.ts:149-232)   (§4)
+  B1b src/admission/unified.ts edits   policy/jointLp/value/policyDenied + gate (§5)
+        (B1b's construction wiring imports B1a's solveFluidLp → B1b depends on B1a's
+         EXPORTS only; safe to author in parallel against the §4/§5 signatures, integrate last)
+
+PHASE B2 (DEPENDS B1):
+  B2a src/index.ts exports             solveFluidLp + FluidLp* types         (§4)
+  B2b test/admission/fluid-lp.test.ts                                        (§9.1)
+  B2c test/admission/joint-lp-regret.test.ts   (DR-19 gate + ρ=+1 foil)      (§9.2)
+  B2d test/admission/joint-lp-properties.test.ts                             (§9.3)
+  B2e test/admission/joint-lp-dual-path.test.ts (Redis-gated, port 6380)     (§9.4)
+  B2f examples/joint-lp-admission.ts                                         (LLM gateway)
+
+PHASE B3 (release prep — serial, last):
+  B3a wiki Unified-Admission joint-LP section + FAILURE-MODES caveat + README (TK-1322)
+  B3b version 0.10.0→0.10.1; CHANGELOG [0.10.1] (SHIP verdict + ρ=+1 caveat + cites);
+      SCOREBOARD test count                                                   (TK-1323)
+  B3c npm run check; commit chain; (await user authorization before tag/publish)
+```
+
+Commit shapes (no Co-Authored-By; each passes `npm run check`):
+
+| TK | Commit |
+|---|---|
+| TK-1319 | `docs(research): joint-LP admission design + bid-price API + ε gate (TK-1319)` |
+| TK-1320 | `feat(admission): joint-LP policy in unifiedAdmission + zero-dep fluid-lp solver (TK-1320)` |
+| TK-1321 | `test(admission): fluid-lp unit + empirical-regret gate + properties + dual-path (TK-1321)` |
+| TK-1322 | `docs(admission): wiki joint-LP section + FAILURE-MODES caveat + example (TK-1322)` |
+| TK-1323 | `chore(release): prepare 0.10.1 (joint-LP admission policy) (TK-1323)` |
