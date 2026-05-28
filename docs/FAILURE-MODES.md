@@ -86,7 +86,9 @@ failover) and latency (~0.5-1ms Redis vs ~1-3ms Postgres per lease).
 | **Coordinator crash, recovered within the same window** | Same as above; existing escrow keeps serving briefly, then denies. On recovery, leases resume against the original budget remaining. | Nothing committed — the coordinator's remaining budget is preserved across the crash (Redis: durable when AOF/RDB configured; Postgres: durable via WAL). | Re-attach client → resume. `reconcile()` is idempotent on `windowStart` so retries through the partition converge. | **0** — coordinator's remaining budget is exact across crash. |
 | **Coordinator unavailable across a window boundary** | Every region denies until coordinator returns. When it does, window-N+1's fresh budget is acquired. | All admissions during the outage (federation is fully unavailable). | Coordinator returns → next request leases against the new window's fresh budget. | **0** — zero admissions during the outage. |
 | **Postgres primary failover** (`PostgresCoordinator` only) | In-flight queries fail with `StoreUnavailableError`; regions fall back to existing escrow → fail-closed once empty. Once the new primary accepts writes (typically <10s with Patroni/pg_auto_failover), regions resume leasing. | All admissions during the failover window. | New primary promoted → next lease succeeds; `reconcile()` idempotent on partial-recovery retries. | **0** — bound preserved across the failover. |
-| **Regional store outage** (regional Redis L2 down, while coordinator reachable) | Out of scope at TK-906 — regional escrow lives in process memory. Future (TK-906+): regional Redis backs multi-process escrow; outage reverts to per-process escrow until L2 returns. | Multi-process atomicity within the region. | L2 reconnect → resume. | **0** — coordinator still enforces the global bound. |
+| **Multi-process within a region** (M processes in the same region share an L2 `RegionalEscrow`) | Each process consults the shared L2 before reaching the coordinator; total in-flight per-region escrow is bounded by what L3 has actually granted instead of `M × batch`. Shipped 0.8.5. | Nothing committed — L2 is preserved across the shared regional Redis. | L2 still acts as the shared cache; no recovery action needed. | **0** — coordinator still enforces the global bound. |
+| **Regional store outage** (regional Redis L2 down, while coordinator reachable) | The engine catches the L2 error and falls through to direct L3 leasing — matches the existing 0.8.4 in-process-only behavior for the duration of the L2 outage. Shipped 0.8.5. | Multi-process atomicity within the region (Δ per region degrades from `≤ perKeyBudget` to `≤ M × batch`); the federation bound is unchanged. | L2 reconnect → next refill cycle resumes the shared cache. | **0** — coordinator still enforces the global bound. |
+| **Coordinator outage with `onCoordinatorOutage: "regional-only"`** (opt-in availability mode) | Engine continues admitting from the L2 balance until it depletes; subsequent requests deny. `maybeProbeHealth()` (clock-driven, `coordinatorHealthCheckMs` cadence) re-probes `coordinator.isHealthy()`; on success the engine flips back to healthy and normal lease + reconcile resumes. Shipped 0.8.5. | Capacity acquired during the outage is bounded by L2's remaining balance (≤ `perKeyBudget`) rather than 0 (`fail-closed`). | Coord recovers → next probe detects → resumes. | **≤ regional sub-bound during outage** (not 0); the federation bound is re-enforced from the recovery point onward. This is the documented availability-over-precision trade-off. |
 
 ### Choosing a coordinator backend
 
@@ -107,10 +109,14 @@ matches the `windowCoupled` twoTier safety story one layer up — the
 formal `Roll` rule guarantees regional escrow forfeits at the window
 boundary, so a coordinator outage cannot leak un-leased capacity.
 
-**Optional softer mode**: `onCoordinatorOutage: "regional-only"` (TK-906+)
-falls back to per-region limits during a coordinator outage, accepting Δ
-bounded by the regional limit (rather than the federation limit) in
-exchange for availability. Opt-in only; the default stays fail-closed.
+**Optional softer mode**: `onCoordinatorOutage: "regional-only"` (shipped
+0.8.5; requires a `regionalEscrow`) keeps serving from the L2 balance
+during a coordinator outage. The engine re-probes `coordinator.isHealthy()`
+every `coordinatorHealthCheckMs` (default 5000) and resumes normal flow on
+recovery. Accepts Δ ≤ regional sub-bound during the outage instead of 0;
+opt-in only. The default stays `fail-closed`. See `research/regional-escrow/
+DESIGN.md` for the full design + `examples/federation-regional-escrow.ts`
+for a runnable demo.
 
 ## Choosing the `fail` policy
 
