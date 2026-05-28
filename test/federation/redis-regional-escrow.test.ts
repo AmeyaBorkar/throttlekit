@@ -23,7 +23,8 @@ d("RedisRegionalEscrow (TK-1306)", () => {
   let client: ReturnType<typeof createClient>;
 
   beforeAll(async () => {
-    client = createClient({ url: url as string, database: 9 });
+    // DB 10 (the next free slot after redis-coordinator @ 8 and property @ 9).
+    client = createClient({ url: url as string, database: 10 });
     await client.connect();
     await client.flushDb();
   });

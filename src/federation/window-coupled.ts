@@ -44,6 +44,12 @@ import type { CoordinatorOutageMode, GlobalCoordinator, Region, RegionalEscrow }
 /** Default escrow lease size — see DESIGN.md §3.2 / §6.3. */
 const DEFAULT_BATCH = 16;
 
+/**
+ * Default cadence for `coordinator.isHealthy()` re-probes while a region is
+ * in `regional-only` outage mode. See {@link FederateOptions.coordinatorHealthCheckMs}.
+ */
+const DEFAULT_HEALTH_CHECK_MS = 5_000;
+
 export interface FederateOptions<S = unknown> {
   /**
    * The federated strategy — its `limit` defines the global per-window
@@ -94,8 +100,21 @@ export interface FederateOptions<S = unknown> {
    * a {@link regionalEscrow} — the engine continues serving from the L2
    * balance during the outage; once coordinator recovers, normal lease
    * + reconcile resumes.
+   *
+   * Without a `regionalEscrow`, `"regional-only"` degrades silently to
+   * `"fail-closed"` (no L2 to serve from). The federation bound is
+   * preserved in both modes.
    */
   onCoordinatorOutage?: CoordinatorOutageMode;
+  /**
+   * How often to re-probe `coordinator.isHealthy()` while in `"regional-only"`
+   * mode after a coordinator failure. Default 5000 ms. Only consulted when
+   * the outage mode is `"regional-only"` and the coordinator exposes an
+   * `isHealthy()` method. The probe is clock-driven (lazy, on `check()`),
+   * not a background timer — so deterministic tests with `ManualClock`
+   * advance the clock to trigger probes.
+   */
+  coordinatorHealthCheckMs?: number;
   /** Injected clock for deterministic tests. Defaults to {@link systemClock}. */
   clock?: Clock;
   /** Key namespace. */
@@ -161,6 +180,17 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
   const onOutage = options.onCoordinatorOutage ?? "fail-closed";
   const keyFor = prefixer(options.prefix);
   const regionalEscrow = options.regionalEscrow;
+  const healthCheckMs = options.coordinatorHealthCheckMs ?? DEFAULT_HEALTH_CHECK_MS;
+  if (!Number.isFinite(healthCheckMs) || healthCheckMs < 1) {
+    throw new RangeError(
+      `coordinatorHealthCheckMs must be a finite number >= 1, got ${String(healthCheckMs)}`,
+    );
+  }
+  // `regional-only` outage mode is only meaningful when an L2 is configured to
+  // serve from during the outage. Without an L2, it silently degrades to
+  // `fail-closed` — captured in this single boolean to keep the hot path branch
+  // cheap.
+  const regionalOnlyActive = onOutage === "regional-only" && regionalEscrow !== undefined;
 
   if (strategy.windowMs === undefined) {
     throw new RangeError(
@@ -173,6 +203,54 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
 
   const windowMs = strategy.windowMs;
   const entries = new Map<string, Entry>();
+
+  // ----------------------------------------------------------------------
+  // Coordinator-health tracking (regional-only outage mode).
+  //
+  // Invariant: while `coordinatorHealthy === false`, the engine skips
+  // `coordinator.lease()` attempts (avoiding per-request latency hits on a
+  // known-dead coordinator) and serves from the L2 escrow only. On every
+  // `check()`, if at least `healthCheckMs` have elapsed since the last probe,
+  // the engine probes `coordinator.isHealthy()` and flips `coordinatorHealthy`
+  // back to `true` on success. A successful `coordinator.lease()` also
+  // resets the flag (coordinator returned without us probing).
+  //
+  // Only consulted when `regionalOnlyActive` is true; in `fail-closed` mode
+  // the flag stays `true` and these paths are no-ops.
+  // ----------------------------------------------------------------------
+  let coordinatorHealthy = true;
+  let lastHealthProbeAt = 0;
+  let healthProbePending: Promise<void> | undefined;
+
+  /**
+   * Re-probe `coordinator.isHealthy()` if (a) we know it's currently
+   * unhealthy, (b) the probe interval has elapsed since the last probe,
+   * and (c) the coordinator exposes an `isHealthy()` method. Concurrent
+   * callers coalesce onto a single in-flight probe.
+   */
+  async function maybeProbeHealth(now: number): Promise<void> {
+    if (!regionalOnlyActive) return;
+    if (coordinatorHealthy) return;
+    if (coordinator.isHealthy === undefined) return;
+    if (now - lastHealthProbeAt < healthCheckMs) return;
+    if (healthProbePending !== undefined) {
+      await healthProbePending;
+      return;
+    }
+    lastHealthProbeAt = now;
+    const probe = coordinator.isHealthy;
+    healthProbePending = (async () => {
+      try {
+        const healthy = await probe.call(coordinator);
+        if (healthy) coordinatorHealthy = true;
+      } catch {
+        // Probe itself failed — coordinator still unhealthy. Will retry on next interval.
+      } finally {
+        healthProbePending = undefined;
+      }
+    })();
+    await healthProbePending;
+  }
 
   /** The epoch-aligned window boundary that includes `now` (so windowStart ≤ now < expiresAt). */
   function windowFor(now: number): { start: number; expiresAt: number } {
@@ -250,6 +328,8 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
     requireCost(cost);
     const key = keyFor(rawKey);
     const now = clock.now();
+    // Re-probe coordinator health if needed (no-op outside regional-only mode).
+    await maybeProbeHealth(now);
     let e = advance(key, now);
 
     // Lease until balance >= cost or coordinator denies.
@@ -277,6 +357,15 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
         }
       }
 
+      // Regional-only outage gate: if we know the coordinator is down AND we
+      // have an L2 to serve from, skip the (expensive, certainly-failing)
+      // coord.lease attempt and deny. The maybeProbeHealth() at the top of
+      // check() will flip us back to healthy once the coordinator recovers,
+      // resuming normal lease + reconcile.
+      if (regionalOnlyActive && !coordinatorHealthy) {
+        return denied(now, e.windowExpiresAt, e.balance);
+      }
+
       // L2 empty or unavailable: lease from coordinator (L3). Refill L2 from the grant
       // so other processes share it; then immediately lease our share back from L2.
       let lease = e.pending;
@@ -288,14 +377,25 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
           let granted: number;
           try {
             granted = await coordinator.lease(key, tokens, expiresAt);
+            // Coordinator served — clear any stale unhealthy mark from a prior outage.
+            if (!coordinatorHealthy) coordinatorHealthy = true;
           } catch {
-            // Coordinator outage: per onOutage mode. Both "fail-closed" and
-            // "regional-only" return 0 here at Phase B; the L2 fast-path
-            // above keeps serving during outage for both modes. Phase 3
-            // (TK-1306c) adds the health-recheck loop that distinguishes
-            // the two — regional-only resumes coord.lease on recovery;
-            // fail-closed never gates on outage state.
-            if (onOutage === "fail-closed" || onOutage === "regional-only") return 0;
+            // Coordinator outage. In regional-only mode (with an L2 configured),
+            // mark the coordinator unhealthy so subsequent check()s skip the
+            // (broken) coord.lease and serve from L2 until depletion. The
+            // maybeProbeHealth() loop resumes normal flow on recovery.
+            // In fail-closed mode (or regional-only without an L2), this is
+            // a per-attempt no-op — the engine will retry on the next check.
+            if (regionalOnlyActive) {
+              coordinatorHealthy = false;
+              // Reset the probe baseline so the next probe waits a full interval.
+              lastHealthProbeAt = now;
+            }
+            // Touch onOutage so the variable participates in the type-flow even
+            // when neither branch above runs.
+            if (onOutage !== "fail-closed" && onOutage !== "regional-only") {
+              // Future outage modes go here.
+            }
             return 0;
           }
           if (granted <= 0) return 0;

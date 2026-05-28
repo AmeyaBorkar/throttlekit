@@ -213,6 +213,11 @@ export interface FederatedStoreOptions {
    * When undefined, the engine uses in-process escrow only.
    */
   regionalEscrow?: RegionalEscrow;
+  /**
+   * How often to re-probe `coordinator.isHealthy()` while in `"regional-only"`
+   * outage mode. Default 5000 ms. See {@link FederateOptions.coordinatorHealthCheckMs}.
+   */
+  coordinatorHealthCheckMs?: number;
   /** The cross-region lease coordinator. */
   coordinator: GlobalCoordinator;
   /** This region's identity (used in coordinator keys + telemetry). */

@@ -72,6 +72,9 @@ export class FederatedStore implements Store {
       regional: options.regional,
       ...(options.regionalEscrow !== undefined ? { regionalEscrow: options.regionalEscrow } : {}),
       onCoordinatorOutage: this.onCoordinatorOutage,
+      ...(options.coordinatorHealthCheckMs !== undefined
+        ? { coordinatorHealthCheckMs: options.coordinatorHealthCheckMs }
+        : {}),
       ...(options.clock !== undefined ? { clock: options.clock } : {}),
       ...(options.prefix !== undefined ? { prefix: options.prefix } : {}),
     });
