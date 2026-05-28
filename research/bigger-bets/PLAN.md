@@ -467,8 +467,8 @@ step is required first. Failing 3 means waiting for demand. Failing 4 or
 | **Multi-process regional escrow** | nothing yet | ✓ | ✓ | ✓ | ✓ | ⚠ | **Productizable NOW** (small design step) → §6.4 → 0.8.5 |
 | **Escrow-layer WFE (Pillar 4)** | `test/gale/fair-escrow.{ts,test.ts}` | ✓ | ✓ | ✓ | ⚠ | ⚠ | **Productizable NOW** (composition design step) → §6.5 → 0.9.1 |
 | **Unified admission** | active bet (`src/admission/unified.ts` to be written) | ✓ | ✓ | ✓ | ✓ | ✓ | Active → §4 → 0.9.0 |
-| Joint-LP admission policy | TK-1007 output pending | ✓ | ✗ | ? | ? | ? | NOT productizable — empirical bound not established. Conditional on TK-1007 positive |
-| Distributed adaptive concurrency | nothing yet | ✓ | ✗ | ✓ | ? | ? | NOT productizable — needs a new TLA⁺ proof (heartbeat-coupling vs window-coupling). Research step required first |
+| **Joint-LP admission policy** | nothing yet (TK-1007 calibrates ε for production workloads) | ✓ | ✓ | ✓ | ✓ | ✓ | **Productizable NOW** (was previously mis-classified — see DR-19) → §6.8 → 0.10.1 |
+| **Distributed adaptive concurrency** | nothing yet | ✓ | ✓ | ✓ | ✓ | ✓ | **Productizable NOW** (was previously mis-classified — see DR-18) → §6.7 → 0.10.0 |
 | Trilemma proof / BFS twins / discrete-event sims | `test/gale/*`, `test/cost/*`, `spec/*` | ✗ | — | — | — | — | STAY RESEARCH-ONLY by design — fails criterion 1 |
 | Markdown research narratives | `research/**/*.md` (PROPOSALs, PILLAR docs, REGRET-ANALYSIS, etc.) | ✗ | — | — | — | — | STAY RESEARCH-ONLY |
 | HotNets paper draft | `research/hotnets2026/*` | n/a | — | — | — | — | DEFERRED (DR-15); not a productization target |
@@ -525,24 +525,86 @@ two compose; they aren't substitutes.
 | **TK-1312** | `docs(twotier): wiki Pillar4-WFE page + example + FAILURE-MODES update` | Wiki commits accumulate locally |
 | **TK-1313** | `chore(release): prepare 0.9.1 (Pillar 4)` | Full release prep; patch |
 
-### 6.6 Future polish (no formal track yet)
+### 6.6 Future polish (cosmetic / engineering only)
 
-Items still in the §6.2 NOT-productizable column will become formal
-tracks when their research step completes:
-
-| Item | Blocked on | Where it would land |
-|---|---|---|
-| Joint-LP policy productization | TK-1007 yielding ε > 0 positive | 0.10.x conditional |
-| Distributed adaptive concurrency | new TLA⁺ proof + sim (research step first; not yet planned) | 0.10.x+ |
-
-Cosmetic / engineering polish that doesn't pass criterion 1 as a
-*research* graduation but still wants doing eventually:
+These items don't pass criterion 1 as *research* graduations — they're
+engineering refinements that fold into a convenient patch:
 
 | Item | Where | When |
 |---|---|---|
 | Bench-gate `continue-on-error: true` → `false` once <10% noise confirmed | `.github/workflows/ci.yml` | folds into any 0.8.x patch |
 | Live-wire `leaseSizer` / `predictiveLeaseSizer` into default `twoTier` sizing (currently shipped as standalone callables; default is naive) | `src/twotier/index.ts` | folds into 0.9.x |
 | Re-measure coverage (95.2% figure in SCOREBOARD is from 0.8.0) | `npm run test:cov` + SCOREBOARD | folds into any patch |
+
+### 6.7 Active track 4 — Distributed adaptive concurrency (→ 0.10.0)
+
+**Why fourth.** After Pillar 4 lands. The decisive insight (DR-18): a
+"concurrent slot" is a *leased token released by event* (request
+completion), not a token released by clock. That makes distributed
+adaptive concurrency a **composition** of two already-shipped primitives:
+
+- Federation (0.8.3) handles the lease-counting + global cap atomically
+- AdaptiveConcurrency (shipped pre-0.8.x) handles local L inference
+
+The TLA⁺ proof generalizes by relabeling
+`spec/GaleFederatedLeasing.tla`'s `windowMs → heartbeat_T` — the Δ bound
+is identical (`Δ = 0` under heartbeat-coupling). No new theorem.
+
+What's actually new (engineering):
+1. Extend `federate(...)` to accept counting strategies (currently
+   requires `strategy.windowMs`).
+2. L-aggregation feedback loop: each region reports `L_local` to
+   coordinator; global takes `min(L_local)` or `median(L_local)`.
+
+| Task | Commit shape | Pass-`check` gate |
+|---|---|---|
+| **TK-1314** | `docs(research): distributed adaptive concurrency design + GaleHeartbeatLeasing TLA⁺ extension + TLC counts` | docs + spec only; check unchanged |
+| **TK-1315** | `feat(concurrency): distributedAdaptiveConcurrency primitive (federation + adaptive composition)` | New `src/concurrency/distributed.ts`; root + subpath exports |
+| **TK-1316** | `test(federated): heartbeat-leasing BFS twin + property-based in-flight invariant (Σ ≤ L_global)` | BFS twin pins TLC counts; property test with simulated cross-region latency |
+| **TK-1317** | `docs(concurrency): wiki Distributed-Adaptive-Concurrency page + example + FAILURE-MODES rows` | Wiki commits accumulate locally |
+| **TK-1318** | `chore(release): prepare 0.10.0 (distributed adaptive concurrency)` | Full release prep; minor (federate gains counting-strategy support) |
+
+### 6.8 Active track 5 — Joint-LP admission policy (→ 0.10.1)
+
+**Why fifth.** Last. The decisive insight (DR-19): joint-LP's *formal
+bound* is already established in the OR literature, not an open
+question:
+
+- **Devanur-Hayes (2009), Adwords**: online primal-dual with bid prices
+  achieves 1−1/e competitive ratio against clairvoyant, with no
+  distributional assumptions. This IS the joint-LP policy.
+- **Talluri-van Ryzin (Revenue Management)**: static bid-price policies
+  from the fluid approximation are asymptotically optimal under
+  stationary arrivals.
+- **Mehta et al. (2007), Buchbinder et al. (2007)**: extensions to
+  general multi-resource online matching.
+
+What TK-1007 actually answers — and what 0.10.1 is gated on — is the
+empirical *magnitude* of ε for production LLM-gateway workloads, not
+"does ε > 0 exist?" The threshold: if `regret_marginal_AND − regret_joint_LP
+≥ 5%` on calibration workloads, ship; otherwise hold and document the
+negative result (still publishable — see DR-11).
+
+The API surface is small (opt-in policy flag + bid prices):
+
+```ts
+unifiedAdmission({
+  rate: ...,
+  cost: ...,
+  concurrency: ...,
+  policy: "joint-lp",            // opt-in; default stays "marginal-AND"
+  duals: { rate: 1.0, cost: 0.5, concurrency: 2.0 },
+  // ... or "auto" for online primal-dual (Devanur-Hayes update rule)
+});
+```
+
+| Task | Commit shape | Pass-`check` gate |
+|---|---|---|
+| **TK-1319** | `docs(research): joint-LP design + bid-price API + ε threshold gate` | docs only |
+| **TK-1320** | `feat(admission): joint-LP policy inside unifiedAdmission (static duals + online primal-dual)` | New code path gated behind `policy: "joint-lp"`; default unchanged |
+| **TK-1321** | `test(admission): empirical regret tests + monotonicity/convergence/degeneracy property tests` | Empirical: ε ≥ threshold on calibration; property: 1-1/e competitive ratio in expectation |
+| **TK-1322** | `docs(admission): wiki Unified-Admission joint-LP section + example + README` | Wiki commits accumulate locally |
+| **TK-1323** | `chore(release): prepare 0.10.1 (joint-LP) — CONDITIONAL on ε ≥ threshold` | Release if calibration positive; document negative result if not |
 
 ---
 
@@ -560,11 +622,13 @@ The full task list lives in the task system (see `TaskList`). Status as of
 | sub | **TK-1305**..**TK-1308** | Multi-process regional escrow → 0.8.5 (§6.4) | pending; TK-1305 blocked by TK-1304 |
 | sub | **TK-1001**..**TK-1009** | Unified admission → 0.9.0 (§4) | pending; TK-1001 blocked by TK-1308 |
 | sub | **TK-1309**..**TK-1313** | Pillar 4 escrow-layer WFE → 0.9.1 (§6.5) | pending; TK-1309 blocked by TK-1009 |
+| sub | **TK-1314**..**TK-1318** | Distributed adaptive concurrency → 0.10.0 (§6.7) | pending; TK-1314 blocked by TK-1313 |
+| sub | **TK-1319**..**TK-1323** | Joint-LP admission policy → 0.10.1 (§6.8) | pending; TK-1319 blocked by TK-1318; release conditional on ε threshold |
 | ~~meta~~ | ~~TK-824 polyglot — ship 1.0.0~~ | bet #78 | **DELETED** (DR-14) |
 | ~~sub~~ | ~~TK-1101..TK-1111 polyglot sub-tasks~~ | — | **DELETED** (DR-14) |
 | ~~meta~~ | ~~TK-1200 HotNets paper — assemble + submit~~ | parallel | **DELETED** (DR-15) |
 
-**Active sub-task chains (each implies the prior is complete):**
+**Active sub-task chain (linear; each implies prior is complete):**
 
 ```
 PostgresCoordinator → 0.8.4:
@@ -579,16 +643,23 @@ Unified admission → 0.9.0:
 
 Pillar 4 (escrow-layer WFE) → 0.9.1:
   TK-1009 → TK-1309 → TK-1310 → TK-1311 → TK-1312 → TK-1313 (release 0.9.1)
+
+Distributed adaptive concurrency → 0.10.0:
+  TK-1313 → TK-1314 → TK-1315 → TK-1316 → TK-1317 → TK-1318 (release 0.10.0)
+
+Joint-LP admission policy → 0.10.1 (CONDITIONAL on TK-1007 ε threshold):
+  TK-1318 → TK-1319 → TK-1320 → TK-1321 → TK-1322 → TK-1323 (release 0.10.1)
 ```
 
-**Critical path: 22 tasks, four releases (0.8.4 → 0.8.5 → 0.9.0 → 0.9.1).**
+**Critical path: 32 tasks, six releases (0.8.4 → 0.8.5 → 0.9.0 → 0.9.1 → 0.10.0 → 0.10.1).**
 
-Each chain is linear because each step assumes the prior step's
+The chain is linear because each step assumes the prior step's
 interfaces / proofs / stores exist; trying to parallelize would produce
 merge churn on the same interface files. Cross-chain dependencies
-(TK-1305 ← TK-1304; TK-1001 ← TK-1308; TK-1309 ← TK-1009) enforce that
-each release ships before the next begins (small frequent releases are
-the established cadence — see 0.8.1 → 0.8.2 → 0.8.3).
+(TK-1305 ← TK-1304; TK-1001 ← TK-1308; TK-1309 ← TK-1009; TK-1314 ←
+TK-1313; TK-1319 ← TK-1318) enforce that each release ships before the
+next begins (small frequent releases — the established cadence per
+0.8.1 → 0.8.2 → 0.8.3).
 
 ---
 
@@ -613,6 +684,8 @@ the established cadence — see 0.8.1 → 0.8.2 → 0.8.3).
 | DR-15 | **HotNets paper assembly task (TK-1200) REMOVED at user request 2026-05-28.** The paper draft (`research/hotnets2026/DRAFT.md`) and the federation eval (`research/bigger-bets/federation/eval/RESULTS.md`) remain as research artifacts; the *assembly* / submission task is no longer on the roadmap. If the user re-engages with the paper, recreate the task; the artifacts are intact. | 2026-05-28 | Locked until user reauthorizes |
 | DR-16 | **Productization sequencing = federation-completion FIRST, then unified, then Pillar 4.** The three productizable-NOW items ship as patches/minor in the order 0.8.4 (PostgresCoordinator) → 0.8.5 (multi-process regional escrow) → 0.9.0 (unified admission) → 0.9.1 (Pillar 4 WFE). *Why this order:* (a) PostgresCoordinator is the smallest effort with the highest immediate user impact (opens federation to non-Redis operators), (b) multi-process regional escrow closes the federation `regional-only` outage-mode gap (currently broken-by-design) before the federation foundation gets layered under unified admission, (c) #79 unified admission then ships on a complete federation foundation, (d) Pillar 4 lands last because its composition-with-twoTier design step shouldn't compete with #79 for attention. Each release is a small, focused patch/minor — matches the established small-frequent-release cadence (0.8.1 → 0.8.2 → 0.8.3). | 2026-05-28 | Locked unless an external customer reorders priorities |
 | DR-17 | **Productizability criteria** (§6.1) = research artifact graduates to `src/` when ALL of: (1) primitive not proof, (2) formal bound locked, (3) real workload demands, (4) composition clear, (5) API stable. Failing 1 means stays research-only forever; failing 2 means research step first; failing 3 means wait for demand; failing 4/5 means design step first. Used to triage `research/`, `test/gale/`, `test/cost/` items into "productize NOW" vs "research-only" vs "wait." | 2026-05-28 | Locked — operational rubric |
+| DR-18 | **Distributed adaptive concurrency = federation + adaptiveConcurrency composition** (NOT a new primitive needing a new TLA⁺ proof). Insight: a concurrent slot is a leased token released by event (completion) instead of clock; `spec/GaleFederatedLeasing.tla` generalizes by relabeling `windowMs → heartbeat_T`, with identical Δ bound (Δ = 0 under heartbeat-coupling). Reclassifies the item from research-only (failed C2) to productizable now (C2 satisfied via federation lift). Earlier classification was overly conservative. | 2026-05-28 | Locked — composition argument validated against federation TLA⁺ |
+| DR-19 | **Joint-LP admission policy's formal bound IS already established** in the OR / online matching literature: Devanur-Hayes 2009 (Adwords, 1−1/e competitive ratio); Talluri-van Ryzin (revenue management, fluid-optimal under stationarity); Mehta et al. 2007 / Buchbinder et al. 2007 (multi-resource extensions). Reclassifies the item from research-only (failed C2) to productizable now (C2 satisfied via literature). TK-1007's role re-framed: empirically calibrate ε for production LLM-gateway workloads, NOT establish whether ε > 0 exists. Earlier classification was overly conservative. The 0.10.1 ship is *conditional* on TK-1007 showing ε ≥ 5% threshold — the bound exists, but if it's negligible in practice we hold the release. | 2026-05-28 | Locked — literature-grounded |
 
 When implementation reveals a decision needs to change, edit the row in place
 and add a one-line "Why changed" under it — do not silently rewrite.
@@ -621,9 +694,10 @@ and add a one-line "Why changed" under it — do not silently rewrite.
 
 ## 9  How to start (the next session)
 
-Federation (#77) is shipped. The active sequence is now four releases
-deep: **0.8.4 PostgresCoordinator → 0.8.5 multi-process regional escrow
-→ 0.9.0 unified admission → 0.9.1 Pillar 4 WFE**.
+Federation (#77) is shipped. The active sequence is now **six releases
+deep**: **0.8.4 PostgresCoordinator → 0.8.5 multi-process regional
+escrow → 0.9.0 unified admission → 0.9.1 Pillar 4 WFE → 0.10.0
+distributed adaptive concurrency → 0.10.1 joint-LP policy (conditional)**.
 
 1. Read this file first.
 2. `TaskList` → claim **TK-1301** (PostgresCoordinator design doc).
@@ -643,10 +717,18 @@ deep: **0.8.4 PostgresCoordinator → 0.8.5 multi-process regional escrow
    ... → TK-1009 (release 0.9.0).
 9. After 0.9.0 lands, switch to TK-1309 (Pillar 4 design) → ... →
    TK-1313 (release 0.9.1).
-10. After 0.9.1 lands, **pause for user direction** — the polyglot bet
-    (#78) and the HotNets paper assembly are explicitly deferred
-    (DR-14, DR-15); remaining items in §6.6 require either a research
-    step (joint-LP, distributed concurrency) or user demand.
+10. After 0.9.1 lands, switch to TK-1314 (distributed adaptive
+    concurrency design + TLA⁺ relabeling) → ... → TK-1318 (release
+    0.10.0).
+11. After 0.10.0 lands, switch to TK-1319 (joint-LP design) → ... →
+    TK-1323 (release 0.10.1). The 0.10.1 ship is **conditional on
+    TK-1007's calibration** (per DR-19): if ε ≥ 5% improvement over
+    marginal-AND on production-like correlated workloads, ship;
+    otherwise hold the release and document the negative result.
+12. After 0.10.1 lands (or is documented as held), **pause for user
+    direction** — the polyglot bet (#78) and the HotNets paper assembly
+    are explicitly deferred (DR-14, DR-15); remaining items are
+    cosmetic polish (§6.6).
 
 **Standing rules (re-stated for the implementer):**
 - Every commit passes `npm run check`.
