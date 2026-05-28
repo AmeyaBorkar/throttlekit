@@ -21,6 +21,8 @@
  */
 
 export { FederatedStore } from "./store";
+export { staticPartition } from "./static-partition";
+export type { StaticPartitionOptions, StaticPartitionResult } from "./static-partition";
 export { TestCoordinator } from "./test-coordinator";
 export type { TestCoordinatorOptions } from "./test-coordinator";
 export type {
