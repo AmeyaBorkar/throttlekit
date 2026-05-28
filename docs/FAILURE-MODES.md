@@ -172,3 +172,33 @@ See `research/bigger-bets/unified/DESIGN.md` for the full design,
 `research/bigger-bets/unified/THEORY.md` for the joint-vs-marginal
 empirical regret analysis (TK-1007 — verdict: SHIP joint-LP runtime in
 0.10.1).
+
+## `weightedFairEscrow` — outage shapes (0.9.1)
+
+`weightedFairEscrow(...)` is the multi-tenant work-conserving budget
+splitter (GALE Pillar 4). Failure semantics differ between L1-only
+single-process and L2-backed multi-process modes.
+
+| Failure shape | L1-only (no `l2`) | L2-backed (`l2: Store` + `quantum`) |
+|---|---|---|
+| Tenant set explodes (untrusted input) | L1 `tenants` map grows unbounded — set `l1.maxKeys` | Same; mitigation is at the L1 layer regardless |
+| Process restart mid-window | All L1 state lost; tenants restart at `gᵢ`. `Δ = 0` still holds (next window starts fresh) | L1 state lost; pool re-leases from L2. Transient `Δ ≤ quantum · N_tenants` until tenants resaturate (bounded, documented) |
+| L2 store unreachable (Redis down, etc.) | n/a (no L2) | `check()` rejects with `StoreUnavailableError`. No silent fallback — the leased pool is the safety boundary; caller's app-level fallback can downgrade to `weightedFairShare` |
+| Tenant stops mid-window | Their guaranteed reserve stays pinned until the window rolls (pessimistic-correct — we can't distinguish "stopped" from "about to ask again"). End-of-window T3 still holds | Same — the L1 reserve math is identical across modes |
+| Tenant over-declares demand (T5 / FairRide) | Window-coupling bounds the gain to one window; inflated credits expire at window roll. NOT a bug — a stated impossibility | Same; window-coupling holds at L2 too (the shared `fixedWindow` window-rolls on the store-server clock) |
+| `checkSync` with `l2` configured | n/a (no L2) | Throws `ThrottleKitError` — lease step is async, use `check()` |
+| Tenant weight changes mid-window | New weight takes effect from the next check; the current window keeps the first-check weight | Same |
+| L2 lease denial (shared budget exhausted) | n/a | `check()` returns a deny with `retryAfterMs` from the shared store; tenant gets a 429 |
+| Two processes race for the last lease | n/a | One wins atomically (fixedWindow's atomic Lua), the other gets a deny; correct without coordination |
+
+**Composition with `unifiedAdmission`.** WFE returns a `Decision`; use
+`combineDecisions` to merge it with rate / concurrency manually
+(`Promise.all([rate.check(key), escrow.check(tenant, cost)])` then
+`combineDecisions(...)`). When wired into `unifiedAdmission`'s cost
+axis via the optional `tenant?` widening (DR-P4-4), the binding-axis
+attribute surfaces `"cost"` when WFE denies.
+
+See `research/bigger-bets/pillar4-wfe/DESIGN.md` for the full design,
+`examples/weighted-fair-escrow.ts` for an LLM-gateway-multi-tenant
+example, and `research/gale/PILLAR4-fairness.md` for the canonical
+theorems and proofs.

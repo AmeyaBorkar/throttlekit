@@ -437,16 +437,10 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
       // Use the existing fixedWindow strategy as the atomic leasing primitive (DR-P4-5). The
       // transform wraps the strategy's pure transition + the Lua acceleration; the store runs it
       // atomically against the shared `l2Key`.
-      const leased = await (l2 as Store).apply(
-        l2Key,
-        decisionTransform(
-          // sharedStrategy is set whenever l2 is set; the `!` reflects that invariant for TS.
-          // biome-ignore lint/style/noNonNullAssertion: invariant — sharedStrategy paired with l2 in the closure
-          sharedStrategy!,
-          now,
-          leaseAmount,
-        ),
-      );
+      // sharedStrategy is set whenever l2 is set (constructor-time invariant). Cast through a
+      // local non-null type to satisfy TS without a runtime check on the hot path.
+      const strat = sharedStrategy as NonNullable<typeof sharedStrategy>;
+      const leased = await (l2 as Store).apply(l2Key, decisionTransform(strat, now, leaseAmount));
       if (!leased.allowed) {
         // The shared store says no — surface its retryAfter as the tenant's denial. We do NOT
         // grow lEffective for a denied lease.
