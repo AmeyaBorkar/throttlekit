@@ -238,3 +238,32 @@ node-server helper and numRuns 50 across integration paths
 (`test/adapters/release-invariant.test.ts`). See
 `research/bigger-bets/middleware-integration/DESIGN.md` §§5,12 for the
 full failure-mode rationale and the `dropped`-decision matrix.
+
+## `distributedAdaptiveConcurrency` — outage shapes (0.10.0)
+
+`distributedAdaptiveConcurrency(...)` holds a fleet under one cooperatively-
+inferred global ceiling `L_global`, parcelled into per-node shares by a
+`ConcurrencyCoordinator` (Test / Redis). The coordinator's hard guarantee is
+**GlobalCap** — `Σ granted shares ≤ L_global` under any heartbeat interleaving
+(the budget cap, D-DAC-17); `Σ inflight ≤ L_global` then holds in steady state and
+converges back after a rebalance. The guard gates on `min(share, local.limit)`;
+`onCoordinatorOutage` (default `fail-closed`) decides what a coordinator outage
+means.
+
+| Condition | `fail-closed` (default) | `local-only` | Recovery |
+|---|---|---|---|
+| Coordinator unreachable | `share→0`, node sheds all (503) | `share→local.limit`, per-node self-limit; fleet may overshoot backend | Next successful heartbeat restores share |
+| Node crashes holding share | Its lease TTL (`2·heartbeatMs`) expires → coordinator reclaims; survivors' shares grow next heartbeat | same | Automatic within `leaseTtlMs` |
+| `L_global` shrinks (backend degraded) | Over-allocated nodes admit nothing new; in-flight drains; `Σ inflight → L_global` | same | Convergence within max request duration (§9.3) |
+| Node JOINS (membership growth, `L_global` constant) | Budget cap gives the joiner `min(target, L_global − Σ incumbents) = 0` until incumbents re-heartbeat DOWN to their fair shares; `Σ granted shares ≤ L_global` preserved at every instant (no over-commitment), robust even if the joiner re-heartbeats first | same | Joiner earns its `≈ L/N` share over the next ≈ N heartbeats |
+| Stale share (between heartbeats) | Node may admit up to a now-too-large share for ≤ `heartbeatMs`; bounded by `min(share, local.limit)` fast-shrink | same | Smaller `heartbeatMs` trades coordinator load for reaction speed |
+| `nodeId` collision (operator error) | Two processes overwrite one HASH field → undercount → **under**-admission (safe direction) | same | Operational: enforce unique `nodeId` (doc warning) |
+| Clock skew between node and coordinator | Redis uses node-supplied `expiresAt` vs coordinator `now`; large skew → premature evict (safe) or late evict (bounded by skew) | same | Keep nodes NTP-synced; doc note |
+
+The `§`-prefixed references point at
+`research/bigger-bets/distributed-adaptive-concurrency/DESIGN.md`. The
+safety invariant `GlobalCap` (`Σ_active share ≤ L_global`) is machine-checked by the
+`GaleHeartbeatLeasing` BFS twin (`test/concurrency/distributed-leasing-model.test.ts`)
+and the property suite with simulated cross-node latency
+(`test/concurrency/distributed-invariant.test.ts`). See §§9,12 for the
+full failure-mode rationale.
