@@ -1,16 +1,17 @@
 # Bigger bets — roadmap & ROI plan
 
-> Status: 0.8.3 (federation, #77) SHIPPED 2026-05-28. This doc updated post-ship
-> to drive the next two bets: #79 (unified admission, 0.9.0) and #78 (polyglot,
-> 1.0.0). Implementation begins on TK-1001.
+> Status: 0.8.3 (federation, #77) SHIPPED 2026-05-28. Active bet: #79
+> (unified admission, → 0.9.0). Polyglot + wire-protocol freeze (#78) and
+> the HotNets paper assembly task DEFERRED at user request 2026-05-28
+> (see DR-14, DR-15). Implementation begins on TK-1001.
 > Maintainer of this doc: whoever picks up the next task in [Tasks](#tasks).
 > Edit guideline: this is a *living* roadmap — when a design decision is
 > revisited (e.g. an experiment invalidates an assumption), update the
 > "Decision records" section in place rather than dropping a new doc.
 
 This file is the single source of truth for ordering, cross-cutting decisions,
-and per-bet design notes for the three "bigger bets" tracked in `MEMORY.md`
-and the task system. It survives session compaction and is the doc the
+and per-bet design notes for the bigger-bet work tracked in `MEMORY.md` and
+the task system. It survives session compaction and is the doc the
 implementer reads first.
 
 ---
@@ -20,18 +21,13 @@ implementer reads first.
 The 0.8.x line is feature-complete relative to `THROTTLEKIT.md` and the GALE /
 TALE shipping map (`memory/throttlekit-research-direction.md`). Federation
 (#77) shipped as **0.8.3** on 2026-05-28 (`npm view throttlekit version` =
-`0.8.3`). Two bigger bets remain:
+`0.8.3`). The active bet is:
 
 | # | Bet | Status |
 |---|---|---|
 | #77 | Cross-cluster federation | **✅ shipped 0.8.3** (federate, RedisCoordinator, K-independent bound, real-cluster eval committed) |
-| #79 | Unified admission (rate ⊕ concurrency ⊕ cost) | **next — target 0.9.0** |
-| #78 | Versioned Lua wire protocol + Go/Rust ports | **after #79 — target 1.0.0** |
-
-The remaining two are large enough that each warrants its own minor release.
-The order is fixed by ROI: #79 ships first because it has the higher dual
-payoff (paper-track AND user-facing); #78 freezes a wire protocol that #79
-may still evolve, so it lands last.
+| #79 | Unified admission (rate ⊕ concurrency ⊕ cost) | **active — target 0.9.0** |
+| ~~#78~~ | ~~Versioned Lua wire protocol + Go/Rust ports~~ | **DEFERRED at user request 2026-05-28 (DR-14)** — no API/wire freeze until user authorization |
 
 This doc fixes ordering, locks the architecturally load-bearing decisions, and
 enumerates the bisectable commits each release decomposes into.
@@ -42,57 +38,19 @@ enumerates the bisectable commits each release decomposes into.
 
 | Order | Bet | Target release | Why this position |
 |---|---|---|---|
-| ~~0~~ | ~~#77 Cross-cluster federation~~ | ~~0.8.3~~ | **✅ shipped 2026-05-28**; eval committed under `research/bigger-bets/federation/eval/`; HotNets paper material is now concrete, not promissory. *Versioned as a patch within the 0.8 line — see DR-07.* |
+| ~~0~~ | ~~#77 Cross-cluster federation~~ | ~~0.8.3~~ | **✅ shipped 2026-05-28**; eval committed under `research/bigger-bets/federation/eval/`. *Versioned as a patch within the 0.8 line — see DR-07.* |
 | 1 | **#79 Unified admission** (rateLimit + adaptiveConcurrency + tokenBudget fusion) | **0.9.0** | Highest-leverage user-facing primitive for LLM gateways — they want one decision, not three. Carries a genuine open theory question (joint vs marginal optimum). 0.9.0 is the first minor bump post-federation — appropriate for a NEW abstraction (`unifiedAdmission`) layered over additive concurrency / cost surfaces. The existing `adaptiveConcurrency()` primitive is already shipped (`src/concurrency/adaptive.ts`); the work is fusion, not new infrastructure. |
-| 2 | **#78 Versioned Lua wire protocol + Go/Rust ports** | **1.0.0** | Pure adoption work; weakly coupled to the research story. Doing it last lets #79 evolve the wire protocol freely (the fused-admission script in TK-1005 may add a v1 entry); locking it down then is the natural `1.0` moment. The wire-protocol freeze is itself a major-version commitment (Stripe / protobuf model). |
+| ~~2~~ | ~~#78 Versioned Lua wire protocol + Go/Rust ports~~ | ~~1.0.0~~ | **DEFERRED at user request 2026-05-28 — no API / wire-protocol freeze authorized.** When user reauthorizes, re-plan as a fresh #78 (the original v1-freeze decomposition was deleted from the task system; see DR-14). |
 
-**Order rationale.** #79 ships before #78 because (a) it produces a
-paper-track result regardless of outcome (positive joint ⇒ algorithmic
-contribution; negative joint ⇒ "marginal-AND is tight" is itself
-publishable), (b) operators are asking for it loudly (LLM gateways are the
-loudest customer segment post-federation), and (c) the substrate
-(`adaptiveConcurrency`) is already shipped. #78 is real value but
-adoption-only, and freezing a wire protocol while #79 may still add Lua
-scripts would force a v1 amendment dance immediately after the freeze.
-
-**What would invalidate the order:**
-- LLM-vendor customer asking for Go/Rust NOW → #78 jumps to #1.
-- HotNets reviewer feedback requiring a fused-admission eval before
-  notification → TK-1007 (joint-vs-marginal sim) becomes time-critical
-  against the paper deadline.
-- TK-1007 yields a clean negative result (joint = marginal universally) →
-  #79 demotes to feature-only and ships faster (skip the joint-LP planning;
-  algebra + sequential + fused is the deliverable).
-
-## 1a  Parallel track: the HotNets '26 paper
-
-**Submission Jul 16, 2026 AoE — ~7 weeks from this plan.** Status update
-post-0.8.3:
-
-The federation eval (`research/bigger-bets/federation/eval/RESULTS.md`) is
-now the paper's **primary empirical result**. Δ = 0 across the skew sweep,
-U_capacity = 1.000 at max skew (vs static-partition's 0.333), TLA⁺-pinned
-BFS twin in `test/gale/federated/`. The narrative arc is concrete and the
-numbers are committed. Prose draft (`research/hotnets2026/DRAFT.md`) was
-written against promissory numbers; the federation section now needs a
-single editorial pass to replace TBDs with the committed eval numbers.
-
-What's left is *assembly*, not research:
-1. LaTeX'ify the prose (the body is already double-blind-clean and the
-   federation numbers slot in cleanly).
-2. Set up the anonymized mirror (`anonymous.4open.science`).
-3. Tighten to ≤6 pp 10 pt.
-4. Confirm the '26 format rules when the CFP posts.
-
-Effort: ~5 focused days. This **runs in parallel** with bet #79; the bets
-are the deep work and the paper is the assembly. Do not let the bets crowd
-out the paper — the deadline is hard. If TK-1007's joint-vs-marginal sim
-lands by ~Jul 1 with a positive result, fold it in as a secondary
-contribution; otherwise paper goes federation-only (which is itself a
-HotNets-grade result on its own).
-
-A separate task (TK-1200) tracks the paper. Treat it as a parallel
-single-developer track, not a serial dependency.
+**What would invalidate the unified-bet ordering:**
+- A workload-correctness incident in 0.8.x's adaptive concurrency that
+  forces concurrency redesign before fusion → TK-1003 (shim) becomes
+  blocked on the redesign.
+- TK-1007 (joint-vs-marginal sim) yields a clean negative result (joint =
+  marginal universally) → #79 demotes to feature-only and ships faster
+  (skip the joint-LP planning; algebra + sequential + fused is the
+  deliverable).
+- User authorizes the wire-protocol freeze → #78 re-enters the queue.
 
 ---
 
@@ -109,7 +67,7 @@ These are the standing rules — they're not bet-specific.
 | **Proof-first** | New formal-bounded primitives (federation, fused admission) ship with the TLA⁺ / BFS proof *before* the production code | GALE pillars were built this way; it caught the EOQ-cost-model bug |
 | **Dual-path conformance** | Every Lua-backed primitive must have a JS↔Lua dual-path test (seeded grid *and* shrinkable property fuzz) | `test/conformance/{conformance,lua-property}.test.ts` are the templates |
 | **Eval reproducibility** | Every measured number that lands in a paper / SCOREBOARD must be regeneratable by a script committed under `research/<bet>/` | Already established by `research/hotnets2026/fig2.ts` |
-| **Wire-protocol versioning** | `tk:v1:*` is the current implicit version; #78 freezes it. Any wire change before #78 is a *minor* compatible add (new script name); breaking changes wait until v2 / a major release | Avoids a wire churn before the polyglot freeze |
+| **Wire-protocol versioning** | Stays implicit indefinitely; **no `v1` freeze authorized** (DR-14). Any wire change is a *minor* compatible add (new script name); breaking changes are out of scope until user reauthorizes a freeze. | User explicitly deferred the freeze 2026-05-28 |
 | **Zero runtime deps** | Stays. New peers continue to be optional. | Project value |
 
 ---
@@ -462,116 +420,16 @@ joint; the algebra is sufficient) — and are publishable.
 
 ---
 
-## 5  Bet #78 — Versioned Lua wire protocol + Go / Rust ports
+## 5  Bet #78 — Versioned Lua wire protocol + Go / Rust ports [DEFERRED]
 
-> **Target release: 1.0.0.** Estimated effort: 5–7 weeks (two new SDKs, two
-> new release flows, cross-language CI). Unblocks polyglot fleets.
-
-### 5.1 The problem
-
-The atomic Lua decisions exist only as JS-embedded strings (today; verified
-post-0.8.3: no `src/lua/` directory; each strategy's Lua is inlined in its
-TS file). A Go or Rust service in the same fleet cannot share the budget
-without round-tripping through a JS sidecar. Polyglot adoption is blocked.
-The 0.8.x line earned us strong correctness guarantees (Δ = 0,
-K-independent); the 1.0 line should make those guarantees available to
-non-Node consumers.
-
-### 5.2 What ships
-
-1. **`docs/WIRE-PROTOCOL.md`** — the frozen v1 spec: script naming
-   (`tk:v1:<strategy>:<op>`), KEYS layout per strategy, ARGV layout per
-   strategy, Decision tuple encoding `[allowed, limit, remaining, resetAt,
-   retryAfterMs]`, state encoding (HASH / STRING / ZSET conventions),
-   key-prefix rules.
-2. **Lua extraction to source files.** Move embedded JS strings to
-   `src/lua/v1/*.lua` source files; tsup includes them in `dist/lua/v1/`;
-   commit `dist/lua/v1/manifest.json` with sha256-per-script. The inline
-   strings in TS modules become `readFileSync`-loaded constants at module
-   init (no fs-at-runtime — bundled into dist via tsup).
-3. **Version negotiation in the JS client.** Each strategy declares
-   `wireVersion: 1`; the store records it on first EVALSHA; a mismatch
-   throws `ThrottleKitError` with a clear migration message. The path to
-   v2 is "introduce `tk:v2:<strategy>` alongside, keep v1 working until
-   clients migrate."
-4. **`throttlekit-go`** in a separate repo
-   (`github.com/AmeyaBorkar/throttlekit-go`) — vendored Lua + sha256
-   verify in CI.
-5. **`throttlekit-rs`** in a separate repo
-   (`github.com/AmeyaBorkar/throttlekit-rs`) — same.
-6. **Cross-language conformance CI** — docker-compose; one Redis; the
-   three clients hammer the same key against a seeded timeline; assert
-   bit-identical Decisions across all 6 strategies.
-
-### 5.3 The Lua-script distribution decision (DR-12)
-
-Three options for how the Go/Rust ports get their Lua:
-
-| Option | Mechanics | Verdict |
-|---|---|---|
-| **Vendor (copy + sha256 verify)** | Each port repo embeds its own copy of `src/lua/v1/*.lua`; CI verifies sha256 against the canonical manifest in the JS repo | **Selected for MVP (DR-12)** — simplest; CI catches drift; no runtime dependency on the JS repo |
-| Separate `@throttlekit/lua` npm/Go/Rust package | Single source; all ports depend on it as a versioned package | Future — needs versioning policy + 3-language packaging story (scoped npm, Go module, Rust crate, separate semver) |
-| Network-fetch from CDN | Ports download Lua on init | Rejected — runtime dependency, opaque failures, security blind spot, breaks offline |
-
-### 5.4 Repo structure decision (DR-13)
-
-Separate repos (`throttlekit-go`, `throttlekit-rs`) NOT subdirs of this
-monorepo. Reasoning:
-- **Prior art**: gRPC, protobuf, Stripe, Sentry all use this pattern for
-  polyglot SDKs. The exceptions (Sentry's per-language monorepos) still
-  separate the *language* boundary at the repo level.
-- **CI cleanliness**: each language has its own matrix, toolchain, and
-  release cadence; sharing in a monorepo forces a single CI pipeline to
-  swap between toolchains per job.
-- **Idiom expectations**: Go's `go.mod` at root, Rust's Cargo workspace
-  layout, and JS's tsup + npm-pack each expect a clean repo root. Forcing
-  them into subdirs adds gymnastic config.
-- **Cross-repo drift** is mitigated by the sha256 vendoring rule (DR-12)
-  and the cross-language conformance CI (TK-1108).
-
-### 5.5 Subtasks (bisectable commits)
-
-| Task | Commit shape | Repo |
-|---|---|---|
-| **TK-1101** `docs(wire): WIRE-PROTOCOL.md v1 spec` (KEYS, ARGV, return shapes, key-prefix rules per strategy) | throttlekit |
-| **TK-1102** `refactor(lua): extract embedded scripts to src/lua/v1/*.lua + dist/lua/v1/manifest.json sha256 manifest` | throttlekit |
-| **TK-1103** `feat(redis): wireVersion negotiation + clear-error on mismatch` | throttlekit |
-| **TK-1104** `chore: throttlekit-go repo init + module skeleton + Limiter/Decision/Store types + Lua loader (vendored + sha256 verify)` | throttlekit-go |
-| **TK-1105** `feat(go): all 6 strategies + Redis store + dual-path conformance against JS reference` | throttlekit-go |
-| **TK-1106** `chore: throttlekit-rs crate init + types + Lua loader (vendored + sha256 verify)` | throttlekit-rs |
-| **TK-1107** `feat(rs): all 6 strategies + Redis store + dual-path conformance against JS reference` | throttlekit-rs |
-| **TK-1108** `ci: cross-language conformance harness (docker-compose; JS / Go / Rust all hammer one Redis with seeded timelines; assert bit-identical Decisions)` | throttlekit + go + rs |
-| **TK-1109** `release: throttlekit-go v0.1.0 + throttlekit-rs v0.1.0` | throttlekit-go, throttlekit-rs |
-| **TK-1110** `docs: wiki Polyglot page + README polyglot sections (all 3 repos) + WIRE-PROTOCOL link from each` | all 3 |
-| **TK-1111** `chore(release): prepare 1.0.0 (wire-protocol freeze; major-version commitment)` | throttlekit |
-
-### 5.6 Definition of done (the 1.0.0 release gate)
-
-- `docs/WIRE-PROTOCOL.md` v1 frozen (KEYS, ARGV, return shapes, key-prefix
-  conventions; all 6 strategies + federation lease/reconcile + the
-  TK-1005 fused-rc script)
-- `src/lua/v1/*.lua` source files + `dist/lua/v1/manifest.json` with
-  sha256 per script
-- `throttlekit-go v0.1.0` published; `go get github.com/AmeyaBorkar/throttlekit-go`
-- `throttlekit-rs v0.1.0` on crates.io
-- Cross-language conformance CI green: JS / Go / Rust agree on Decision
-  streams across all 6 strategies × 100 generated timelines × 3 K values
-- README + wiki polyglot pages live; CHANGELOG `[1.0.0]` entry;
-  user-authorized 1.0.0 release
-
-### 5.7 What I'm explicitly not doing in 1.0.0
-
-- **Python / Java / Ruby ports.** Three is the right number; expand later
-  based on demand. Each adds a CI matrix.
-- **A separate `@throttlekit/lua` package.** Vendoring + sha256 is enough
-  for v1; the package abstraction adds versioning complexity that doesn't
-  pay back yet.
-- **Removing the JS-embedded Lua strings.** They stay (until 2.0 if ever)
-  for backward compat. TK-1102 ADDS the source files + manifest; doesn't
-  remove the inlined strings.
-- **Wire v2.** Stays implicit-v1 until a real breaking change demands
-  v2; the dual-version negotiation mechanism is in place but not exercised
-  at 1.0.0.
+> **Status: DEFERRED at user request 2026-05-28** (DR-14). No API or
+> wire-protocol freeze is authorized. The previous sub-task decomposition
+> (TK-1101..TK-1111) was deleted from the task system. Re-plan from
+> scratch when the user authorizes a freeze — the design surface (Lua
+> extraction, version negotiation, vendor-with-sha256 strategy,
+> separate-repos pattern) is well-explored and can be rebuilt quickly
+> from the prior version of this section in git history (commit `8fe0a1c`
+> retained it).
 
 ---
 
@@ -600,35 +458,29 @@ when their parent release lands and demand is confirmed.
 ## 7  Tasks
 
 The full task list lives in the task system (see `TaskList`). Status as of
-0.8.3 ship:
+2026-05-28 (post-0.8.3 + user-driven deferrals):
 
 | ID | Label | Maps to | State |
 |---|---|---|---|
 | meta | **TK-823** Federation — shipped 0.8.3 | bet #77 | ✅ completed |
 | meta | **TK-825** Unified admission — ship 0.9.0 | bet #79 | pending → in_progress on TK-1001 start |
-| meta | **TK-824** Polyglot — ship 1.0.0 | bet #78 | pending; soft-ordered after TK-825 |
-| meta | **TK-1200** HotNets paper — submit by Jul 16 | parallel | pending; runs in parallel with TK-1xxx work |
 | sub | **TK-901**..**TK-912** | federation sub-tasks | ✅ all completed |
 | sub | **TK-1001**..**TK-1009** | unified admission sub-tasks | pending; linear `blockedBy` chain |
-| sub | **TK-1101**..**TK-1111** | polyglot sub-tasks | pending; TK-1101 blocked by TK-1009 (0.9.0 release); rest linear |
+| ~~meta~~ | ~~TK-824 polyglot — ship 1.0.0~~ | bet #78 | **DELETED** (DR-14) |
+| ~~sub~~ | ~~TK-1101..TK-1111 polyglot sub-tasks~~ | — | **DELETED** (DR-14) |
+| ~~meta~~ | ~~TK-1200 HotNets paper — assemble + submit~~ | parallel | **DELETED** (DR-15) |
 
-**Sub-task chains (each implies the prior is complete):**
+**Active sub-task chain (each implies the prior is complete):**
 
 Unified admission (#79):
 ```
 TK-1001 → TK-1002 → TK-1003 → TK-1004 → TK-1005 → TK-1006 → TK-1007 → TK-1008 → TK-1009 (release 0.9.0)
 ```
 
-Polyglot (#78):
-```
-TK-1009 → TK-1101 → TK-1102 → TK-1103 → TK-1104 → TK-1105 → TK-1106 → TK-1107 → TK-1108 → TK-1109 → TK-1110 → TK-1111 (release 1.0.0)
-```
-
-The chains are linear because each step assumes the prior step's
+The chain is linear because each step assumes the prior step's
 interfaces / proofs / stores exist; trying to parallelize would produce
-merge churn on the same interface files. The single cross-bet dependency
-(TK-1101 blocked by TK-1009) enforces "freeze the wire protocol only after
-the unified-admission fused script has settled."
+merge churn on the same interface files. No cross-bet dependencies remain
+post-deferral.
 
 ---
 
@@ -638,17 +490,19 @@ the unified-admission fused script has settled."
 |---|---|---|---|
 | DR-01 | Federation architecture = option D (federated escrow with window-coupling at the regional boundary). | 2026-05-28 | Locked unless a CRDT proof emerges that strictly dominates |
 | DR-02 | Global coordinator = `GlobalCoordinator` interface; MVP impl = single global Redis (SPOF documented). Postgres / Raft are future impls. | 2026-05-28 | Locked for 0.8.3 |
-| DR-03 | Wire protocol stays implicit at v1 through 0.8.3 / 0.9.0 / 0.10.0; #78 freezes v1 explicitly at 1.0.0. | 2026-05-28 | Locked |
+| DR-03 | Wire protocol stays implicit indefinitely; no `v1` freeze is authorized. Any wire change is a minor compatible add. *Why changed (2026-05-28): user request — defer all API/wire-protocol freeze work until explicit reauthorization.* | 2026-05-28 | Locked unless user reauthorizes freeze |
 | DR-04 | Unified-admission backend = sequential (default) + Redis-Lua fused (opt-in). | 2026-05-28 | Locked unless a benchmark shows fused is universally cheaper |
-| DR-05 | Polyglot ports = separate repos, vendored Lua + sha256 checksum verify in CI. | 2026-05-28 | Locked for 1.0.0 |
-| DR-06 | HotNets paper runs as a parallel single-developer track, not a serial dependency on the bets. | 2026-05-28 | Locked unless the paper hits a research-blocker that the bets can resolve |
+| DR-05 | ~~Polyglot ports = separate repos, vendored Lua + sha256 checksum verify in CI.~~ | 2026-05-28 | **Superseded by DR-14** (polyglot deferred) |
+| DR-06 | ~~HotNets paper runs as a parallel single-developer track.~~ | 2026-05-28 | **Superseded by DR-15** (paper task removed) |
 | DR-07 | Federation (#77) ships as **0.8.3 patch** not 0.9.0 minor. Rationale: the surface is purely additive (new `throttlekit/federation` subpath; no change to existing 0.8.x API). A patch is the most accurate semver signal — consumers can upgrade without migration. 0.9.0 is freed for the next user-facing breaking change. *Why changed: weighed at release-prep time; the additive nature didn't warrant a minor bump.* | 2026-05-28 | Locked (shipped) |
 | DR-08 | `unifiedAdmission(...)` returns `UnifiedAdmitter` (with `.admit() → { decision, release }`), NOT `Limiter`. Rationale: concurrency has lease semantics (acquire-release) that don't fit Limiter's stateless `.check() → Decision` shape. Wrapping it would either force premature lease release or hide a global lease registry (action-at-a-distance). Caller wires `release()` to its request lifecycle hook (e.g. `res.on("finish", release)`). | 2026-05-28 | Locked unless an alternative API emerges that preserves Limiter-compat without hiding state |
 | DR-09 | The existing `adaptiveConcurrency()` primitive (gradient2 default + AIMD opt-in, `src/concurrency/adaptive.ts`) is the substrate for the concurrency axis of unified admission. NO new concurrency primitive is added in 0.9.0; the work is *fusion*, not invention. | 2026-05-28 | Locked — both algorithms are shipped + tested as of 0.8.x |
 | DR-10 | Distributed adaptive concurrency = NOT in 0.9.0. The recursive-twoTier insight (each region's concurrency state = leased counter against global) is a 0.10.x follow-up. 0.9.0 ships in-process concurrency only; documented as a known gap. | 2026-05-28 | Locked unless an LLM-gateway customer asks for distributed-concurrency-now |
 | DR-11 | Joint-LP policy = research-only in 0.9.0 (TK-1007 produces `THEORY.md` + regret curves). Runtime implementation waits for 0.10.x conditional on a positive empirical result. Marginal-AND (the algebra-based default) is the 0.9.0 deliverable regardless. | 2026-05-28 | Locked — empirical result drives the next step |
-| DR-12 | Polyglot Lua distribution = vendor + sha256 verify (NOT a separate `@throttlekit/lua` package, NOT runtime CDN fetch). Each language repo embeds the Lua scripts; CI cross-verifies the manifest. | 2026-05-28 | Locked for 1.0.0 |
-| DR-13 | Polyglot ports = separate repos (`throttlekit-go`, `throttlekit-rs`), NOT subdirs of this monorepo. Matches gRPC / protobuf / Stripe pattern; per-language CI matrices stay clean; cross-repo drift mitigated by DR-12 + cross-language conformance CI (TK-1108). | 2026-05-28 | Locked for 1.0.0 |
+| DR-12 | ~~Polyglot Lua distribution = vendor + sha256 verify.~~ | 2026-05-28 | **Superseded by DR-14** (polyglot deferred) |
+| DR-13 | ~~Polyglot ports = separate repos.~~ | 2026-05-28 | **Superseded by DR-14** (polyglot deferred) |
+| DR-14 | **Polyglot + wire-protocol freeze (#78) DEFERRED at user request 2026-05-28.** The sub-task chain TK-1101..TK-1111 was deleted from the task system; meta-task TK-824 deleted. PLAN.md §5 reduced to a stub pointing at git history (commit `8fe0a1c` retains the full previous design). No API or wire-protocol freeze is to be undertaken until the user explicitly reauthorizes. Rationale: the user wants to keep the wire surface fluid through #79's fused-admission script and any subsequent additions; freezing now would constrain design freedom. | 2026-05-28 | Locked until user reauthorizes |
+| DR-15 | **HotNets paper assembly task (TK-1200) REMOVED at user request 2026-05-28.** The paper draft (`research/hotnets2026/DRAFT.md`) and the federation eval (`research/bigger-bets/federation/eval/RESULTS.md`) remain as research artifacts; the *assembly* / submission task is no longer on the roadmap. If the user re-engages with the paper, recreate the task; the artifacts are intact. | 2026-05-28 | Locked until user reauthorizes |
 
 When implementation reveals a decision needs to change, edit the row in place
 and add a one-line "Why changed" under it — do not silently rewrite.
@@ -683,9 +537,9 @@ Federation (#77) is shipped. The next bet is **#79 unified admission**.
    property test).
 6. Iterate down the unified chain: TK-1002 → TK-1003 → ... → TK-1009
    (release 0.9.0).
-7. After TK-1009 lands, switch to **TK-1101** (wire-protocol freeze, the
-   first polyglot step) — the polyglot chain unblocks naturally because
-   TK-1101 is `blockedBy: TK-1009`.
+7. After TK-1009 lands, **pause for user direction** — the polyglot bet
+   (#78) and the HotNets paper assembly are explicitly deferred (DR-14,
+   DR-15); the next move requires user input.
 
 **Standing rules (re-stated for the implementer):**
 - Every commit passes `npm run check`.
@@ -694,12 +548,10 @@ Federation (#77) is shipped. The next bet is **#79 unified admission**.
   release tag time.
 - npm publish requires explicit user authorization (push of `vX.Y.Z` tag
   triggers OIDC publish — irreversible).
+- **No API or wire-protocol freeze without explicit user authorization**
+  (DR-14). Wire changes within #79 are additive (new script names) only.
 - When something doesn't go as planned, *say so* — update §8 decision
   records rather than diverging silently.
 - When a sub-task spawns a new follow-up (e.g. TK-1007 yields a positive
   joint-LP result and TK-13xx polish needs creating), add the task and
   link it from §6.
-
-**Parallel-track reminder:** TK-1200 (HotNets paper) runs in parallel
-with TK-100x. Don't let the bets crowd out the paper assembly — the
-2026-07-16 deadline is hard.
