@@ -24,6 +24,7 @@ export default defineConfig({
     otel: "src/observability/index.ts",
     testkit: "src/testkit/index.ts",
     config: "src/config/index.ts",
+    cli: "src/cli/bin.ts",
   },
   format: ["esm", "cjs"],
   dts: true,

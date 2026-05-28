@@ -281,6 +281,7 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": { "throttlekit": "./dist/cli.js" },
   "files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
   "scripts": {
     "build": "tsup",
