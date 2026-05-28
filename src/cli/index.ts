@@ -278,7 +278,7 @@ export async function main(argv: readonly string[], out: Output = consoleOut): P
     return 0;
   }
   if (cmd === "--version") {
-    out.log("0.9.1");
+    out.log("0.9.2");
     return 0;
   }
   const rest = parseArgs(argv.slice(1));

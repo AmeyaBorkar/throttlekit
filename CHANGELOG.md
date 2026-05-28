@@ -8,6 +8,84 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.9.2] — 2026-05-29
+
+**Middleware integration for `unifiedAdmission` + `adaptiveConcurrency`.**
+Both primitives expose a `release()` lifecycle callback that the user
+previously had to wire to their framework's request lifecycle by hand.
+Miss any one of the hooks (`finish`, `close`, error path on Node;
+stream end, cancel, error on Web) and concurrency slots leak silently
+until the adaptive limit collapses to zero and the server stops admitting.
+
+This release adds **22 new exports** across **11 frameworks** that wire the
+lifecycle correctly inside the library: the user passes a prebuilt
+`UnifiedAdmitter` or `ConcurrencyGuard` to the adapter and the adapter
+owns the release. **Patch** versioned because the surface is purely
+additive — no changes to the existing `rateLimit` adapters or the
+underlying primitives.
+
+### Added
+
+- **Node-server adapters (TK-1325)** — express, fastify, koa, nest. Each
+  exports `<framework>UnifiedAdmission(options)` and
+  `<framework>AdaptiveConcurrency(options)` (nest ships
+  `*Middleware` variants for `MiddlewareConsumer.apply`). All wire
+  `res.on("finish")` + `res.on("close")` with the **first-fire-wins**
+  pattern: `close` before `finish` ⇒ `dropped: true` (client hangup or
+  handler throw without error middleware), `finish` first ⇒
+  `dropped: false` (normal completion). The second event is a no-op via
+  idempotent release. Optional `dropOn5xx: boolean` for treating 5xx
+  responses as overload signals (default `false` — a returned 5xx is
+  application policy).
+
+- **Web-platform adapters (TK-1326)** — hono, fetch, next, remix,
+  sveltekit, elysia, trpc. Two patterns:
+  - **Try/finally wrap** (hono, trpc, elysia): `await next()` (or the
+    user-supplied body) inside `try/catch/finally`; release fires with
+    `dropped = thrown` (plus the `dropOn5xx` rule for normal returns).
+  - **Response stream-wrap** (fetch, next, remix, sveltekit): the
+    returned `Response.body` ReadableStream is wrapped so release fires
+    on natural drain (`done`), stream error, or consumer cancellation.
+    Null body responses release synchronously.
+
+- **`src/adapters/lifecycle.ts`** — shared `wireResponseLifecycle` +
+  `unifiedHeadersFor` helpers for the node-server adapters.
+
+- **`src/adapters/lifecycle-web.ts`** — shared
+  `wrapResponseStreamLifecycle` + `unifiedHeadersWeb` +
+  `defaultDenyResponse` / `defaultUnavailableResponse` helpers for the
+  web-platform adapters.
+
+- **`research/bigger-bets/middleware-integration/DESIGN.md`
+  (TK-1324)** — design lock; 14 decision records D-M-1..D-M-14. Lit
+  synthesis citing the Netflix concurrency-limits Servlet filter, Node
+  `http.ServerResponse` state machine, and AWS Lambda invocation
+  lifecycle. Per-framework hook table for every adapter family.
+
+### Tested
+
+- **48 new tests** across `test/adapters/{express,fastify,koa,nest,web}-{unified,middleware}.test.ts`
+  + `test/adapters/release-invariant.test.ts`. Coverage matrix: admit +
+  finish-release, close-before-finish (dropped), deny short-circuit
+  with no slot held, idempotent double-fire, onLimited observability
+  hook, dropOn5xx with 5xx status, null-body release, handler-throw,
+  consumer-cancel.
+
+- **Property test** at numRuns 50-200: exactly-once-release invariant
+  across fuzzed `[finish, close]` event orderings for the node-server
+  helper, fuzzed body outcomes (`drain | cancel | null-body`) for the
+  web-platform helper, plus integration paths through
+  `expressUnifiedAdmission` and `withUnifiedAdmission` confirming the
+  adaptive concurrency limit never collapses to zero across 50 random
+  workloads of 10 concurrent requests each.
+
+### Forward-compat
+
+- The adapters accept any `ConcurrencyGuard`, not just the in-process
+  implementation (D-M-12). When 0.10.0 lands distributed adaptive
+  concurrency, the same adapter wiring picks up the new guard
+  transparently.
+
 ## [0.9.1] — 2026-05-29
 
 **Pillar 4 — Weighted Fair Escrow.** A weighted, work-conserving

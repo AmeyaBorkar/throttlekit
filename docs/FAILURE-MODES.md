@@ -202,3 +202,39 @@ See `research/bigger-bets/pillar4-wfe/DESIGN.md` for the full design,
 `examples/weighted-fair-escrow.ts` for an LLM-gateway-multi-tenant
 example, and `research/gale/PILLAR4-fairness.md` for the canonical
 theorems and proofs.
+
+
+## `unifiedAdmission` / `adaptiveConcurrency` middleware — outage shapes (0.9.2)
+
+The 0.9.2 middleware integration adds 22 new exports across 11 frameworks
+that wire `release()` to the request lifecycle. Failure shapes for the
+adapter layer (the underlying primitives' failure shapes are above).
+
+| Failure shape | Adapter behavior | Mitigation |
+|---|---|---|
+| User forgets to use the adapter (calls `admit.admit()` directly) | Silent slot leak — `release` never called → adaptive concurrency limit collapses to zero, server stops admitting | Use the adapter |
+| `admit.admit()` throws (Redis hiccup, etc.) | Adapter applies `fail` policy: `open` ⇒ forwards to handler with no slot held; `closed` ⇒ 503 | Restore Redis |
+| Handler throws AND no error middleware writes a response (node-server) | `res.on("close")` fires when socket times out → `release({dropped: true})` → adaptive contracts | None needed — first-fire-wins handles it |
+| Client hangup mid-stream (node-server) | `res.on("close")` fires before `res.on("finish")` → `release({dropped: true})` | None needed |
+| Client cancels Response body mid-stream (web-platform) | TransformStream `cancel` callback fires → `release({dropped: true})` | None needed |
+| Handler returns `Response` with null body (web-platform) | `release` fires synchronously with `dropped = dropOn5xx && status >= 500` | None needed |
+| Slow handler hangs forever (node-server) | Slot is held until server-side timeout. Server-side timeout middleware triggers `close` event → release | **Recommended:** add a timeout middleware ahead of the admission middleware |
+| Slow handler hangs forever (web-platform stream-wrap) | Slot held until consumer cancels or response body errors | Use the runtime's request-timeout config |
+| `dropOn5xx: true` + handler returns 500 | `release({dropped: true})` fires on finish; adaptive contracts | Application bug surfaces in metrics |
+| Repeated `release()` calls (double-fire) | First call wins; subsequent calls are no-ops (idempotent at both adapter and `Lease` level) | None needed |
+| Streaming response that never ends (SSE / chunked) | Slot held for the connection lifetime — **correct**, the resource IS in use | None needed; document expected resource use |
+
+**Mitigation pattern (recommended for slow handlers).** Pair the
+admission middleware with a request-timeout middleware ahead of it so
+the timeout's `close` event releases the slot:
+
+```ts
+app.use(express.timeout("30s"));               // upstream of admission
+app.use(expressUnifiedAdmission({ admitter })); // release fires on close
+```
+
+The exactly-once-release invariant is validated at numRuns 200 for the
+node-server helper and numRuns 50 across integration paths
+(`test/adapters/release-invariant.test.ts`). See
+`research/bigger-bets/middleware-integration/DESIGN.md` §§5,12 for the
+full failure-mode rationale and the `dropped`-decision matrix.

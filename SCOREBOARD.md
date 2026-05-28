@@ -164,6 +164,6 @@ shipped (Layers 1–3 now ship). Reproduce with `npx vitest run test/cost`.
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **1035 tests** (939 pass + 96 skipped without `THROTTLEKIT_TEST_REDIS`/`PG`; the 39-test growth in 0.9.1 is the Pillar-4 WFE stack — TK-1310 happy-path tests (+22 L1 + 8 L2), TK-1311 property tests T1/T2/T3/T4 at numRuns 200 + L1/L2 dual-path conformance + composition tests (+8 + 1 Redis-gated DB 7). All pre-existing tests carried forward; bench gate green at the 0.9.0 baseline. 0.8.0's 95.2% line coverage figure is from a coverage run on the previous test set, re-measure on release) |
+| Test coverage on `src` | ✅ **1083 tests** (987 pass + 96 skipped without `THROTTLEKIT_TEST_REDIS`/`PG`; the 48-test growth in 0.9.2 is the middleware-integration adapter family — 28 node-server adapter tests (TK-1325) + 13 web-platform smoke tests (TK-1326) + 7 fast-check property tests for the exactly-once-release invariant at numRuns 50-200 (TK-1327). All pre-existing tests carried forward; bench gate green at the 0.9.0 baseline. 0.8.0's 95.2% line coverage figure is from a coverage run on the previous test set, re-measure on release) |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) + bench:gate regression gate (informational) | ✅ |
 | Build emits valid ESM + CJS + types (12 subpaths — added `throttlekit/federation`) | ✅ |
