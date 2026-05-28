@@ -6,7 +6,7 @@
 [![node: >=18](https://img.shields.io/node/v/throttlekit.svg)](https://www.npmjs.com/package/throttlekit)
 [![license: MIT](https://img.shields.io/npm/l/throttlekit.svg)](./LICENSE)
 
-> **Rate limiting you can _prove_.** A distributed overshoot bound that's machine-checked in TLA⁺/TLC and **independent of fleet size** — on one small core, from a ~320 ns in-process check to a global cluster.
+> **Rate limiting you can _prove_.** A distributed overshoot bound that's machine-checked in TLA⁺/TLC and **independent of fleet size** — on one small core, from a ~186 ns in-process check to a global cluster.
 
 Most distributed rate limiters are a shared counter and a hope: fine in one process, "probably fine" across a fleet, with no stated bound on how far past the limit they can drift. ThrottleKit is built the other way — **algorithms** are pure functions of time, **storage** is one atomic primitive, **adapters** are thin glue — so the *same* configuration runs as an allocation-free in-process check or atomically across a cluster, and its distributed behaviour is **verified, not asserted**.
 
@@ -16,7 +16,7 @@ Most distributed rate limiters are a shared counter and a hope: fine in one proc
 
 - **A formally-verified overshoot bound — independent of fleet size.** The two-tier leasing path is model-checked in TLA⁺/TLC: worst-case global admissions are *exactly* `Limit + N·(Batch−1)` (shown tight by counterexample), and with `windowCoupled` they collapse to *exactly* `Limit` — **no matter how many nodes**. Most limiters can't state a bound at all; this one is machine-checked, and the checker re-runs in CI.
 - **One algorithm, every backend, proven identical.** The *same* GCRA (or token-bucket, sliding-window, …) runs in-memory, on Redis (one atomic Lua round trip), and on Postgres (advisory-lock transaction — no Redis needed). A dual-path conformance suite proves the JavaScript and Lua decisions are bit-identical, so local and distributed limiters can't silently drift apart.
-- **A real synchronous API.** `checkSync` is allocation-free at ~320 ns/op — uncommon among JS limiters, which are almost all async-only — for hot paths that shouldn't pay for an `await`.
+- **A real synchronous API.** `checkSync` is allocation-free at ~186 ns/op — uncommon among JS limiters, which are almost all async-only — for hot paths that shouldn't pay for an `await`.
 - **Research-grade, and shipping.** Two formal programs underpin it — **GALE** (provable distributed leasing) and **TALE** (token-budget escrow for LLMs) — and their results land as real features, not slideware: the proven core (`lease.windowCoupled`, `weightedFairShare`, `tokenBudget`) *and* the learned/predictive layers (`learnedReservation`/`predictiveReservation`, `leaseSizer`/`predictiveLeaseSizer`), each cross-checked byte-identically against its proven kernel.
 
 And it tells you where it **loses**: every benchmark is reproducible on your hardware, including the cases where an incumbent is faster. Honesty is part of the spec — see [SCOREBOARD.md](./SCOREBOARD.md).
