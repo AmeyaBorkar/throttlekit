@@ -8,6 +8,108 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.9.1] — 2026-05-29
+
+**Pillar 4 — Weighted Fair Escrow.** A weighted, work-conserving
+fair-allocation limiter that splits one shared per-window budget across
+tenants in proportion to weight, with idle tenants' surplus reclaimed by
+backlogged ones — neither stranded nor first-come. The production
+graduation of GALE's Pillar 4 research module (`research/gale/PILLAR4-
+fairness.md`, 4-theorem proof machine-checked at 20 000 random trials).
+**Patch** versioned because the surface is purely additive — one new
+top-level primitive (`weightedFairEscrow`) sitting next to the existing
+fairness siblings (`fairShare`, `weightedFairShare`, `weightedMaxMin`),
+zero changes to existing APIs.
+
+### Added
+
+- **`weightedFairEscrow(...)` in `src/twotier/` (TK-1310)** — the new
+  fairness primitive. Returns a `WeightedFairEscrowLimiter` with a
+  `.check(tenant, cost) → Decision` signature; does NOT widen the
+  existing `Limiter` interface (DR-P4-3). Supports both L1-only
+  (single-process) and L2-backed (multi-process) modes via an optional
+  `l2: Store` parameter.
+
+  Algorithm: per check, compute the dynamic guaranteed share
+  `gᵢ = ⌊wᵢ·L/W⌋` for the current active set; admit within guarantee
+  unconditionally; beyond guarantee, borrow from the pessimistic
+  surplus `max(0, (L − Σ used) − Σⱼ≠ᵢ max(0, gⱼ − usedⱼ))` with the
+  per-call borrow capped at the call's own `cost` (DRR semantics —
+  matches Shreedhar-Varghese SIGCOMM'95). O(N) per check; N = active
+  tenants this window.
+
+- **L2 multi-process backing** — when `l2: Store` is configured, each
+  process atomically leases `quantum` credits at a time from a shared
+  `fixedWindow({ limit: L, windowMs })` counter on the store. Re-uses
+  the existing fixedWindow Lua (zero new wire surface, per DR-P4-5);
+  the shared store's atomicity is what bounds global `Σ used ≤ L`
+  across processes. The per-process T4 bound picks up a `quantum`-
+  scaled DRR slack across processes (`Σₚ Q⁽ᵖ⁾ · (1/wᵢ + 1/wⱼ)`).
+
+- **`weightedFairEscrowLimiter.stats()`** — read-only window snapshot
+  including `windowStart`, `limit`, `effectiveLimit` (the lazy-leased
+  total in L2 mode), `pool`, `totalUsed`, and per-tenant `{tenant,
+  weight, used}`. Useful for metrics / dashboards.
+
+- **`examples/weighted-fair-escrow.ts`** — LLM-gateway-multi-tenant
+  scenario: enterprise:pro:free at 4:2:1 weights against a 30 000 TPM
+  budget. Demonstrates the work-conservation effect — free-tier
+  flooders are metered at their guaranteed share, leaving headroom for
+  enterprise:alpha's later large completion.
+
+- **Wiki: `Pillar-4-Weighted-Fair-Escrow.md`** (pushed at the v0.9.1
+  release tag) — covers the 3-primitive fairness landscape, the
+  streaming algorithm, T1-T4 guarantees + the T5 (FairRide-conceded)
+  vertex, L2 multi-process backing, failure modes, composition, and
+  roadmap (federated WFE → 0.10.x).
+
+### Changed
+
+- **`guaranteedShare(weights, limit)` and `weightedFairShare`** —
+  switched from `floor((w/W)*L)` to `floor((w*L)/W)` to fix a
+  floating-point precision bug in edge cases like `(6/11)*99 =
+  53.999...` flooring to 53 instead of 54. The integer-first form is
+  exact up to `MAX_SAFE_INTEGER`. Pre-existing bug in 0.9.0; all
+  existing tests used friendly ratios that floor correctly, so this
+  is a silent precision improvement with no observable behaviour
+  change at common configurations.
+
+- **`docs/FAILURE-MODES.md`** — added a `weightedFairEscrow` outage
+  matrix section (L1-only vs L2-backed: tenant explosion, process
+  restart, L2 unreachability, paused tenant, T5 over-declaration,
+  async-vs-sync semantics, weight drift, lease denial).
+
+### Verified
+
+- 38 new WFE tests pass (22 happy-path + 8 L2 + 8 property tests
+  including L1 ≡ L2 dual-path conformance on MemoryStore + Redis-gated
+  DB 7 at 50 timelines).
+- T1 safety, T2 sharing-incentive, T3 work-conservation property tests
+  at `numRuns: 200`; T4 bounded unfairness at the
+  `q·(1/wᵢ + 1/wⱼ)` DRR bound. The pure batch algebra
+  (`weightedMaxMin`) is independently proven at 20 000 random trials
+  (`test/gale/fair-escrow.test.ts`, unchanged).
+- Composition with `combineDecisions`: WFE's Decision shape composes
+  via the 0.9.0 algebra unchanged.
+- Bench gate green at the 0.9.0 baseline (no `src/algorithms/*` or
+  `src/core/limiter.ts` or `src/stores/memory.ts` changes between
+  0.9.0 and 0.9.1; only `src/twotier/weighted-fair-escrow.ts` is new).
+
+### Design records (added)
+
+- DR-P4-1 through DR-P4-14 in `research/bigger-bets/pillar4-wfe/
+  DESIGN.md`. Most load-bearing:
+  - DR-P4-1 — API shape = top-level primitive in `src/twotier/`
+  - DR-P4-3 — does NOT widen `Limiter` (new interface)
+  - DR-P4-5 — L2 backing reuses existing `Store.apply` lease shape
+    (no new Lua)
+  - DR-P4-10 — NOT strategy-proof (FairRide conceded vertex)
+  - DR-P4-13 — first commit ships L1-only, second commit adds L2
+
+DR-P4-2 amended ("Why changed") — the L1-layer DRR quantum was dropped
+because the streaming algorithm matches exact integer guarantees per
+check; the quantum concept re-emerges only at the L2 layer (lease size).
+
 ## [0.9.0] — 2026-05-29
 
 **Unified admission — one Decision across rate, concurrency, and cost.**
