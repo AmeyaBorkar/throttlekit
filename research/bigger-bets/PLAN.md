@@ -433,54 +433,162 @@ joint; the algebra is sufficient) — and are publishable.
 
 ---
 
-## 6  Interstitial small polish (between major releases)
+## 6  Research → product: criteria + active productization tracks
 
-Between bigger-bet releases there are smaller items worth shipping as
-0.8.x / 0.9.x / 0.10.x point releases. None block a bigger bet but each is
-worth doing:
+### 6.1 Productizability criteria
+
+A research artifact in `research/`, `test/gale/`, or `test/cost/`
+*graduates* to `src/` (becomes productizable) when ALL of the following
+are true:
+
+1. **Primitive, not proof.** It's something a user can call — not a
+   theorem, BFS twin, simulation, or meta-claim. Trilemma proofs and
+   discrete-event sims stay research-only by design.
+2. **Formal bound is locked.** TLA⁺-checked or regret-analyzed; the
+   research has produced a tight result, not an open question.
+3. **Real workload demands it.** There's a concrete user story
+   (multi-tenant LLM gateway, non-Redis operator, etc.); not just a
+   theoretical gap.
+4. **Composition with existing primitives is clear.** The new surface
+   doesn't break twoTier / federation / unifiedAdmission semantics.
+5. **API surface is stable.** Committable through a minor release; the
+   open design questions are answered.
+
+Failing criterion 1 means the artifact stays research-only forever (it's
+not the kind of thing that *can* productize). Failing 2 means a research
+step is required first. Failing 3 means waiting for demand. Failing 4 or
+5 means a design step is required first.
+
+### 6.2 Inventory (post-0.8.3)
+
+| Item | Where | 1 | 2 | 3 | 4 | 5 | Verdict |
+|---|---|:-:|:-:|:-:|:-:|:-:|---|
+| **PostgresCoordinator** for federation | nothing yet (`GlobalCoordinator` interface already shipped 0.8.3) | ✓ | ✓ | ✓ | ✓ | ✓ | **Productizable NOW** → §6.3 → 0.8.4 |
+| **Multi-process regional escrow** | nothing yet | ✓ | ✓ | ✓ | ✓ | ⚠ | **Productizable NOW** (small design step) → §6.4 → 0.8.5 |
+| **Escrow-layer WFE (Pillar 4)** | `test/gale/fair-escrow.{ts,test.ts}` | ✓ | ✓ | ✓ | ⚠ | ⚠ | **Productizable NOW** (composition design step) → §6.5 → 0.9.1 |
+| **Unified admission** | active bet (`src/admission/unified.ts` to be written) | ✓ | ✓ | ✓ | ✓ | ✓ | Active → §4 → 0.9.0 |
+| Joint-LP admission policy | TK-1007 output pending | ✓ | ✗ | ? | ? | ? | NOT productizable — empirical bound not established. Conditional on TK-1007 positive |
+| Distributed adaptive concurrency | nothing yet | ✓ | ✗ | ✓ | ? | ? | NOT productizable — needs a new TLA⁺ proof (heartbeat-coupling vs window-coupling). Research step required first |
+| Trilemma proof / BFS twins / discrete-event sims | `test/gale/*`, `test/cost/*`, `spec/*` | ✗ | — | — | — | — | STAY RESEARCH-ONLY by design — fails criterion 1 |
+| Markdown research narratives | `research/**/*.md` (PROPOSALs, PILLAR docs, REGRET-ANALYSIS, etc.) | ✗ | — | — | — | — | STAY RESEARCH-ONLY |
+| HotNets paper draft | `research/hotnets2026/*` | n/a | — | — | — | — | DEFERRED (DR-15); not a productization target |
+
+### 6.3 Active track 1 — PostgresCoordinator (→ 0.8.4)
+
+**Why first.** Smallest effort (~1 week); highest immediate user impact
+(opens federation to non-Redis operators); pure engineering, no research
+overhead. The `GlobalCoordinator` interface was locked in 0.8.3, so this
+is a backend-mapping exercise: design the SKIP-LOCKED / advisory-lock /
+row-version mapping, implement, conformance-test against
+`tk-postgres:5433`, ship.
+
+| Task | Commit shape | Pass-`check` gate |
+|---|---|---|
+| **TK-1301** | `docs(federation): postgres coordinator design + GlobalCoordinator-vs-Postgres mapping` | docs only; check unchanged |
+| **TK-1302** | `feat(federation): PostgresCoordinator implementation + conformance tests` | Conformance against `tk-postgres:5433`; property-based dual-path RedisCoordinator ≡ PostgresCoordinator |
+| **TK-1303** | `docs(federation): FAILURE-MODES + wiki + example update for Postgres backend` | Wiki commits accumulate locally |
+| **TK-1304** | `chore(release): prepare 0.8.4 (PostgresCoordinator)` | Full release prep; patch (additive surface) |
+
+### 6.4 Active track 2 — Multi-process regional escrow (→ 0.8.5)
+
+**Why second.** Closes the federation `regional-only` outage-mode gap
+(currently broken-by-design — collapses to `fail-closed` because the
+regional escrow is in-process; documented in the 0.8.3 CHANGELOG
+caveats). Effort ~2 weeks; small design step on key format + Redis
+schema, then implementation + tests.
+
+| Task | Commit shape | Pass-`check` gate |
+|---|---|---|
+| **TK-1305** | `docs(federation): multi-process regional escrow design (Redis schema, key format, outage-mode wiring)` | docs only |
+| **TK-1306** | `feat(federation): regional Redis-backed escrow + regional-only outage mode wired` | Regional-only happy path + coordinator outage tests; property-based dual-path against TestCoordinator/RedisCoordinator |
+| **TK-1307** | `docs(federation): FAILURE-MODES update — regional-only now correct; wiki + example update` | Wiki commits accumulate locally |
+| **TK-1308** | `chore(release): prepare 0.8.5 (multi-process regional escrow)` | Full release prep; patch |
+
+### 6.5 Active track 3 — Pillar 4 escrow-layer WFE (→ 0.9.1)
+
+**Why third.** More design overhead (composition with twoTier;
+cross-tenant fairness semantics on shared escrow); waits for 0.9.0 to
+ship so it doesn't compete for design attention with #79. Effort ~2-3
+weeks. Graduates `test/gale/fair-escrow.ts` (research-only) into a
+production primitive in `src/twotier/`.
+
+Note: the existing `weightedFairShare` in `src/admission/` is at the
+*admission-decision* level. Pillar 4 is at the *escrow / leasing* layer
+— making the L2 lease budget itself divide fairly across tenants. The
+two compose; they aren't substitutes.
+
+| Task | Commit shape | Pass-`check` gate |
+|---|---|---|
+| **TK-1309** | `docs(research): Pillar 4 design — weightedFairEscrow + twoTier composition + cross-tenant fairness invariants` | docs only |
+| **TK-1310** | `feat(twotier): weightedFairEscrow implementation (Pillar 4 graduation)` | Tests scaffold present; full coverage in TK-1311 |
+| **TK-1311** | `test(twotier): cross-tenant fairness property tests + dual-path conformance` | numRuns ≥ 200; JS ≡ Lua on the Lua-backed path |
+| **TK-1312** | `docs(twotier): wiki Pillar4-WFE page + example + FAILURE-MODES update` | Wiki commits accumulate locally |
+| **TK-1313** | `chore(release): prepare 0.9.1 (Pillar 4)` | Full release prep; patch |
+
+### 6.6 Future polish (no formal track yet)
+
+Items still in the §6.2 NOT-productizable column will become formal
+tracks when their research step completes:
+
+| Item | Blocked on | Where it would land |
+|---|---|---|
+| Joint-LP policy productization | TK-1007 yielding ε > 0 positive | 0.10.x conditional |
+| Distributed adaptive concurrency | new TLA⁺ proof + sim (research step first; not yet planned) | 0.10.x+ |
+
+Cosmetic / engineering polish that doesn't pass criterion 1 as a
+*research* graduation but still wants doing eventually:
 
 | Item | Where | When |
 |---|---|---|
-| Bench-gate `continue-on-error: true` → `false` once <10% noise confirmed | `.github/workflows/ci.yml` | 0.8.4 (post enough green CI runs) |
-| Live-wire `leaseSizer` / `predictiveLeaseSizer` into `twoTier` | `src/twotier/index.ts` | 0.8.4 or 0.9.x |
-| Re-measure coverage (the 95.2% figure in SCOREBOARD is from 0.8.0) | `npm run test:cov` + SCOREBOARD | 0.8.4 |
-| `PostgresCoordinator` for federation (alternative to RedisCoordinator) | `src/federation/postgres-coordinator.ts` | 0.9.x follow-up |
-| Distributed adaptive concurrency (federation-backed; DR-10 follow-up) | `src/admission/` | 0.10.x follow-up |
-| Federated WFE (weighted fair escrow across regions) | `src/federation/wfe.ts` | 0.10.x |
-| Joint-LP policy in `unifiedAdmission` (DR-11 follow-up, if TK-1007 yields positive) | `src/admission/joint-lp.ts` | 0.10.x conditional |
-| Multi-process regional escrow (federation deepening) | `src/federation/regional-escrow.ts` | 0.9.x |
-
-These are tracked as single "polish" tasks each (TK-13xx-series), spawned
-when their parent release lands and demand is confirmed.
+| Bench-gate `continue-on-error: true` → `false` once <10% noise confirmed | `.github/workflows/ci.yml` | folds into any 0.8.x patch |
+| Live-wire `leaseSizer` / `predictiveLeaseSizer` into default `twoTier` sizing (currently shipped as standalone callables; default is naive) | `src/twotier/index.ts` | folds into 0.9.x |
+| Re-measure coverage (95.2% figure in SCOREBOARD is from 0.8.0) | `npm run test:cov` + SCOREBOARD | folds into any patch |
 
 ---
 
 ## 7  Tasks
 
 The full task list lives in the task system (see `TaskList`). Status as of
-2026-05-28 (post-0.8.3 + user-driven deferrals):
+2026-05-28 (post-0.8.3 + post-deferral + productization tracks added):
 
 | ID | Label | Maps to | State |
 |---|---|---|---|
 | meta | **TK-823** Federation — shipped 0.8.3 | bet #77 | ✅ completed |
-| meta | **TK-825** Unified admission — ship 0.9.0 | bet #79 | pending → in_progress on TK-1001 start |
+| meta | **TK-825** Unified admission — ship 0.9.0 | bet #79 | pending → in_progress on TK-1001 start (after TK-1308 ships 0.8.5) |
 | sub | **TK-901**..**TK-912** | federation sub-tasks | ✅ all completed |
-| sub | **TK-1001**..**TK-1009** | unified admission sub-tasks | pending; linear `blockedBy` chain |
+| sub | **TK-1301**..**TK-1304** | PostgresCoordinator → 0.8.4 (§6.3) | pending; linear `blockedBy` chain |
+| sub | **TK-1305**..**TK-1308** | Multi-process regional escrow → 0.8.5 (§6.4) | pending; TK-1305 blocked by TK-1304 |
+| sub | **TK-1001**..**TK-1009** | Unified admission → 0.9.0 (§4) | pending; TK-1001 blocked by TK-1308 |
+| sub | **TK-1309**..**TK-1313** | Pillar 4 escrow-layer WFE → 0.9.1 (§6.5) | pending; TK-1309 blocked by TK-1009 |
 | ~~meta~~ | ~~TK-824 polyglot — ship 1.0.0~~ | bet #78 | **DELETED** (DR-14) |
 | ~~sub~~ | ~~TK-1101..TK-1111 polyglot sub-tasks~~ | — | **DELETED** (DR-14) |
 | ~~meta~~ | ~~TK-1200 HotNets paper — assemble + submit~~ | parallel | **DELETED** (DR-15) |
 
-**Active sub-task chain (each implies the prior is complete):**
+**Active sub-task chains (each implies the prior is complete):**
 
-Unified admission (#79):
 ```
-TK-1001 → TK-1002 → TK-1003 → TK-1004 → TK-1005 → TK-1006 → TK-1007 → TK-1008 → TK-1009 (release 0.9.0)
+PostgresCoordinator → 0.8.4:
+  TK-1301 → TK-1302 → TK-1303 → TK-1304 (release 0.8.4)
+
+Multi-process regional escrow → 0.8.5:
+  TK-1304 → TK-1305 → TK-1306 → TK-1307 → TK-1308 (release 0.8.5)
+
+Unified admission → 0.9.0:
+  TK-1308 → TK-1001 → TK-1002 → TK-1003 → TK-1004 → TK-1005 → TK-1006
+         → TK-1007 → TK-1008 → TK-1009 (release 0.9.0)
+
+Pillar 4 (escrow-layer WFE) → 0.9.1:
+  TK-1009 → TK-1309 → TK-1310 → TK-1311 → TK-1312 → TK-1313 (release 0.9.1)
 ```
 
-The chain is linear because each step assumes the prior step's
+**Critical path: 22 tasks, four releases (0.8.4 → 0.8.5 → 0.9.0 → 0.9.1).**
+
+Each chain is linear because each step assumes the prior step's
 interfaces / proofs / stores exist; trying to parallelize would produce
-merge churn on the same interface files. No cross-bet dependencies remain
-post-deferral.
+merge churn on the same interface files. Cross-chain dependencies
+(TK-1305 ← TK-1304; TK-1001 ← TK-1308; TK-1309 ← TK-1009) enforce that
+each release ships before the next begins (small frequent releases are
+the established cadence — see 0.8.1 → 0.8.2 → 0.8.3).
 
 ---
 
@@ -503,6 +611,8 @@ post-deferral.
 | DR-13 | ~~Polyglot ports = separate repos.~~ | 2026-05-28 | **Superseded by DR-14** (polyglot deferred) |
 | DR-14 | **Polyglot + wire-protocol freeze (#78) DEFERRED at user request 2026-05-28.** The sub-task chain TK-1101..TK-1111 was deleted from the task system; meta-task TK-824 deleted. PLAN.md §5 reduced to a stub pointing at git history (commit `8fe0a1c` retains the full previous design). No API or wire-protocol freeze is to be undertaken until the user explicitly reauthorizes. Rationale: the user wants to keep the wire surface fluid through #79's fused-admission script and any subsequent additions; freezing now would constrain design freedom. | 2026-05-28 | Locked until user reauthorizes |
 | DR-15 | **HotNets paper assembly task (TK-1200) REMOVED at user request 2026-05-28.** The paper draft (`research/hotnets2026/DRAFT.md`) and the federation eval (`research/bigger-bets/federation/eval/RESULTS.md`) remain as research artifacts; the *assembly* / submission task is no longer on the roadmap. If the user re-engages with the paper, recreate the task; the artifacts are intact. | 2026-05-28 | Locked until user reauthorizes |
+| DR-16 | **Productization sequencing = federation-completion FIRST, then unified, then Pillar 4.** The three productizable-NOW items ship as patches/minor in the order 0.8.4 (PostgresCoordinator) → 0.8.5 (multi-process regional escrow) → 0.9.0 (unified admission) → 0.9.1 (Pillar 4 WFE). *Why this order:* (a) PostgresCoordinator is the smallest effort with the highest immediate user impact (opens federation to non-Redis operators), (b) multi-process regional escrow closes the federation `regional-only` outage-mode gap (currently broken-by-design) before the federation foundation gets layered under unified admission, (c) #79 unified admission then ships on a complete federation foundation, (d) Pillar 4 lands last because its composition-with-twoTier design step shouldn't compete with #79 for attention. Each release is a small, focused patch/minor — matches the established small-frequent-release cadence (0.8.1 → 0.8.2 → 0.8.3). | 2026-05-28 | Locked unless an external customer reorders priorities |
+| DR-17 | **Productizability criteria** (§6.1) = research artifact graduates to `src/` when ALL of: (1) primitive not proof, (2) formal bound locked, (3) real workload demands, (4) composition clear, (5) API stable. Failing 1 means stays research-only forever; failing 2 means research step first; failing 3 means wait for demand; failing 4/5 means design step first. Used to triage `research/`, `test/gale/`, `test/cost/` items into "productize NOW" vs "research-only" vs "wait." | 2026-05-28 | Locked — operational rubric |
 
 When implementation reveals a decision needs to change, edit the row in place
 and add a one-line "Why changed" under it — do not silently rewrite.
@@ -511,35 +621,32 @@ and add a one-line "Why changed" under it — do not silently rewrite.
 
 ## 9  How to start (the next session)
 
-Federation (#77) is shipped. The next bet is **#79 unified admission**.
+Federation (#77) is shipped. The active sequence is now four releases
+deep: **0.8.4 PostgresCoordinator → 0.8.5 multi-process regional escrow
+→ 0.9.0 unified admission → 0.9.1 Pillar 4 WFE**.
 
 1. Read this file first.
-2. `TaskList` → claim **TK-1001** (unified admission design doc + algebra
-   spec).
-3. Write `research/bigger-bets/unified/DESIGN.md` — full design, expands §4
-   here with:
-   - Lit synthesis: Netflix concurrency-limits (gradient2 / AIMD); Envoy
-     adaptive concurrency filter; Google SRE chapter 21 (adaptive
-     throttling); Little's Law as the queuing-theory grounding; recent
-     academic work on joint admission control (search HotCloud / HotNets /
-     NSDI 2022–2026 for "joint admission" / "multi-resource rate
-     limiting").
-   - The algebra spec for `combineDecisions` (the 4 laws + their
-     property-test plan).
-   - The architecture (sequential + Lua-fused; `UnifiedAdmitter` interface;
-     `Lease ↔ Decision` shim).
-   - The research question setup (toy-model bivariate workload, three
-     policies, regret curves).
-4. No code yet for TK-1001 — design doc only. The commit is `docs(research):
-   unified admission design doc + algebra spec`. Pass-`check`: nothing
-   breaks because no code changes.
-5. Mark TK-1001 complete; pick TK-1002 (`combineDecisions` + algebraic-laws
-   property test).
-6. Iterate down the unified chain: TK-1002 → TK-1003 → ... → TK-1009
-   (release 0.9.0).
-7. After TK-1009 lands, **pause for user direction** — the polyglot bet
-   (#78) and the HotNets paper assembly are explicitly deferred (DR-14,
-   DR-15); the next move requires user input.
+2. `TaskList` → claim **TK-1301** (PostgresCoordinator design doc).
+3. Write `research/postgres-coordinator/DESIGN.md` — full design,
+   expanding §6.3. Maps the existing `GlobalCoordinator` interface
+   (shipped 0.8.3) onto Postgres primitives: SKIP-LOCKED row-level
+   leasing, advisory locks for the per-key window, durability story,
+   HA / SPOF behavior vs RedisCoordinator.
+4. No code yet for TK-1301 — design doc only. Commit
+   `docs(federation): postgres coordinator design + GlobalCoordinator-vs-Postgres mapping`.
+5. Mark TK-1301 complete; pick TK-1302 (implementation +
+   `tk-postgres:5433` conformance tests).
+6. Iterate: TK-1302 → TK-1303 → TK-1304 (release 0.8.4).
+7. After 0.8.4 lands, start TK-1305 (regional escrow design) → ... →
+   TK-1308 (release 0.8.5).
+8. After 0.8.5 lands, switch to TK-1001 (unified admission design) →
+   ... → TK-1009 (release 0.9.0).
+9. After 0.9.0 lands, switch to TK-1309 (Pillar 4 design) → ... →
+   TK-1313 (release 0.9.1).
+10. After 0.9.1 lands, **pause for user direction** — the polyglot bet
+    (#78) and the HotNets paper assembly are explicitly deferred
+    (DR-14, DR-15); remaining items in §6.6 require either a research
+    step (joint-LP, distributed concurrency) or user demand.
 
 **Standing rules (re-stated for the implementer):**
 - Every commit passes `npm run check`.
