@@ -1009,3 +1009,18 @@ export function predictiveReservation(
     },
   };
 }
+
+// ── Primitive 7: leaseAsAdmission (concurrency-axis ↔ Decision shim, TK-1003) ────────────────────
+
+/**
+ * Bridge `adaptiveConcurrency()`'s `ConcurrencyGuard.acquire() → Lease` into a
+ * Decision-shaped admission so the concurrency axis composes with rate / cost
+ * axes via {@link combineDecisions}. See `research/bigger-bets/unified/DESIGN.md`
+ * §5 for the Decision-shape mapping and D-U7 for the `retryAfterMs` heuristic.
+ */
+export { leaseAsAdmission } from "./lease-shim";
+export type {
+  LeaseAdmission,
+  LeaseAdmitter,
+  LeaseAsAdmissionOptions,
+} from "./lease-shim";
