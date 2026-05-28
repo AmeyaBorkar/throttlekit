@@ -163,6 +163,6 @@ shipped (Layers 1–3 now ship). Reproduce with `npx vitest run test/cost`.
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **769 tests** (768 pass + 1 skip with the Redis/Postgres-gated suites enabled; 0.8.0's 95.2% line coverage figure is from a coverage run on the previous test set, re-measure on release) |
+| Test coverage on `src` | ✅ **845 tests** (793 pass + 52 skipped without `THROTTLEKIT_TEST_REDIS`/`PG`; with all gated suites enabled, all pass. 0.8.0's 95.2% line coverage figure is from a coverage run on the previous test set, re-measure on release) |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) + bench:gate regression gate (informational) | ✅ |
-| Build emits valid ESM + CJS + types (11 subpaths) | ✅ |
+| Build emits valid ESM + CJS + types (12 subpaths — added `throttlekit/federation`) | ✅ |

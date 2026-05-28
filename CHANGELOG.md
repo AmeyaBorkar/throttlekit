@@ -8,6 +8,112 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.9.0] — 2026-05-28
+
+**The federation release.** Ships `federate(...)` — cross-cluster rate limiting with a
+formally-verified, K-INDEPENDENT overshoot bound — and the production-grade
+`RedisCoordinator` that backs it. Test count **769 → 851** (793 pass + 58 skipped with
+all Redis/Postgres-gated suites enabled).
+
+### Added
+
+- **Cross-cluster federation** (`throttlekit/federation` — TK-901 .. TK-912). `federate({
+  strategy, coordinator, region, batch })` returns a regular `Limiter` that pools one
+  global budget across K regions; per-window overshoot **`admitted ≤ Limit`,
+  independent of region count K**. The contribution vs the existing in-process
+  `twoTier(leased, windowCoupled)` is *cross-cluster*: when your processes span
+  multiple Redis clusters (one per region), this gives the same proven bound at the
+  inter-cluster layer with one cross-region round trip per `batch` requests.
+
+  Components:
+  - `federate(...)` — top-level Limiter factory (parallel to `rateLimit` / `twoTier`).
+  - `FederatedStore` — the Store-shape composition for users layering `twoTier` on top
+    (recursive twoTier composition).
+  - `GlobalCoordinator` — abstract interface; ships with `TestCoordinator` (in-memory
+    for tests) and `RedisCoordinator` (production default; single global Redis,
+    documented SPOF). `PostgresCoordinator` and Raft-via-etcd are 0.9.x / 1.0.x
+    follow-ups.
+  - Window-coupling rule: regional escrow expires at the global window boundary, with
+    idempotent reconcile on `windowStart` (the partition-recovery contract).
+  - Fail-closed default (`onCoordinatorOutage: "fail-closed"`); `regional-only` opt-in
+    for soft-traffic operators (TK-906 scope).
+  - New subpath export: `import { federate, RedisCoordinator } from "throttlekit/federation"`.
+
+- **Formal model: `spec/GaleFederatedLeasing.tla`** (TK-901). A literal relabeling of
+  `spec/GaleWindowCoupledLeasing.tla` (`Nodes → Regions`, `credits → escrow`,
+  `l2 → globalBudget`); the math lifts directly via the recursive twoTier insight.
+  TLC-checked at small state counts (8 / 27 / 112 distinct states for K=2/3/5);
+  CI-runnable BFS twin in `test/gale/federated/leasing-variants.test.ts` (TK-905)
+  reproduces TLC's anchor counts byte-for-byte (31 baseline / 441 baseline) and pins
+  the new federated counts.
+
+- **`staticPartition()` baseline** (TK-903). The simplest correct federation scheme —
+  split the global budget evenly across K regions, no coordination, no pooling. Used
+  as the comparison baseline in `research/bigger-bets/federation/baselines.md`;
+  measured U_capacity collapses from 1.0 (uniform) to 1/K (max skew). The federation
+  scheme recovers full utilization under skew (see eval below).
+
+- **3-region cluster eval** (`research/bigger-bets/federation/eval/` — TK-909, TK-910).
+  Reproducible docker-compose layout + replay harness. End-to-end run captures:
+  - Δ = 0 on every measured configuration (skew 0..1, RTT 1ms..100ms)
+  - U_capacity ≥ 0.957 across the skew sweep; **U = 1.000 at max skew**, where the
+    static-partition baseline drops to 0.333 (federation **recovers +0.667** of
+    utilization)
+  - Coordinator round trips amortize exactly at `1/batch` (38 trips for 600 admissions
+    at batch=16); latency is irrelevant to utilization (p99 grows linearly with RTT
+    but the throughput claim doesn't move).
+
+- **Property-based dual-path federation conformance** (TK-908). Fast-check generates
+  adversarial `(regionIdx, cost)` timelines and drives them through BOTH
+  `TestCoordinator` and `RedisCoordinator`, asserting the admit-decision streams
+  agree byte-for-byte across K ∈ {2, 3, 4} × L ∈ {12, 30}. Gated on
+  `THROTTLEKIT_TEST_REDIS`.
+
+- **Cross-region failure-mode tests** (TK-907). Deterministic tests for the three
+  documented failure modes (region partitioned, coordinator crash + recovery,
+  coordinator out across a window boundary). Δ = 0 holds across every outage shape;
+  the federation fails *closed* under every partition.
+
+- **Failure-modes documentation** (`docs/FAILURE-MODES.md`). New section detailing the
+  four federation outage shapes with the recovery behavior and Δ bound for each. The
+  optional `regional-only` mode for availability-over-precision is documented.
+
+- **Wiki: new `Federation` page** + cross-links from `Home`, `Distributed-and-Provable`,
+  and the sidebar. Full design + proofs + eval at
+  `research/bigger-bets/federation/{DESIGN.md, RESULTS.md, baselines.md}`.
+
+- **`examples/federation.ts`** — a runnable 3-region federation example against the
+  TK-909 docker-compose; demonstrates `Δ = 0` and prints the recovery vs static
+  partition.
+
+- **`NotImplementedError`** — new error subclass of `ThrottleKitError` for placeholder
+  code paths during incremental rollouts; exported from the root.
+
+### Caveats + scope
+
+- **`RedisCoordinator` SPOF.** A single global Redis IS a single point of failure for
+  the federation's safety bound. Mitigations: Sentinel/Cluster under the Redis
+  client (the Lua scripts work unchanged); `PostgresCoordinator` (0.9.x follow-up);
+  Raft-via-etcd (1.0.x). Documented in `research/bigger-bets/federation/DESIGN.md` §4.4
+  and the Federation wiki page.
+- **In-process regional escrow.** At this commit federation holds per-process escrow
+  in memory. Multi-process per-region (regional Redis backing the escrow) is a
+  0.9.x follow-up; layer `twoTier(leased)` on top of `federate(...)` for an
+  in-process L1 cache today.
+- **Windowed strategies only.** `federate(...)` requires `strategy.windowMs` defined
+  (`fixedWindow`, `slidingWindow`, `quota` with fixed cadence). Pure-rate strategies
+  (`gcra`, `tokenBucket`) need the window for the window-coupling rule and aren't
+  supported at this commit.
+- **`regional-only` outage mode** is accepted on construction but currently collapses
+  to `fail-closed`; the regional-Store fallback lands with the multi-process regional
+  escrow in TK-906+.
+
+### Changed
+
+- `FederatedStoreOptions` now requires `strategy` and accepts `clock` — small refinement
+  vs the TK-902 skeleton surface, with no real-world impact (no production users; the
+  skeleton was published as part of 0.9.0).
+
 ## [0.8.2] — 2026-05-28
 
 A small, focused follow-up release that lands the two non-blocking small bets the 0.8.1 CHANGELOG
