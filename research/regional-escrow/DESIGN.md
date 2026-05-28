@@ -307,8 +307,48 @@ window is a soft-bound period; before and after it the hard bound holds.
 
 ## 8  Public API
 
-The existing `FederateOptions.regional` field becomes active; no new
-field needed. The doc comment updates to describe the new behavior.
+**DR-20 (TK-1306 implementation revision)**: The original design (§8 below)
+spec'd `regional?: Store` as the wiring point — but the `Store` interface
+(`apply(transform)` + `reset(key)`) doesn't accept the multi-arg atomic Lua
+scripts the L2 layer needs (LEASE/REFILL/RELEASE), and routing through the
+generic `Transform` would couple `Store`'s contract to federation semantics.
+We introduce a first-class **`RegionalEscrow`** interface instead, mirroring
+`GlobalCoordinator` one layer down. The existing `regional?: Store` field
+on `FederatedStoreOptions` stays accepted (still used for `regional.reset()`
+plumbing); the new `regionalEscrow?: RegionalEscrow` field is what the engine
+actually consults. Purely additive — no breaking changes.
+
+**DR-21 (TK-1306 algorithmic revision)**: `REFILL` is **additive** within a
+window (`balance += granted` when `source_lease == sourceWindowStart`),
+not "first-wins". Rationale: multiple processes can each call
+`coord.lease()` concurrently at window-open; first-wins would discard the
+losers' grants (capacity leak), additive accumulates them in L2 where any
+process can lease them. Federation bound (Δ = 0) is preserved by the L3
+coordinator's `perKeyBudget` cap — total grants per window per key ≤
+`perKeyBudget` regardless of how many processes contributed. The original
+design's "regional bound ≤ batch per window" claim narrows to "regional
+bound ≤ perKeyBudget per window per region" — same as the federation bound,
+which is still the load-bearing guarantee for the regional-only outage mode.
+
+### 8.1 The `RegionalEscrow` interface (TK-1306 actual)
+
+```ts
+export interface RegionalEscrow {
+  /** Consume from L2 balance. Returns granted (0..tokens). */
+  lease(key: string, tokens: number): Promise<number>;
+  /** Add an L3 grant to L2 balance; additive within window; idempotent on stale grants. */
+  refill(key: string, granted: number, sourceWindowStart: number): Promise<boolean>;
+  /** Capture-and-zero the balance at window roll; idempotent per (key, sourceWindowStart). */
+  release(key: string, sourceWindowStart: number): Promise<number>;
+  isHealthy?(): Promise<boolean>;
+}
+```
+
+Implementations shipping in 0.8.5:
+- `RedisRegionalEscrow` — Lua-backed; mirrors `RedisCoordinator` pattern
+- `TestRegionalEscrow` — deterministic in-memory; mirrors `TestCoordinator`
+
+### 8.2 The wiring at `federate(...)` / `FederatedStore`
 
 ```ts
 interface FederateOptions<S> {
@@ -317,31 +357,38 @@ interface FederateOptions<S> {
   region: Region;
   batch?: number;
   /**
-   * Regional Redis Store for multi-process per-region escrow. When
-   * provided (and a RedisStore), the federation engine uses it as L2
-   * cache between in-process L1 and the global coordinator (L3) —
-   * multiple processes in the same region share the regional escrow
-   * atomically (Δ ≤ batch per region per window, vs M × batch without).
-   *
-   * Also enables `onCoordinatorOutage: "regional-only"` — when the
-   * coordinator is unreachable, the engine continues serving from
-   * regional Redis until the regional budget depletes.
-   *
-   * When undefined, the engine uses in-process escrow only (legacy
-   * 0.8.3 behavior; Δ = 0 federation bound preserved via twoTier(leased)
-   * wrapping for multi-process).
+   * Regional escrow (L2) for multi-process per-region atomicity and
+   * regional-only outage mode. When provided, the engine routes leases
+   * through L2 before reaching the coordinator (L3). When undefined,
+   * the engine uses in-process escrow only (legacy 0.8.4 behavior).
+   */
+  regionalEscrow?: RegionalEscrow;
+  /**
+   * (Soft-deprecated as of 0.8.5; the `regionalEscrow` field is what the
+   * engine actually consults. This field stays accepted but is no-op for
+   * the engine — kept for backward compat with the 0.8.3+ FederatedStore
+   * API which used it for `reset()` plumbing.)
    */
   regional?: Store;
   onCoordinatorOutage?: CoordinatorOutageMode;
   /**
    * How often to re-check `coordinator.isHealthy()` while in
-   * `regional-only` mode. Default 5000 (5 s). Only consulted when
-   * `regional-only` is the outage mode and the coordinator has flipped
-   * unhealthy.
+   * `regional-only` mode after a coordinator outage. Default 5000 (5 s).
    */
   coordinatorHealthCheckMs?: number;
   clock?: Clock;
   prefix?: string;
+}
+```
+
+### 8.3 Original draft (superseded by §8.1 + §8.2)
+
+```ts
+// Original draft — superseded. Kept for audit trail.
+interface FederateOptions<S> {
+  // ...
+  regional?: Store;  // ← was the planned wiring; replaced by `regionalEscrow`
+  // ...
 }
 ```
 

@@ -7,6 +7,11 @@
  * At this commit (TK-902) the types are public + frozen; the behavior lands
  * in TK-903 (static partition baseline) and TK-904 (window-coupled federated
  * leasing). `FederatedStore.apply` throws `NotImplementedError` until then.
+ *
+ * TK-1306 (0.8.5) adds {@link RegionalEscrow} — the L2 layer between the
+ * per-process engine L1 cache and the cross-region {@link GlobalCoordinator}
+ * (L3). Mirrors GlobalCoordinator one layer down (see
+ * `research/regional-escrow/DESIGN.md`).
  */
 
 import type { Clock, Store, Strategy } from "../core/types";
@@ -73,6 +78,85 @@ export interface GlobalCoordinator {
    *
    * Defaults to `() => Promise.resolve(true)` if not implemented — the
    * caller treats absence as "assume healthy until a `lease()` fails".
+   */
+  isHealthy?(): Promise<boolean>;
+}
+
+/**
+ * Regional escrow — the L2 of the recursive twoTier federation stack, sitting
+ * between the per-process in-process L1 cache and the cross-region L3
+ * {@link GlobalCoordinator}. Mirrors the GlobalCoordinator surface one layer
+ * down: a shared atomic store of "tokens-this-region-has-leased-from-L3-but-
+ * not-yet-served". Multiple processes within a region share a single
+ * `RegionalEscrow` (typically backed by regional Redis) so the in-flight
+ * escrow per region is bounded by what L3 has actually granted to the region
+ * — instead of `M × batch` (M independent processes each holding their own
+ * lease) the bound becomes `≤ perKeyBudget` per window per region.
+ *
+ * It also enables {@link CoordinatorOutageMode}=`"regional-only"`: when L3
+ * is unreachable, the engine continues serving from the L2 escrow until
+ * depleted (availability-over-precision opt-in; the federation bound
+ * degrades to the regional sub-bound during the outage).
+ *
+ * Implementations: {@link RedisRegionalEscrow} for production (atomic Lua
+ * mirroring `RedisCoordinator`), {@link TestRegionalEscrow} for deterministic
+ * unit tests (no I/O; injected clock).
+ *
+ * See `research/regional-escrow/DESIGN.md` for the full design.
+ */
+export interface RegionalEscrow {
+  /**
+   * Lease `tokens` units of L2 escrow for the active window. Returns the
+   * granted amount in `[0, tokens]` — partial grants are legitimate (L2
+   * was partially drained by other processes since the last refill).
+   *
+   * Returns `0` if the active window has expired OR no refill has happened
+   * yet OR the L2 balance is empty. The caller (engine) is responsible for
+   * topping L2 up from L3 via {@link refill} when LEASE returns 0.
+   *
+   * MAY throw `StoreUnavailableError` on regional store unreachability —
+   * the caller treats this as L2 missing, falling back to direct L3 leasing
+   * (so a regional Redis outage degrades to the existing 0.8.4 behavior).
+   */
+  lease(key: string, tokens: number): Promise<number>;
+
+  /**
+   * Refill L2 escrow from an L3 grant. `granted` is the tokens the L3
+   * coordinator just returned to this process; `sourceWindowStart` is the
+   * coordinator window the grant applies to.
+   *
+   * Semantics:
+   * - If L2 has no entry OR L2's `source_lease ≠ sourceWindowStart`: replace
+   *   (initialize a fresh entry with `balance = granted` for `sourceWindowStart`).
+   * - If L2's `source_lease == sourceWindowStart`: add (`balance += granted`)
+   *   so multiple processes' coord-grants accumulate in the shared L2.
+   *
+   * Window-coupled: if `sourceWindowStart + windowMs` is in the past at the
+   * regional store's clock, the refill is dropped (a grant for a stale
+   * window can't be applied — the formal window-coupling boundary). Returns
+   * `false` in that case; `true` on successful refill.
+   */
+  refill(key: string, granted: number, sourceWindowStart: number): Promise<boolean>;
+
+  /**
+   * Release the L2's remaining balance back to the caller at the
+   * `sourceWindowStart` window boundary. Returns the captured balance (≥ 0);
+   * subsequent calls for the same `(key, sourceWindowStart)` return 0
+   * (idempotency at the regional layer). The caller forwards this amount
+   * to `coordinator.reconcile()` so L3's accounting picks up the unused
+   * regional capacity.
+   *
+   * MAY throw `StoreUnavailableError` on regional store unreachability;
+   * the caller drops the reconcile (best-effort — failure cannot violate
+   * the federation bound; it only loses next-window capacity).
+   */
+  release(key: string, sourceWindowStart: number): Promise<number>;
+
+  /**
+   * Optional liveness probe. Returns `true` when the regional store is
+   * reachable. Used by the engine's failure-mode detector (when present)
+   * to skip the L2 path during a regional outage. Absence is treated as
+   * "assume healthy until a `lease()` fails".
    */
   isHealthy?(): Promise<boolean>;
 }

@@ -24,16 +24,21 @@ export { PostgresCoordinator } from "./postgres-coordinator";
 export type { PostgresCoordinatorOptions } from "./postgres-coordinator";
 export { RedisCoordinator } from "./redis-coordinator";
 export type { RedisCoordinatorOptions } from "./redis-coordinator";
+export { RedisRegionalEscrow } from "./redis-regional-escrow";
+export type { RedisRegionalEscrowOptions } from "./redis-regional-escrow";
 export { FederatedStore } from "./store";
 export { staticPartition } from "./static-partition";
 export type { StaticPartitionOptions, StaticPartitionResult } from "./static-partition";
 export { TestCoordinator } from "./test-coordinator";
 export type { TestCoordinatorOptions } from "./test-coordinator";
+export { TestRegionalEscrow } from "./test-regional-escrow";
+export type { TestRegionalEscrowOptions } from "./test-regional-escrow";
 export type {
   CoordinatorOutageMode,
   FederatedStoreOptions,
   GlobalCoordinator,
   Region,
+  RegionalEscrow,
 } from "./types";
 export { federate } from "./window-coupled";
 export type { FederateOptions } from "./window-coupled";
