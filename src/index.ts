@@ -57,7 +57,13 @@ export type {
   ConcurrencyGuard,
   Lease,
 } from "./concurrency/adaptive";
-export { eoqOptimum, leaseSizer, predictiveLeaseSizer, twoTier } from "./twotier";
+export {
+  eoqOptimum,
+  leaseSizer,
+  predictiveLeaseSizer,
+  twoTier,
+  weightedFairEscrow,
+} from "./twotier";
 export type {
   L1Options,
   LeaseOptions,
@@ -67,6 +73,9 @@ export type {
   PredictiveLeaseSizerOptions,
   TwoTierMode,
   TwoTierOptions,
+  WeightedFairEscrowLimiter,
+  WeightedFairEscrowOptions,
+  WeightedFairEscrowStats,
 } from "./twotier";
 export { buildRateLimitHeaders } from "./http/headers";
 export type { HeaderEmit, BuildRateLimitHeadersOptions } from "./http/headers";

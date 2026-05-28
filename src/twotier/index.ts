@@ -14,6 +14,18 @@ export type {
   PredictiveLeaseSizerOptions,
 } from "./sizing";
 
+/**
+ * GALE Pillar 4 graduation — `weightedFairEscrow(...)` ships in 0.9.1 (TK-1310). The L1-only
+ * single-process path is here; the multi-process L2 backing arrives in the next commit. See
+ * `research/bigger-bets/pillar4-wfe/DESIGN.md` for the full design lock.
+ */
+export { weightedFairEscrow } from "./weighted-fair-escrow";
+export type {
+  WeightedFairEscrowLimiter,
+  WeightedFairEscrowOptions,
+  WeightedFairEscrowStats,
+} from "./weighted-fair-escrow";
+
 /** L1/L2 coordination mode. See docs and THROTTLEKIT.md §8. */
 export type TwoTierMode = "strict" | "cached-deny" | "leased";
 
