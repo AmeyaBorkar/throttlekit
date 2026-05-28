@@ -8,6 +8,130 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.10.0] — 2026-05-29
+
+**Distributed adaptive concurrency.** `adaptiveConcurrency()` infers a
+concurrency ceiling **per process** from locally observed RTT. The moment
+N processes front a *shared* backend (one inference cluster, one database
+pool, one upstream API), N independent adaptive limiters each infer a
+ceiling for the *whole* backend and collectively admit up to `Σ Lᵢ` — N×
+the backend's true capacity. The adaptive limiter that was supposed to
+*prevent* overload now *causes* it under fan-out. This release closes that
+gap with `distributedAdaptiveConcurrency()`: a drop-in `ConcurrencyGuard`
+that keeps the fleet's total in-flight count under one cooperatively-
+inferred global ceiling. **Minor** versioned because the surface is purely
+additive — no change to `adaptiveConcurrency`, `federate`,
+`unifiedAdmission`, or any existing adapter.
+
+### Added
+
+- **`distributedAdaptiveConcurrency(...)` in `src/concurrency/distributed.ts`
+  (TK-1315)** — the new primitive (D-DAC-1). A dedicated `ConcurrencyGuard`,
+  **not** a `federate()` extension: concurrency needs the event-release
+  `acquire() → Lease` contract the 0.9.2 adapters accept, not federation's
+  windowed-rate `Limiter`. The guard delegates `acquire`/`release` to a
+  private in-process `adaptiveConcurrency` and only *tightens the gate* by
+  the coordinator-supplied `share`; the effective ceiling is
+  `min(share, local.limit)` (D-DAC-5/D-DAC-6), so RTT timing, the windowed
+  no-load minimum, Gradient2/AIMD adaptation, and release idempotency are
+  all inherited for free, with sub-heartbeat local reaction to an RTT spike.
+  `acquire()` stays **synchronous** (D-DAC-4); only `heartbeat()` / `close()`
+  are async. `nodeId` is **required, no default** (collisions corrupt the
+  aggregate — D-DAC-15). One coordination round-trip per heartbeat, not per
+  request (D-DAC-3).
+
+- **`ConcurrencyCoordinator` interface + `ConcurrencyReport` /
+  `ConcurrencyGrant` types in `src/concurrency/coordinator.ts` (TK-1315)** —
+  the event-release sibling of federation's `GlobalCoordinator`. Owns the
+  shared `L_global` and parcels it into per-node shares; the lease is renewed
+  by heartbeat (liveness) and reclaimed by TTL (D-DAC-2). `leaseTtlMs`
+  defaults to `2·heartbeatMs` so one slow heartbeat does not drop a node and a
+  crashed node is reclaimed within the TTL (D-DAC-7).
+
+- **`TestConcurrencyCoordinator` + `RedisConcurrencyCoordinator` (TK-1315)** —
+  in-memory deterministic (no timers, no I/O; expiry against an injected
+  clock) and a single atomic Lua heartbeat-aggregate-split, respectively.
+  Postgres is **deferred** to a follow-up patch, mirroring federation's
+  0.8.3 (Redis) → 0.8.4 (Postgres) rollout (D-DAC-16).
+
+- **Equal-split allocation (D-DAC-9)** — `L_global` is divided into per-node
+  shares by `base = ⌊L/N⌋` plus one to the lowest-ranked `rem` nodes
+  (deterministic lexicographic `nodeId` tiebreak, no RNG), so
+  `Σ share = L_global` **exactly** — no carry-over, no clawback. Idle nodes
+  still hold `≈ L/N` (a documented utilization limitation, never a safety
+  bug); demand-proportional allocation is a future refinement.
+
+- **Median / min aggregation, never sum (D-DAC-10)** —
+  `aggregate({lLocal}) → L_global` is `"median"` (**default**, the lower
+  median — robust to a single cold-starting node) or `"min"` (the
+  conservative extreme). All nodes estimate the **same** quantity (the shared
+  backend's capacity), so aggregation is robust *central estimation* of one
+  number; **summing rebuilds the `N·C` overshoot bug** of fan-out and is
+  never used. The policy lives on the coordinator, not the guard, so a
+  mixed-fleet misconfiguration is impossible (D-DAC-8).
+
+- **Fail-closed by default (D-DAC-11)** — on a coordinator outage,
+  `onCoordinatorOutage: "fail-closed"` (default — safety > availability,
+  matching federation) sets `share → 0` and the node sheds everything until
+  the coordinator returns; `"local-only"` falls back to pure in-process
+  adaptive concurrency (`share → local.limit`), staying up at the cost of the
+  fleet possibly overshooting the backend. Cold start schedules the first
+  heartbeat on the **next tick** (D-DAC-12); a newly-seen node is
+  **provisional** for one heartbeat (`share = 0`) so the fleet cannot
+  transiently exceed `L_global` during membership growth (D-DAC-17).
+
+- **`spec/GaleHeartbeatLeasing.tla` + `.cfg` (TK-1314)** — the safety spec, a
+  one-step relabeling of `GaleFederatedLeasing` from clock-release (window)
+  escrow to event-release (heartbeat) shares (`windowMs → heartbeat_T`,
+  `globalBudget → L`, `escrow → share − inflight`). Carries an explicit
+  `live` variable and a provisional `Join` action so the model exhibits
+  **staggered joins**; `Overshoot` / `ShareCap` / `ShareBudget` are
+  quantified over the live set and hold across membership growth, while
+  `OvershootTight` is intentionally violated (tightness witness — `L` is the
+  least upper bound). The proof fixes `L_global` *within* a heartbeat
+  (D-DAC-13); the shrink-drain transient when `L_global` drops is liveness,
+  not safety (in-flight persists across a `Roll`, over-allocated nodes admit
+  nothing new and drain — D-DAC-14).
+
+- **`research/bigger-bets/distributed-adaptive-concurrency/DESIGN.md`
+  (TK-1314)** — design lock; 17 decision records D-DAC-1..D-DAC-17. Lit
+  synthesis citing Netflix `concurrency-limits` (Gradient2), Google SRE
+  adaptive throttling, Chubby/ZooKeeper lease-based semaphores, and TCP
+  congestion control as distributed resource sharing.
+
+### Tested
+
+- **BFS twin** at `test/concurrency/distributed-leasing-model.test.ts`
+  (TK-1316) — the `GaleHeartbeatLeasing` transition system in TS (including
+  the `live` variable and the provisional `Join` action); enumerates all
+  reachable states for `Nodes={n1,n2}, Budgets={4,6}`, asserts the
+  distinct-state count equals the pinned TLC figure, asserts
+  `Overshoot` + `ShareCap` + `ShareBudget` on every state, that
+  `OvershootTight` is violated, and that at least one transition is a
+  provisional join (membership growth observably covered).
+
+- **Property test** at `test/concurrency/distributed-invariant.test.ts`
+  (TK-1316, fast-check) — random fleets (2-6 nodes), random `lLocal` reports,
+  random `acquire`/`release`/`heartbeat` interleavings with simulated
+  cross-node latency; asserts `Σ inflight ≤ peek().lGlobal` (the consistent
+  budget, not `Σ granted shares`) at every step, with deterministic
+  sub-scenarios that exercise the shrink-drain/debt transient and the
+  provisional-join membership-growth transient.
+
+- **Dual-path conformance** at
+  `test/concurrency/coordinator-conformance.test.ts` (TK-1316, Redis-gated on
+  `THROTTLEKIT_TEST_REDIS`, port 6380) — an identical report sequence through
+  `TestConcurrencyCoordinator` and `RedisConcurrencyCoordinator` yields
+  identical `{share, lGlobal, nodes}` for every node, plus unit coverage at
+  `test/concurrency/distributed.test.ts`.
+
+### Forward-compat
+
+- Because `DistributedConcurrencyGuard extends ConcurrencyGuard`, the value
+  drops straight into `expressAdaptiveConcurrency({ guard })` and every
+  sibling 0.9.2 adapter unchanged — the forward-compat hook the middleware
+  family promised (D-M-12) realized.
+
 ## [0.9.2] — 2026-05-29
 
 **Middleware integration for `unifiedAdmission` + `adaptiveConcurrency`.**

@@ -164,6 +164,6 @@ shipped (Layers 1–3 now ship). Reproduce with `npx vitest run test/cost`.
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **1083 tests** (987 pass + 96 skipped without `THROTTLEKIT_TEST_REDIS`/`PG`; the 48-test growth in 0.9.2 is the middleware-integration adapter family — 28 node-server adapter tests (TK-1325) + 13 web-platform smoke tests (TK-1326) + 7 fast-check property tests for the exactly-once-release invariant at numRuns 50-200 (TK-1327). All pre-existing tests carried forward; bench gate green at the 0.9.0 baseline. 0.8.0's 95.2% line coverage figure is from a coverage run on the previous test set, re-measure on release) |
+| Test coverage on `src` | ✅ **1124 tests** (1012 pass + 112 skipped without `THROTTLEKIT_TEST_REDIS`/`PG`; the 41-test growth in 0.10.0 is the distributed-adaptive-concurrency suite — the heartbeat-leasing BFS twin + property invariant with simulated cross-node latency + dual-path Test≡Redis coordinator conformance + unit coverage of the `distributedAdaptiveConcurrency` primitive (TK-1316). All pre-existing tests carried forward; bench gate green at the 0.9.0 baseline. 0.8.0's 95.2% line coverage figure is from a coverage run on the previous test set, re-measure on release) |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) + bench:gate regression gate (informational) | ✅ |
 | Build emits valid ESM + CJS + types (12 subpaths — added `throttlekit/federation`) | ✅ |
