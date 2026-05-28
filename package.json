@@ -1,6 +1,6 @@
 {
   "name": "throttlekit",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "description": "Rate limiting you can prove: a machine-checked, fleet-size-independent overshoot bound on one small core — pure-function algorithms, one atomic store across in-memory/Redis/Postgres (proven bit-identical), a ~186ns sync API, and provable two-tier leasing (GALE/TALE).",
   "type": "module",
   "license": "MIT",

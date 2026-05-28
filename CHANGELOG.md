@@ -8,6 +8,123 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.8.5] — 2026-05-28
+
+**Multi-process regional escrow + regional-only outage mode.** Closes the
+two TK-906-era gaps documented in the 0.8.3 release notes: (1) M
+processes in the same region can now share a regional escrow atomically,
+so in-flight per-region escrow is bounded by what the global coordinator
+has actually granted instead of `M × batch`; (2) `onCoordinatorOutage:
+"regional-only"` is now actually wired — the engine keeps serving from
+the regional L2 balance during a coordinator outage and re-probes via
+`coordinator.isHealthy()`. Versioned as a patch because the surface is
+purely additive: new types on the existing `throttlekit/federation`
+subpath; the existing `federate(...)` flow is bit-identical to 0.8.4
+when no `regionalEscrow` is configured. Test count **857 → 913** (28 +
+10 + 10 always-on TK-1306 tests + 13 gated Redis tests across four new
+test files; pre-existing 793 pass count carried forward to **836**).
+
+### Added
+
+- **`RegionalEscrow` interface** (`src/federation/types.ts` — TK-1306).
+  The L2 layer between the per-process engine L1 cache and the cross-
+  region L3 `GlobalCoordinator`. Three atomic ops mirroring
+  `GlobalCoordinator` one layer down:
+  - `lease(key, tokens)` → 0..tokens granted from the L2 balance
+  - `refill(key, granted, sourceWindowStart)` → additive within a
+    window; drops grants for already-expired windows
+  - `release(key, sourceWindowStart)` → captures-and-zeroes; idempotent
+    per `(key, sourceWindowStart)` so multi-process release races have
+    one winner
+  - optional `isHealthy()` → liveness probe
+
+- **`RedisRegionalEscrow`** (`src/federation/redis-regional-escrow.ts` —
+  TK-1306). Production-ready implementation; same atomic-Lua pattern as
+  `RedisCoordinator` (LUA_NOW preamble, `EVALSHA + EVAL` NOSCRIPT
+  fallback, PEXPIRE-anchored window-coupling, `StoreUnavailableError`
+  wrapping). Three Lua scripts (REGIONAL_LEASE / REGIONAL_REFILL /
+  REGIONAL_RELEASE). Schema: one HASH per `(region, key)` with
+  `balance`, `expires_at`, `source_lease` fields.
+
+- **`TestRegionalEscrow`** (`src/federation/test-regional-escrow.ts` —
+  TK-1306). Deterministic in-memory mirror with `ManualClock` injection
+  for tests + examples; mirrors `TestCoordinator` one layer down.
+
+- **`FederateOptions.regionalEscrow?: RegionalEscrow`** (and
+  `FederatedStoreOptions.regionalEscrow`). When provided, the federation
+  engine routes leases through the L2 layer between in-process L1 and
+  the coordinator (L3). When undefined, the engine uses in-process
+  escrow only (legacy 0.8.4 behavior; **backward compatible**).
+
+- **`FederateOptions.coordinatorHealthCheckMs?: number`** (default
+  5000 ms). The cadence at which the engine re-probes
+  `coordinator.isHealthy()` while in `regional-only` outage mode. The
+  probe is **clock-driven** (lazy, on `check()`) — deterministic tests
+  with `ManualClock` advance the clock past the interval to trigger
+  recovery. No background timers; nothing to close.
+
+- **`regional-only` outage mode** (TK-1306) now actually works. When
+  `onCoordinatorOutage: "regional-only"` AND a `regionalEscrow` is
+  configured, on a coordinator outage the engine marks the coordinator
+  unhealthy and short-circuits subsequent requests at a gate — they
+  serve from the L2 fast path (if balance) or deny (if not), without
+  paying per-request `coord.lease` latency hits. On
+  `coordinator.isHealthy()` returning true after the probe interval,
+  the engine flips back to healthy and resumes normal lease + reconcile.
+  Without a `regionalEscrow`, this mode silently degrades to
+  `fail-closed` (documented).
+
+- **Multi-process atomicity tests** (TK-1306). 56 new tests across four
+  files:
+  - `test/federation/regional-escrow.test.ts` (28 always-on) —
+    `TestRegionalEscrow` contract: lease/refill/release semantics,
+    window-coupling, multi-process accumulation, release-race,
+    partition behavior, malformed inputs.
+  - `test/federation/regional-escrow-engine.test.ts` (10 always-on) —
+    M=2/4/8 engines sharing one L2 admit ≤ perKeyBudget per window;
+    L2-as-cache; backward compat without `regionalEscrow`; L2 outage
+    fallback.
+  - `test/federation/regional-only.test.ts` (10 always-on) — the
+    regional-only outage gate; L2-seeded outage serves; recovery via
+    probe; window-boundary recovery; health-probe cadence; degenerate
+    fallbacks (no regionalEscrow, no isHealthy).
+  - `test/federation/redis-regional-escrow.test.ts` (13 gated on
+    `THROTTLEKIT_TEST_REDIS`) — atomic-Lua parity against a real
+    regional Redis; M=8 concurrent lease atomicity; release-race-winner;
+    region key isolation.
+
+- **`examples/federation-regional-escrow.ts`** (TK-1307). M=4 federation
+  engines in `us-east` sharing one `RedisRegionalEscrow` + one
+  `RedisCoordinator` (two databases on the same Redis for the L2/L3
+  split). Demonstrates that total admissions stay at `perKeyBudget` even
+  though `M × batch` would leak overshoot without an L2. The
+  `regional-only` outage mode is wired in the example.
+
+- **`docs/FAILURE-MODES.md`** federation section refreshed (TK-1307):
+  three new rows in the outage table (multi-process atomicity, regional
+  L2 outage, regional-only outage mode); the "Optional softer mode"
+  paragraph updated to reflect that regional-only is now shipped.
+
+- **Wiki: new "Multi-process regional escrow (0.8.5)" section** in the
+  `Federation` page (TK-1307), with the `RedisRegionalEscrow` +
+  `RedisCoordinator` quick-start and `regional-only` outage mode wiring.
+
+### Design notes
+
+Two implementation revisions are recorded in
+`research/regional-escrow/DESIGN.md`:
+
+- **DR-20**: introduce first-class `RegionalEscrow` interface instead of
+  routing through `Store.apply()`. `Store`'s generic `Transform` doesn't
+  accept the multi-arg Lua scripts L2 needs; coupling `Store`'s contract
+  to federation semantics would be a code smell. The interface mirrors
+  `GlobalCoordinator` one layer down (clean separation).
+
+- **DR-21**: REFILL is additive within a window (not first-wins).
+  Multiple processes' concurrent coord-grants accumulate in L2;
+  federation bound (Δ = 0) is preserved by L3's `perKeyBudget` cap.
+  First-wins would leak capacity at window-open contention.
+
 ## [0.8.4] — 2026-05-28
 
 **Federation completion: PostgresCoordinator.** A drop-in `GlobalCoordinator`
