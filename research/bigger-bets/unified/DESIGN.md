@@ -387,7 +387,7 @@ const admit = unifiedAdmission({
   // future axes plug in here
 });
 
-const { decision, release } = admit.admit({
+const { decision, release } = await admit.admit({
   key:  "tenant:abc",   // for rate / cost axes (concurrency is keyless)
   cost: 1500,           // tokens (default 1, used by the cost axis)
 });
@@ -403,17 +403,25 @@ if (decision.allowed) {
 }
 
 interface UnifiedAdmitter {
+  /** Async admit; works with any backend mix (in-process, Redis, Postgres, …). */
   admit(opts?: {
     key?: string;
     cost?: number;
-  }): {
+  }): Promise<{
+    decision: Decision;
+    release: (opts?: { dropped?: boolean }) => void;
+  }>;
+  /**
+   * Synchronous admit; only usable when every configured axis supports
+   * `checkSync` (in-process MemoryStore for rate/cost; concurrency is
+   * always sync). Throws otherwise — same shape as `Limiter.checkSync`.
+   */
+  admitSync(opts?: { key?: string; cost?: number }): {
     decision: Decision;
     release: (opts?: { dropped?: boolean }) => void;
   };
   /** Per-axis introspection for OTel / metrics; matches TK-1008's `binding_axis`. */
   lastDecisions(): Readonly<Record<"rate" | "concurrency" | "cost", Decision | undefined>>;
-  /** Resource disposal — closes any owned sub-limiters. */
-  close?(): Promise<void>;
 }
 ```
 
@@ -751,11 +759,13 @@ export interface UnifiedAdmission {
 }
 
 export interface UnifiedAdmitter {
-  admit(opts?: UnifiedAdmitOptions): UnifiedAdmission;
+  /** Async admit — universal compatibility. */
+  admit(opts?: UnifiedAdmitOptions): Promise<UnifiedAdmission>;
+  /** Sync admit — throws if any configured axis lacks `checkSync`. */
+  admitSync(opts?: UnifiedAdmitOptions): UnifiedAdmission;
   lastDecisions(): Readonly<
     Record<"rate" | "concurrency" | "cost", Decision | undefined>
   >;
-  close?(): Promise<void>;
 }
 
 export function unifiedAdmission(
@@ -1008,6 +1018,7 @@ implementation revisits — add a one-line "Why changed."
 | **D-U10** | TK-1007 toy model = 2-axis (rate + cost) Poisson + bivariate type stream, `ρ ∈ {−1, −0.5, 0, +0.5, +1}`, 20 seeds, three policies (marginal-AND, joint-LP static fluid prices, clairvoyant). | §7.1 | Locked unless the 2-axis result is too noisy to call, in which case extend to 3-axis |
 | **D-U11** | 0.10.1 joint-LP runtime ships iff `regret(marginal-AND) − regret(joint-LP) ≥ 5%` on TK-1007's calibration workload, else hold and document the negative result (DR-11, DR-19). | §7.2 | Locked — threshold is the gate, not the result |
 | **D-U12** | `Decision.bindingAxis` is OUT of 0.9.0 (breaking change). Use OTel attribute `tk.binding_axis` (TK-1008) and `UnifiedAdmitter.lastDecisions()` instead. Revisit at 1.0. | §8.4 | Locked unless 1.0 ships |
+| **D-U13** | `UnifiedAdmitter` exposes BOTH `admit() → Promise<UnifiedAdmission>` (async; universal) AND `admitSync() → UnifiedAdmission` (sync; throws if any axis lacks `checkSync`) — mirroring the project's existing `Limiter.check` / `Limiter.checkSync` pattern. *Why changed (TK-1004 impl):* the original §4.2 / §8.3 spec showed only `admit()` synchronously; this would have either forced all-sync backends (restrictive) or hidden a thenable behind a sync-looking return (confusing). The Limiter idiom is the cleanest fit. The `close?(): Promise<void>` field in the prior spec is *dropped* — the unified admitter owns none of its inputs, so there's nothing to close. | §4.2, §8.3 | Locked unless a use case demands single-method dispatch |
 
 When implementation reveals a decision needs to change, edit the row in
 place and add a one-line "Why changed" — do not silently rewrite. Same

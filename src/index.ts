@@ -110,6 +110,7 @@ export {
   learnedReservation,
   predictiveReservation,
   tokenBudget,
+  unifiedAdmission,
   weightedFairShare,
   weightedMaxMin,
 } from "./admission";
@@ -129,6 +130,11 @@ export type {
   PredictiveReservationOptions,
   TokenBudgetMeter,
   TokenBudgetOptions,
+  UnifiedAdmission,
+  UnifiedAdmissionOptions,
+  UnifiedAdmitOptions,
+  UnifiedAdmitter,
+  UnifiedAxis,
   WeightedFairShareLimiter,
   WeightedFairShareOptions,
 } from "./admission";

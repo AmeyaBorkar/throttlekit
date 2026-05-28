@@ -1024,3 +1024,20 @@ export type {
   LeaseAdmitter,
   LeaseAsAdmissionOptions,
 } from "./lease-shim";
+
+// ── Primitive 8: unifiedAdmission (rate ⊕ concurrency ⊕ cost composition, TK-1004) ──────────────
+
+/**
+ * Compose rate / concurrency / cost admission axes into one Decision via
+ * {@link combineDecisions}. Sequential by default (concurrency → rate → cost,
+ * first deny short-circuits); the Lua-fused opt-in lands in TK-1005. See
+ * `research/bigger-bets/unified/DESIGN.md` §4.2 (D-U4, D-U13).
+ */
+export { unifiedAdmission } from "./unified";
+export type {
+  UnifiedAdmission,
+  UnifiedAdmissionOptions,
+  UnifiedAdmitOptions,
+  UnifiedAdmitter,
+  UnifiedAxis,
+} from "./unified";
