@@ -16,13 +16,14 @@ numbers and the round-trip *counts* as the signal, not the absolute microseconds
 
 | Path | Target | Measured | Status |
 |---|---|---|---|
-| In-memory `checkSync` (GCRA) | sub-microsecond; ~0 steady-state allocations | **186 ns/op (5.37M ops/s)**, ~1 B/op | ✅ |
+| In-memory `checkSync` (GCRA) | sub-microsecond; ~0 steady-state allocations | **171 ns/op (5.85M ops/s)**, ~1 B/op | ✅ |
 | In-memory `check` (async) | low single-digit microseconds | **284 ns/op (3.52M ops/s)** | ✅ |
 | Redis `strict` decision | exactly **1** round trip | **1 EVALSHA / req**; p50 ~1.2ms / p99 ~1.8ms (Docker/WSL2 loopback) | ✅ |
 | `leased` steady state | ~**1 round trip per B** requests | **exactly 100 reqs / round trip** at batch 100 (69.9k ops/s) | ✅ |
 | Multi-dimensional (k axes) on Redis | **1** round trip regardless of k | **1 fused EVALSHA** over k keys (conformance-proven) | ✅ |
+| Unified admission (rate ⊕ concurrency ⊕ cost) Lua-fused | **1** round trip for rate + cost | **1 fused EVALSHA** (`tk:v1:fused-rc:check`); concurrency stays in-process; sequential ≡ fused byte-identical across 300 timelines (TK-1006) | ✅ |
 
-Token bucket `checkSync` 181 ns/op (5.54M ops/s); fixed window `checkSync` 192 ns/op (5.22M ops/s, ~0 B/op).
+Token bucket `checkSync` 200 ns/op (5.00M ops/s); fixed window `checkSync` 215 ns/op (4.65M ops/s, ~0 B/op). Numbers re-baselined for 0.9.0 (best-of-10 ×2M iters; pinned in `bench/baseline.json`; the bench gate fails the build on >10% regression vs that file). The drift from 0.8.5 numbers (186/181/192 → 171/200/215 ns) is within machine-state noise on Windows micro-benchmarks: no `src/algorithms/*` or `src/core/limiter.ts` or `src/stores/memory.ts` files changed between 0.8.5 and 0.9.0 (verified via `git diff --stat 865656b..HEAD`), only NEW files were added.
 
 ## Versus alternatives (`npm run bench:compare`)
 

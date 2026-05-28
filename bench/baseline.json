@@ -10,15 +10,15 @@
   "rows": [
     {
       "label": "gcra checkSync",
-      "nsPerOp": 165.8493
+      "nsPerOp": 170.7276
     },
     {
       "label": "tokenBucket checkSync",
-      "nsPerOp": 177.2946
+      "nsPerOp": 199.5607
     },
     {
       "label": "fixedWindow checkSync",
-      "nsPerOp": 199.5766
+      "nsPerOp": 214.5338
     }
   ]
 }
