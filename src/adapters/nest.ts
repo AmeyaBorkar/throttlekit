@@ -8,6 +8,7 @@
  */
 
 import { gcra } from "../algorithms/gcra";
+import { parseDuration as parseDurationShared } from "../core/duration";
 import { RateLimitExceededError, ThrottleKitError } from "../core/errors";
 import type { Decision, Store, Strategy } from "../core/types";
 import { requirePositive } from "../core/validate";
@@ -163,33 +164,8 @@ function reflectMeta(): ReflectMetadata {
   return r as ReflectMetadata;
 }
 
-/** Parse a duration into ms: a number is ms; a string is `"<n><unit>"` with unit ms|s|m|h|d. */
-export function parseDuration(period: string | number): number {
-  if (typeof period === "number") {
-    requirePositive("RateLimit.period", period);
-    return period;
-  }
-  const m = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?\s*$/.exec(period);
-  if (m === null) {
-    throw new RangeError(
-      `RateLimit.period: cannot parse ${JSON.stringify(period)} (use e.g. "30s", "1m", "1h", or a number of ms)`,
-    );
-  }
-  const n = Number(m[1]);
-  const unit = m[2] ?? "ms";
-  const mult =
-    unit === "ms"
-      ? 1
-      : unit === "s"
-        ? 1000
-        : unit === "m"
-          ? 60_000
-          : unit === "h"
-            ? 3_600_000
-            : 86_400_000;
-  requirePositive("RateLimit.period", n * mult);
-  return n * mult;
-}
+/** Parse a duration into ms; re-exported from `src/core/duration` so the nest API stays stable. */
+export const parseDuration: typeof parseDurationShared = parseDurationShared;
 
 /** Per-route config attached by {@link RateLimit}. */
 export interface RateLimitMetadata {

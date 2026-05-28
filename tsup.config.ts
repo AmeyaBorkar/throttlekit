@@ -23,6 +23,7 @@ export default defineConfig({
     nest: "src/adapters/nest.ts",
     otel: "src/observability/index.ts",
     testkit: "src/testkit/index.ts",
+    config: "src/config/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
