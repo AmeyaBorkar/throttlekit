@@ -74,12 +74,32 @@ across regions. Failure modes split between the region's local view and the
 coordinator's global view. See `research/bigger-bets/federation/DESIGN.md` §5
 for the formal failure semantics; tests in `test/federation/failure-modes.test.ts`.
 
+The behavior is **identical across `RedisCoordinator` and `PostgresCoordinator`**
+— both implement the same `GlobalCoordinator` interface with the same
+window-coupling guarantee (Δ = 0). The choice of backend only affects HA
+mechanics (Sentinel/Cluster vs synchronous replication + Patroni-style
+failover) and latency (~0.5-1ms Redis vs ~1-3ms Postgres per lease).
+
 | Failure shape | What happens | What's **lost** | Recovery | Δ (cross-region overshoot) |
 |---|---|---|---|---|
 | **Region partitioned from coordinator** (e.g. cross-region link down) | Region serves out its existing in-process escrow; once empty, fails closed (denies until reachable). `onCoordinatorOutage: "fail-closed"` (default). | Any not-yet-leased capacity in the coordinator that this region might have used. | Heal the link → next lease succeeds; in-process escrow refills. | **0** — by construction, no new admissions during outage. |
-| **Coordinator crash, recovered within the same window** | Same as above; existing escrow keeps serving briefly, then denies. On recovery, leases resume against the original budget remaining. | Nothing committed — the coordinator's remaining budget is preserved across the crash (assuming durable Redis). | Re-attach client → resume. `reconcile()` is idempotent on `windowStart` so retries through the partition converge. | **0** — coordinator's remaining budget is exact across crash. |
+| **Coordinator crash, recovered within the same window** | Same as above; existing escrow keeps serving briefly, then denies. On recovery, leases resume against the original budget remaining. | Nothing committed — the coordinator's remaining budget is preserved across the crash (Redis: durable when AOF/RDB configured; Postgres: durable via WAL). | Re-attach client → resume. `reconcile()` is idempotent on `windowStart` so retries through the partition converge. | **0** — coordinator's remaining budget is exact across crash. |
 | **Coordinator unavailable across a window boundary** | Every region denies until coordinator returns. When it does, window-N+1's fresh budget is acquired. | All admissions during the outage (federation is fully unavailable). | Coordinator returns → next request leases against the new window's fresh budget. | **0** — zero admissions during the outage. |
+| **Postgres primary failover** (`PostgresCoordinator` only) | In-flight queries fail with `StoreUnavailableError`; regions fall back to existing escrow → fail-closed once empty. Once the new primary accepts writes (typically <10s with Patroni/pg_auto_failover), regions resume leasing. | All admissions during the failover window. | New primary promoted → next lease succeeds; `reconcile()` idempotent on partial-recovery retries. | **0** — bound preserved across the failover. |
 | **Regional store outage** (regional Redis L2 down, while coordinator reachable) | Out of scope at TK-906 — regional escrow lives in process memory. Future (TK-906+): regional Redis backs multi-process escrow; outage reverts to per-process escrow until L2 returns. | Multi-process atomicity within the region. | L2 reconnect → resume. | **0** — coordinator still enforces the global bound. |
+
+### Choosing a coordinator backend
+
+| Axis | `RedisCoordinator` | `PostgresCoordinator` |
+|---|---|---|
+| Latency per lease | ~0.5–1 ms (Lua EVALSHA) | ~1–3 ms (transactional SQL) |
+| Throughput cap | 100K+ leases/sec | 5K–20K leases/sec (primary write throughput) |
+| HA story | Sentinel / Cluster | Synchronous replication + Patroni / pg_auto_failover |
+| Durability default | Configurable (RDB / AOF) | WAL + sync replication (byte-durable by design) |
+| Best fit | Caching-shop default; lowest latency | Database-shop default; no extra infra; faster failover |
+
+The federation bound (Δ = 0 K-independent) is identical. Pick the backend
+your ops team already runs.
 
 **Federation fails closed across every outage shape.** There is no outage
 scenario where Δ exceeds 0; the worst case is full unavailability. This

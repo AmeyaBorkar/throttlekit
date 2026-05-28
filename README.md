@@ -123,7 +123,7 @@ In-process, single hot key (Node 24, AMD Ryzen AI 9 HX 370, measured 2026-05-28;
 
 ## Tested to be checkable, not just claimed
 
-Dual-path conformance (JS ≡ Lua on thousands of generated timelines, now including `quota`'s civil-calendar Lua and `peek` decoding the Redis-side state) + a new **shrinkable** fast-check property pass over the consuming `check` path of all 6 Lua-backed strategies (TK-826), atomicity (N concurrent checks at limit K ⇒ exactly K allowed), the TLA⁺/TLC formal model re-checked by an exhaustive JS checker in CI, and an informational `bench:gate` regression gate (TK-827). All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **769 tests** (with the Redis/Postgres-gated suites enabled), CI green across Node 20/22/24.
+Dual-path conformance (JS ≡ Lua on thousands of generated timelines, now including `quota`'s civil-calendar Lua and `peek` decoding the Redis-side state) + a **shrinkable** fast-check property pass over the consuming `check` path of all 6 Lua-backed strategies (TK-826), atomicity (N concurrent checks at limit K ⇒ exactly K allowed), the TLA⁺/TLC formal model re-checked by an exhaustive JS checker in CI, federation BFS-twin coverage including a `RedisCoordinator ≡ PostgresCoordinator` dual-path (TK-1302), and an informational `bench:gate` regression gate (TK-827). All time-dependent tests use `ManualClock`, so the suite is deterministic. Current state: **857 tests** (with the Redis/Postgres-gated suites enabled), CI green across Node 20/22/24.
 
 ## Status & license
 
