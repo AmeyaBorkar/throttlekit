@@ -4,3 +4,5 @@ export type {
   ConcurrencyGuard,
   Lease,
 } from "./adaptive";
+export { RedisConcurrencyCoordinator } from "./redis-concurrency-coordinator";
+export type { RedisConcurrencyCoordinatorOptions } from "./redis-concurrency-coordinator";

@@ -57,6 +57,20 @@ export type {
   ConcurrencyGuard,
   Lease,
 } from "./concurrency/adaptive";
+export { distributedAdaptiveConcurrency } from "./concurrency/distributed";
+export type {
+  DistributedAdaptiveConcurrencyOptions,
+  DistributedConcurrencyGuard,
+  HeartbeatScheduler,
+} from "./concurrency/distributed";
+export type {
+  ConcurrencyCoordinator,
+  ConcurrencyGrant,
+  ConcurrencyReport,
+} from "./concurrency/coordinator";
+export { TestConcurrencyCoordinator } from "./concurrency/test-concurrency-coordinator";
+export { RedisConcurrencyCoordinator } from "./concurrency/redis-concurrency-coordinator";
+export type { RedisConcurrencyCoordinatorOptions } from "./concurrency/redis-concurrency-coordinator";
 export {
   eoqOptimum,
   leaseSizer,
