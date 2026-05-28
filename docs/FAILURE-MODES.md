@@ -137,3 +137,38 @@ expressRateLimit({
 
 Both policies are unit‑tested on every adapter, and `createEnforcer` surfaces the same decision as a
 neutral `{ outcome: "error" }` result that never throws.
+
+## `unifiedAdmission` — outage shapes (0.9.0)
+
+`unifiedAdmission(...)` composes up to three axes (rate / concurrency /
+cost) into one Decision. Failure semantics flow per-axis; the combined
+Decision is always the AND, MIN, MAX algebra of whichever axes
+contributed (see `research/bigger-bets/unified/DESIGN.md` §4.1).
+
+| Failure shape | Sequential backend | Lua-fused backend (`tk:v1:fused-rc:check`) |
+|---|---|---|
+| Rate-axis store unreachable | Per-axis `failMode` of the rate Limiter (`"open"` admits, `"closed"` denies); the cost axis still runs | The fused EVAL fails; admit rejects the promise — release any held concurrency, surface the error to the caller (≈ `failMode: "closed"`) |
+| Cost-axis store unreachable | Per-axis `failMode` of the cost Limiter; rate already ran | Same as above (atomic — both axes fail together) |
+| Concurrency-axis: nothing (in-process, no store) | n/a — no failure mode | n/a |
+| Caller forgets to call `release()` after a successful admit | Concurrency slot leak (the in-flight count grows monotonically until the process restarts) | Same — the unified layer cannot enforce caller lifecycle |
+| Caller double-releases | Idempotent: `Lease.release()` is a no-op on second call (documented in `src/concurrency/adaptive.ts`) | Same |
+| Concurrency-deny short-circuit | rate / cost are NOT consulted (concurrency runs first, in-process, cheapest fail) | Same |
+| Rate-deny or cost-deny in sequential | the held concurrency slot is released before admit returns (`{ dropped: false }` — deny is upstream, not an overload) | Same — fused script returns combined+per-axis decisions; if denied, the wrapping `unifiedAdmission` releases the held slot |
+| Mixed backends (Redis rate + Postgres cost + in-process conc) | Works in sequential mode | Throws at construction (`backend: "lua-fused"` requires the explicit `fused` option group; the limiter store paths are bypassed entirely) |
+| `admitSync` on lua-fused mode | n/a | Throws — Redis EVALSHA is async; use `admit()` (the async path) or switch to `backend: "sequential"` |
+
+**Observability**: the `tk.binding_axis` OTel attribute identifies which
+axis bound a denied decision (`"concurrency"` | `"rate"` | `"cost"`).
+Set it on your active span via `recordUnifiedAdmissionOnSpan(span,
+decision, admit.lastDecisions())`. Conventions:
+- The binding axis is the first denying axis in **concurrency → rate
+  → cost** order (matches sequential evaluation order).
+- When multiple axes deny (only possible in lua-fused mode), the same
+  priority applies — deterministic and matches the user's mental model.
+- Omitted from admitted decisions.
+
+See `research/bigger-bets/unified/DESIGN.md` for the full design,
+`examples/unified.ts` for an LLM-gateway-style example, and
+`research/bigger-bets/unified/THEORY.md` for the joint-vs-marginal
+empirical regret analysis (TK-1007 — verdict: SHIP joint-LP runtime in
+0.10.1).

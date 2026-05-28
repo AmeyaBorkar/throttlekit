@@ -5,9 +5,11 @@ import type { Decision } from "../../src/core/types";
 import {
   METRIC_NAMES,
   SPAN_ATTRIBUTES,
+  bindingAxisOf,
   instrumentGuard,
   instrumentLimiter,
   recordDecisionOnSpan,
+  recordUnifiedAdmissionOnSpan,
 } from "../../src/observability/otel";
 import { MemoryStore } from "../../src/stores/memory";
 
@@ -52,6 +54,8 @@ describe("observability contract (TK-819 / TK-820)", () => {
       limit: "throttlekit.limit",
       remaining: "throttlekit.remaining",
       retryAfterMs: "throttlekit.retry_after_ms",
+      // TK-1008: tk.binding_axis for unified-admission decisions.
+      bindingAxis: "throttlekit.binding_axis",
     });
   });
 
@@ -101,6 +105,116 @@ describe("observability contract (TK-819 / TK-820)", () => {
       "throttlekit.remaining": 0,
       "throttlekit.retry_after_ms": 500,
       region: "us-east",
+    });
+  });
+
+  // ── TK-1008: bindingAxisOf + recordUnifiedAdmissionOnSpan ─────────────────────────────────
+
+  const denied: Decision = {
+    allowed: false,
+    limit: 1,
+    remaining: 0,
+    resetAt: 1000,
+    retryAfterMs: 100,
+  };
+  const allowed: Decision = {
+    allowed: true,
+    limit: 10,
+    remaining: 5,
+    resetAt: 60_000,
+    retryAfterMs: 0,
+  };
+
+  describe("bindingAxisOf (TK-1008)", () => {
+    it("returns undefined when all axes admit", () => {
+      expect(bindingAxisOf({ rate: allowed, concurrency: allowed, cost: allowed })).toBeUndefined();
+    });
+
+    it("returns undefined when all axes are unconfigured", () => {
+      expect(
+        bindingAxisOf({ rate: undefined, concurrency: undefined, cost: undefined }),
+      ).toBeUndefined();
+    });
+
+    it("returns concurrency when only concurrency denied", () => {
+      expect(bindingAxisOf({ rate: undefined, concurrency: denied, cost: undefined })).toBe(
+        "concurrency",
+      );
+    });
+
+    it("returns rate when only rate denied", () => {
+      expect(bindingAxisOf({ rate: denied, concurrency: undefined, cost: undefined })).toBe("rate");
+    });
+
+    it("returns cost when only cost denied", () => {
+      expect(bindingAxisOf({ rate: undefined, concurrency: undefined, cost: denied })).toBe("cost");
+    });
+
+    it("returns concurrency first when multiple deny (deterministic priority)", () => {
+      expect(bindingAxisOf({ rate: denied, concurrency: denied, cost: denied })).toBe(
+        "concurrency",
+      );
+    });
+
+    it("returns rate before cost when both deny", () => {
+      expect(bindingAxisOf({ rate: denied, concurrency: undefined, cost: denied })).toBe("rate");
+    });
+  });
+
+  describe("recordUnifiedAdmissionOnSpan (TK-1008)", () => {
+    it("sets the standard Decision attributes + tk.binding_axis on a denied admission", () => {
+      const attrs: Record<string, string | number | boolean> = {};
+      const span = {
+        setAttribute(k: string, v: string | number | boolean) {
+          attrs[k] = v;
+        },
+      };
+      recordUnifiedAdmissionOnSpan(span, denied, {
+        rate: allowed,
+        concurrency: undefined,
+        cost: denied,
+      });
+      expect(attrs).toEqual({
+        "throttlekit.allowed": false,
+        "throttlekit.limit": 1,
+        "throttlekit.remaining": 0,
+        "throttlekit.retry_after_ms": 100,
+        "throttlekit.binding_axis": "cost",
+      });
+    });
+
+    it("omits tk.binding_axis on an admitted admission", () => {
+      const attrs: Record<string, string | number | boolean> = {};
+      const span = {
+        setAttribute(k: string, v: string | number | boolean) {
+          attrs[k] = v;
+        },
+      };
+      recordUnifiedAdmissionOnSpan(span, allowed, {
+        rate: allowed,
+        concurrency: allowed,
+        cost: allowed,
+      });
+      expect(attrs["throttlekit.binding_axis"]).toBeUndefined();
+      expect(attrs["throttlekit.allowed"]).toBe(true);
+    });
+
+    it("merges extra attributes alongside the contract attributes", () => {
+      const attrs: Record<string, string | number | boolean> = {};
+      const span = {
+        setAttribute(k: string, v: string | number | boolean) {
+          attrs[k] = v;
+        },
+      };
+      recordUnifiedAdmissionOnSpan(
+        span,
+        denied,
+        { rate: denied, concurrency: undefined, cost: undefined },
+        { tenant: "abc", region: "us-east" },
+      );
+      expect(attrs.tenant).toBe("abc");
+      expect(attrs.region).toBe("us-east");
+      expect(attrs["throttlekit.binding_axis"]).toBe("rate");
     });
   });
 });

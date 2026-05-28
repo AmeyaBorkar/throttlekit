@@ -8,10 +8,12 @@
  */
 
 export {
+  bindingAxisOf,
   instrumentGuard,
   instrumentLimiter,
   METRIC_NAMES,
   recordDecisionOnSpan,
+  recordUnifiedAdmissionOnSpan,
   SPAN_ATTRIBUTES,
 } from "./otel";
 export type { InstrumentOptions, SpanLike } from "./otel";

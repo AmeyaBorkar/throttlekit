@@ -213,6 +213,14 @@ export const SPAN_ATTRIBUTES = {
   remaining: "throttlekit.remaining",
   /** Milliseconds to wait before retrying (`0` when allowed). */
   retryAfterMs: "throttlekit.retry_after_ms",
+  /**
+   * For `unifiedAdmission`: the axis that bound the combined Decision
+   * (`"concurrency"` | `"rate"` | `"cost"`). Only set when the combined
+   * decision was denied — when admitted, no axis was binding. Set by
+   * {@link recordUnifiedAdmissionOnSpan} from the
+   * `UnifiedAdmitter.lastDecisions()` snapshot. (TK-1008)
+   */
+  bindingAxis: "throttlekit.binding_axis",
 } as const;
 
 /** The slice of an OpenTelemetry `Span` used to record decision attributes (structural; no import). */
@@ -246,6 +254,85 @@ export function recordDecisionOnSpan(
   span.setAttribute(SPAN_ATTRIBUTES.limit, decision.limit);
   span.setAttribute(SPAN_ATTRIBUTES.remaining, decision.remaining);
   span.setAttribute(SPAN_ATTRIBUTES.retryAfterMs, decision.retryAfterMs);
+  if (extra !== undefined) {
+    for (const [k, v] of Object.entries(extra)) span.setAttribute(k, v);
+  }
+}
+
+/** The lastDecisions snapshot shape from {@link UnifiedAdmitter.lastDecisions}. */
+type UnifiedLastDecisions = Readonly<Record<"rate" | "concurrency" | "cost", Decision | undefined>>;
+
+/**
+ * Identify the **binding axis** for a unified admission — the first
+ * denying axis in concurrency → rate → cost order (the same order
+ * `unifiedAdmission`'s sequential mode evaluates in, so the result
+ * matches the user's mental model of "which check blocked me first").
+ *
+ * Returns `undefined` when no axis denied (the combined decision was
+ * either an allow, or no axis was configured).
+ *
+ * The fused backend evaluates rate and cost atomically — both can deny
+ * in the same admission. We still return the first one in the
+ * concurrency → rate → cost order so the attribute value is
+ * deterministic and matches the sequential convention.
+ *
+ * @example
+ * ```ts
+ * import { trace } from "@opentelemetry/api";
+ * import { bindingAxisOf } from "throttlekit/otel";
+ *
+ * const { decision } = await admit.admit({ key, cost: tokens });
+ * if (!decision.allowed) {
+ *   const axis = bindingAxisOf(admit.lastDecisions());
+ *   span?.setAttribute("throttlekit.binding_axis", axis ?? "unknown");
+ * }
+ * ```
+ */
+export function bindingAxisOf(
+  lastDecisions: UnifiedLastDecisions,
+): "rate" | "concurrency" | "cost" | undefined {
+  if (lastDecisions.concurrency?.allowed === false) return "concurrency";
+  if (lastDecisions.rate?.allowed === false) return "rate";
+  if (lastDecisions.cost?.allowed === false) return "cost";
+  return undefined;
+}
+
+/**
+ * Record a `unifiedAdmission` decision onto an OpenTelemetry span. Sets
+ * the standard {@link SPAN_ATTRIBUTES} (`allowed`/`limit`/`remaining`/
+ * `retryAfterMs`) plus the **`throttlekit.binding_axis`** attribute
+ * identifying which axis (rate / concurrency / cost) bound the
+ * decision when it was denied. The `strategy` attribute is *not* set
+ * — unified admissions span multiple strategies, so the binding axis
+ * is the analogous classifier. Pass `extra` for any additional
+ * attributes you want on the span.
+ *
+ * @example
+ * ```ts
+ * import { trace } from "@opentelemetry/api";
+ * import { recordUnifiedAdmissionOnSpan } from "throttlekit/otel";
+ *
+ * const { decision } = await admit.admit({ key, cost: tokens });
+ * const span = trace.getActiveSpan();
+ * if (span) recordUnifiedAdmissionOnSpan(span, decision, admit.lastDecisions());
+ * ```
+ */
+export function recordUnifiedAdmissionOnSpan(
+  span: SpanLike,
+  decision: Decision,
+  lastDecisions: UnifiedLastDecisions,
+  extra?: Record<string, string | number | boolean>,
+): void {
+  span.setAttribute(SPAN_ATTRIBUTES.allowed, decision.allowed);
+  span.setAttribute(SPAN_ATTRIBUTES.limit, decision.limit);
+  span.setAttribute(SPAN_ATTRIBUTES.remaining, decision.remaining);
+  span.setAttribute(SPAN_ATTRIBUTES.retryAfterMs, decision.retryAfterMs);
+  if (!decision.allowed) {
+    const axis = bindingAxisOf(lastDecisions);
+    if (axis !== undefined) {
+      span.setAttribute(SPAN_ATTRIBUTES.bindingAxis, axis);
+    }
+  }
   if (extra !== undefined) {
     for (const [k, v] of Object.entries(extra)) span.setAttribute(k, v);
   }
