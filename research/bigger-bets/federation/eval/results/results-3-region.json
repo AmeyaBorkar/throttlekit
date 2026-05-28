@@ -1,0 +1,128 @@
+{
+  "title": "ThrottleKit federation \u2014 3-region cluster eval",
+  "date": "2026-05-28",
+  "setup": {
+    "regions": ["us-east", "eu-west", "ap-south"],
+    "coordinator": "RedisCoordinator (Redis 7-alpine via docker-compose)",
+    "K": 3,
+    "fixedConfig": {
+      "globalLimit": 300,
+      "windowMs_skew_sweep": 5000,
+      "windowMs_latency_sweep": 10000,
+      "windows": 2,
+      "batch_skew_sweep": 8,
+      "batch_latency_sweep": 16,
+      "offeredMultiplier": 1.0
+    },
+    "note": "Simulated cross-region latency via in-process LatencyProxy; full Redis-backed Lua coordinator. The cloud-run replacement (real fly.io/GCP cluster) uses the same harness with TK_FED_COORD_URL pointed at a real instance."
+  },
+  "skewSweep": {
+    "varying": "SKEW \u2208 {0, 0.25, 0.5, 0.75, 1.0}",
+    "fixed": "BATCH=8, REGION_LATENCY_MS=2",
+    "rows": [
+      {
+        "skew": 0.0,
+        "offered": 600,
+        "admitted": 584,
+        "uCapacity": 0.9733,
+        "uOffered": 0.9733,
+        "overshoot": 0,
+        "coordTrips": 92,
+        "p99Ms": 16.88
+      },
+      {
+        "skew": 0.25,
+        "offered": 600,
+        "admitted": 586,
+        "uCapacity": 0.9767,
+        "uOffered": 0.9767,
+        "overshoot": 0,
+        "coordTrips": 90,
+        "p99Ms": 16.8
+      },
+      {
+        "skew": 0.5,
+        "offered": 600,
+        "admitted": 594,
+        "uCapacity": 0.99,
+        "uOffered": 0.99,
+        "overshoot": 0,
+        "coordTrips": 83,
+        "p99Ms": 17.23
+      },
+      {
+        "skew": 0.75,
+        "offered": 600,
+        "admitted": 574,
+        "uCapacity": 0.9567,
+        "uOffered": 0.9567,
+        "overshoot": 0,
+        "coordTrips": 102,
+        "p99Ms": 17.7
+      },
+      {
+        "skew": 1.0,
+        "offered": 600,
+        "admitted": 600,
+        "uCapacity": 1,
+        "uOffered": 1,
+        "overshoot": 0,
+        "coordTrips": 76,
+        "p99Ms": 16.76
+      }
+    ]
+  },
+  "latencySweep": {
+    "varying": "REGION_LATENCY_MS \u2208 {1, 10, 50, 100}",
+    "fixed": "SKEW=1.0, BATCH=16",
+    "rows": [
+      {
+        "regionLatencyMs": 1,
+        "admitted": 600,
+        "uCapacity": 1,
+        "overshoot": 0,
+        "coordTrips": 38,
+        "p50Ms": 0.0,
+        "p95Ms": 8.04,
+        "p99Ms": 16.17
+      },
+      {
+        "regionLatencyMs": 10,
+        "admitted": 600,
+        "uCapacity": 1,
+        "overshoot": 0,
+        "coordTrips": 38,
+        "p50Ms": 0.0,
+        "p95Ms": 15.46,
+        "p99Ms": 20.2
+      },
+      {
+        "regionLatencyMs": 50,
+        "admitted": 600,
+        "uCapacity": 1,
+        "overshoot": 0,
+        "coordTrips": 38,
+        "p50Ms": 0.0,
+        "p95Ms": 56.11,
+        "p99Ms": 65.01
+      },
+      {
+        "regionLatencyMs": 100,
+        "admitted": 600,
+        "uCapacity": 1,
+        "overshoot": 0,
+        "coordTrips": 39,
+        "p50Ms": 0.0,
+        "p95Ms": 107.78,
+        "p99Ms": 113.34
+      }
+    ]
+  },
+  "headlineFindings": [
+    "\u0394 = 0 (overshoot = 0) on EVERY measured configuration",
+    "U_capacity \u2265 0.957 across the entire skew sweep \u2014 federation never under-admits significantly",
+    "U_capacity at max skew = 1.000 \u2014 full recovery vs static-partition's 0.333",
+    "Coordinator round trips amortize at ~1/batch \u2014 38 trips for 600 admissions at batch=16",
+    "Latency adds to p99 but NOT to utilization \u2014 federation is latency-tolerant"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "config": {
+    "coordinatorUrl": "redis://localhost:16380",
+    "regions": ["us-east", "eu-west", "ap-south"],
+    "regionLatencyMs": 2,
+    "globalLimit": 300,
+    "batch": 8,
+    "windowMs": 5000,
+    "windows": 2,
+    "skew": 0,
+    "offeredMultiplier": 1
+  },
+  "metrics": {
+    "offered": 600,
+    "admitted": 584,
+    "uOffered": 0.9733333333333334,
+    "uCapacity": 0.9733333333333334,
+    "overshoot": 0,
+    "coordTrips": 92,
+    "coordTripsPerRequest": 0.15333333333333332,
+    "latencyMs": {
+      "p50": 0.0018000000000029104,
+      "p95": 15.851100000000088,
+      "p99": 16.8759
+    },
+    "perWindowAdmits": [292, 292]
+  },
+  "timestamp": "2026-05-28T10:16:44.631Z"
+}
