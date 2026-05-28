@@ -20,6 +20,8 @@
  *                                lease: { batch: 8, windowCoupled: true } });
  */
 
+export { RedisCoordinator } from "./redis-coordinator";
+export type { RedisCoordinatorOptions } from "./redis-coordinator";
 export { FederatedStore } from "./store";
 export { staticPartition } from "./static-partition";
 export type { StaticPartitionOptions, StaticPartitionResult } from "./static-partition";

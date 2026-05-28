@@ -333,6 +333,55 @@ delivers both Δ = 0 *and* free pooling — the contribution.
   the next window — this only *adds* capacity, so the safety bound holds
   for the model's strictly more pessimistic Roll.
 
+### 4.4 RedisCoordinator (TK-906) — the production-ready impl
+
+The default `GlobalCoordinator` impl ships in `src/federation/redis-coordinator.ts`.
+
+**Layout — one Redis HASH per coordinator key** (`<prefix>:<key>`):
+
+```
+budget           : remaining global budget for the active window
+expiresAt        : when the active window ends (epoch-ms)
+rec_<windowStart>: idempotency marker per reconciled windowStart
+```
+
+**Lua scripts** (one EVALSHA per RPC; with NOSCRIPT-fallback to EVAL):
+
+- `LEASE_LUA` — atomically initialize-or-roll-or-grant. On a fresh window
+  the HASH is wiped via DEL (clearing stale `rec_*` markers) and budget
+  reinitialized to `perKeyBudget`. PEXPIRE matches the window boundary.
+- `RECONCILE_LUA` — credits leftover into the CURRENT window's budget
+  (capped at `perKeyBudget`). The `rec_<windowStart>` field enforces
+  per-windowStart idempotency, so retries across a partition converge.
+  Initializes a fresh window if needed, covering the engine-side race
+  between fire-and-forget reconcile and the post-roll lease (the two
+  arrive in Redis in unspecified order).
+
+**SPOF caveat.** A single global Redis is a single point of failure for
+the federation's safety bound. When the Redis is unreachable, every
+region's `lease()` throws → fail-closed (default) → no new admissions
+across the entire federation until the Redis returns. The mitigations:
+
+- **Sentinel / Cluster.** Operators layer Redis Sentinel under the
+  coordinator's client for HA. The Lua scripts work unchanged.
+- **PostgresCoordinator** (0.9.x). Translates the same Lua to
+  LISTEN/NOTIFY + atomic UPDATE WHERE. Same interface; Postgres's
+  HA story (synchronous replication, automatic failover) replaces
+  Sentinel.
+- **Raft-via-etcd** (1.0.x). The HA-without-SPOF option. More complex;
+  the same `GlobalCoordinator` interface fits.
+
+For 0.9.0, the SPOF is documented; users in regulated environments
+should opt for Sentinel or `PostgresCoordinator` (when it lands).
+
+**`windowMs` at construction.** RedisCoordinator takes `windowMs` as a
+required option — the Lua scripts derive the active window's
+`expiresAt` from `now` (`floor(now/windowMs)·windowMs + windowMs`) so
+reconcile can correctly initialize a fresh window without the caller
+having to pass it through the `GlobalCoordinator.reconcile` signature.
+The caller MUST pass the same `windowMs` to the coordinator as to the
+strategy it federates; a mismatch silently breaks federation.
+
 ---
 
 ## 5  Failure semantics
