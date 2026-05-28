@@ -292,6 +292,8 @@
     "test:cov": "vitest run --coverage",
     "bench": "tsx bench/run.ts",
     "bench:compare": "tsx bench/compare.ts",
+    "bench:gate": "tsx bench/gate.ts",
+    "bench:baseline": "tsx bench/gate.ts --update",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
