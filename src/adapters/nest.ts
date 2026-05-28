@@ -5,13 +5,23 @@
  * the Express/Fastify adapters. The `ExecutionContext`/`CanActivate` shapes are modeled structurally,
  * so this works on either HTTP platform with **no `@nestjs/common` dependency** — pass
  * `exceptionFactory` to throw a real `HttpException` for an idiomatic `429`. See THROTTLEKIT.md §§14,15.
+ *
+ * Also exposes {@link nestUnifiedAdmissionMiddleware} and {@link nestAdaptiveConcurrencyMiddleware}
+ * (0.9.2, TK-1325) — Express-style middleware functions registered via NestJS's
+ * `MiddlewareConsumer`. They wire `release()` to `res.on("finish")` + `res.on("close")` and
+ * cover the adaptive-concurrency lifecycle that guards alone cannot (guards run pre-handler).
+ * See `research/bigger-bets/middleware-integration/DESIGN.md` §4 + D-M-11.
  */
 
+import type { UnifiedAdmitter, UnifiedAxis } from "../admission/unified";
 import { gcra } from "../algorithms/gcra";
+import type { ConcurrencyGuard } from "../concurrency/adaptive";
+import { systemClock } from "../core/clock";
 import { parseDuration as parseDurationShared } from "../core/duration";
 import { RateLimitExceededError, ThrottleKitError } from "../core/errors";
-import type { Decision, Store, Strategy } from "../core/types";
+import type { Clock, Decision, FailMode, Store, Strategy } from "../core/types";
 import { requirePositive } from "../core/validate";
+import type { HeaderEmit } from "../http/headers";
 import {
   type CommonAdapterOptions,
   type Gate,
@@ -21,6 +31,7 @@ import {
   nodeClientIp,
   trustFrom,
 } from "./core";
+import { type LifecycleResponseLike, unifiedHeadersFor, wireResponseLifecycle } from "./lifecycle";
 
 export type { CommonAdapterOptions, LimiterOrStrategy } from "./core";
 
@@ -319,5 +330,211 @@ export function createRateLimitGuard(options: RateLimitGuardOptions = {}): NestC
       options.onLimited?.(req, decision);
       throw buildException(decision);
     },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// unifiedAdmission + adaptiveConcurrency Nest middleware (0.9.2 / TK-1325).
+// Guards run pre-handler only — they cannot release a slot post-completion.
+// We ship middleware functions instead, registered via Nest's MiddlewareConsumer:
+//
+//   consumer.apply(nestUnifiedAdmissionMiddleware({ admitter })).forRoutes("*");
+//
+// The function signature is Express-compatible (structurally typed; no
+// `@nestjs/common` or `express` import). NestJS accepts these directly.
+// See `research/bigger-bets/middleware-integration/DESIGN.md` D-M-11.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Per-axis Decision snapshot from `admitter.lastDecisions()`. */
+type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+
+/** The slice of an Express-style response the Nest middleware writes through. */
+interface NestMiddlewareResLike extends LifecycleResponseLike {
+  setHeader(name: string, value: string): unknown;
+  status(code: number): unknown;
+  json?(body: unknown): unknown;
+  end(body?: unknown): unknown;
+}
+
+/** Generic next function signature; matches Express. */
+type NestMiddlewareNext = (err?: unknown) => void;
+
+/** Options for {@link nestUnifiedAdmissionMiddleware}. */
+export type NestUnifiedAdmissionMiddlewareOptions = Pick<
+  CommonAdapterOptions,
+  "fail" | "emit" | "policyName" | "trustProxy" | "ipv6Prefix"
+> & {
+  admitter: UnifiedAdmitter;
+  cost?: number | ((req: NodeReqLike) => number);
+  key?: (req: NodeReqLike) => string;
+  clock?: Clock;
+  dropOn5xx?: boolean;
+  onLimited?: (
+    req: NodeReqLike,
+    res: NestMiddlewareResLike,
+    decision: Decision,
+    axes: AxisSnapshot,
+  ) => void;
+  onError?: (req: NodeReqLike, res: NestMiddlewareResLike, err: unknown) => void;
+  handler?: (
+    req: NodeReqLike,
+    res: NestMiddlewareResLike,
+    decision: Decision,
+    axes: AxisSnapshot,
+  ) => void;
+};
+
+/**
+ * Express-style NestJS middleware enforcing a {@link UnifiedAdmitter}. Register via
+ * `MiddlewareConsumer` in your module's `configure` method.
+ *
+ * @example
+ * import type { MiddlewareConsumer, NestModule } from "@nestjs/common";
+ * import { nestUnifiedAdmissionMiddleware } from "throttlekit/nest";
+ *
+ * \@Module({ ... })
+ * export class AppModule implements NestModule {
+ *   configure(consumer: MiddlewareConsumer) {
+ *     consumer.apply(nestUnifiedAdmissionMiddleware({ admitter })).forRoutes("*");
+ *   }
+ * }
+ */
+export function nestUnifiedAdmissionMiddleware(
+  options: NestUnifiedAdmissionMiddlewareOptions,
+): (req: NodeReqLike, res: NestMiddlewareResLike, next: NestMiddlewareNext) => void {
+  const { admitter } = options;
+  const trust = trustFrom(options);
+  const keyFn = options.key ?? ((req: NodeReqLike) => nodeClientIp(req, trust));
+  const costOpt = options.cost ?? 1;
+  const fail: FailMode = options.fail ?? "open";
+  const emit: HeaderEmit | false = options.emit ?? { draft: true };
+  const policyName = options.policyName ?? "unified";
+  const clock = options.clock ?? systemClock;
+  const dropOn5xx = options.dropOn5xx ?? false;
+
+  return (req: NodeReqLike, res: NestMiddlewareResLike, next: NestMiddlewareNext): void => {
+    const key = keyFn(req);
+    const cost = typeof costOpt === "function" ? costOpt(req) : costOpt;
+
+    void (async (): Promise<void> => {
+      let decision: Decision;
+      let release: (opts?: { dropped?: boolean }) => void;
+      try {
+        const result = await admitter.admit({ key, cost });
+        decision = result.decision;
+        release = result.release;
+      } catch (err) {
+        options.onError?.(req, res, err);
+        if (fail === "open") {
+          next();
+          return;
+        }
+        res.status(503);
+        if (typeof res.json === "function") {
+          res.json({ error: "admission unavailable" });
+        } else {
+          res.end();
+        }
+        return;
+      }
+
+      const axes = admitter.lastDecisions();
+      const headers = unifiedHeadersFor(decision, emit, policyName, clock.now());
+      for (const [name, value] of Object.entries(headers)) {
+        res.setHeader(name, value);
+      }
+
+      if (!decision.allowed) {
+        options.onLimited?.(req, res, decision, axes);
+        if (options.handler !== undefined) {
+          options.handler(req, res, decision, axes);
+          return;
+        }
+        res.status(429);
+        if (typeof res.json === "function") {
+          res.json({ error: "Too Many Requests", retryAfterMs: decision.retryAfterMs });
+        } else {
+          res.end("Too Many Requests");
+        }
+        return;
+      }
+
+      wireResponseLifecycle(res, release, dropOn5xx);
+      next();
+    })();
+  };
+}
+
+/** Options for {@link nestAdaptiveConcurrencyMiddleware}. */
+export type NestAdaptiveConcurrencyMiddlewareOptions = Pick<
+  CommonAdapterOptions,
+  "fail" | "emit" | "policyName"
+> & {
+  guard: ConcurrencyGuard;
+  clock?: Clock;
+  dropOn5xx?: boolean;
+  onLimited?: (req: NodeReqLike, res: NestMiddlewareResLike, decision: Decision) => void;
+  handler?: (req: NodeReqLike, res: NestMiddlewareResLike, decision: Decision) => void;
+};
+
+/**
+ * Express-style NestJS middleware enforcing an adaptive {@link ConcurrencyGuard}.
+ *
+ * @example
+ * consumer.apply(nestAdaptiveConcurrencyMiddleware({ guard })).forRoutes("*");
+ */
+export function nestAdaptiveConcurrencyMiddleware(
+  options: NestAdaptiveConcurrencyMiddlewareOptions,
+): (req: NodeReqLike, res: NestMiddlewareResLike, next: NestMiddlewareNext) => void {
+  const { guard } = options;
+  const emit: HeaderEmit | false = options.emit ?? { draft: true };
+  const policyName = options.policyName ?? "adaptive";
+  const clock = options.clock ?? systemClock;
+  const dropOn5xx = options.dropOn5xx ?? false;
+
+  return (req: NodeReqLike, res: NestMiddlewareResLike, next: NestMiddlewareNext): void => {
+    const lease = guard.acquire();
+    const now = clock.now();
+
+    if (!lease.ok) {
+      const lastRtt = guard.stats().lastRtt;
+      const decision: Decision = {
+        allowed: false,
+        limit: guard.limit,
+        remaining: 0,
+        resetAt: now,
+        retryAfterMs: Math.max(1, Math.round(lastRtt || 1)),
+      };
+      const headers = unifiedHeadersFor(decision, emit, policyName, now);
+      for (const [name, value] of Object.entries(headers)) {
+        res.setHeader(name, value);
+      }
+      options.onLimited?.(req, res, decision);
+      if (options.handler !== undefined) {
+        options.handler(req, res, decision);
+        return;
+      }
+      res.status(429);
+      if (typeof res.json === "function") {
+        res.json({ error: "Too Many Requests", retryAfterMs: decision.retryAfterMs });
+      } else {
+        res.end("Too Many Requests");
+      }
+      return;
+    }
+
+    const decision: Decision = {
+      allowed: true,
+      limit: guard.limit,
+      remaining: Math.max(0, guard.limit - guard.inflight),
+      resetAt: now,
+      retryAfterMs: 0,
+    };
+    const headers = unifiedHeadersFor(decision, emit, policyName, now);
+    for (const [name, value] of Object.entries(headers)) {
+      res.setHeader(name, value);
+    }
+    wireResponseLifecycle(res, lease.release, dropOn5xx);
+    next();
   };
 }

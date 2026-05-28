@@ -16,3 +16,6 @@ tmp/
 tla2tools.jar
 states/
 *.st
+
+# Claude Code session state — runtime-only, never committed.
+.claude/
