@@ -5,8 +5,13 @@
  * app-defined, you supply the `key` derivation. Dependency-free: the denial error defaults to
  * {@link RateLimitExceededError}; pass `errorFactory` to throw a `TRPCError` so tRPC reports
  * `TOO_MANY_REQUESTS`.
+ *
+ * Also exposes {@link trpcUnifiedAdmission} and {@link trpcAdaptiveConcurrency} (0.9.2, TK-1326)
+ * using the try/finally wrap pattern.
  */
 
+import type { UnifiedAdmitter } from "../admission/unified";
+import type { ConcurrencyGuard } from "../concurrency/adaptive";
 import { RateLimitExceededError } from "../core/errors";
 import type { Decision } from "../core/types";
 import { type CommonAdapterOptions, type LimiterOrStrategy, createGate } from "./core";
@@ -90,5 +95,112 @@ export function trpcRateLimit<Ctx = unknown>(
     throw options.errorFactory
       ? options.errorFactory(decision)
       : new RateLimitExceededError(decision);
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// unifiedAdmission + adaptiveConcurrency tRPC middleware (0.9.2 / TK-1326).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Options for {@link trpcUnifiedAdmission}. */
+export type TrpcUnifiedAdmissionOptions<Ctx> = Pick<CommonAdapterOptions, "fail"> & {
+  admitter: UnifiedAdmitter;
+  /** Derive the limit key from the call. Required — tRPC `ctx` is app-defined. */
+  key: (meta: TrpcCallMeta<Ctx>) => string;
+  /** Cost of a call. Default 1. */
+  cost?: number | ((meta: TrpcCallMeta<Ctx>) => number);
+  /** Fired on deny. */
+  onLimited?: (ctx: Ctx, decision: Decision) => void;
+  /** Fired when admit() throws. */
+  onError?: (ctx: Ctx, err: unknown) => void;
+  /** Build the thrown error. Default {@link RateLimitExceededError}. */
+  errorFactory?: (decision: Decision) => unknown;
+};
+
+/**
+ * Build a tRPC middleware enforcing a {@link UnifiedAdmitter}. On admit it forwards to next()
+ * in a try/finally; on a thrown procedure, release({dropped: true}); on a clean return,
+ * release({dropped: false}).
+ */
+export function trpcUnifiedAdmission<Ctx = unknown>(
+  options: TrpcUnifiedAdmissionOptions<Ctx>,
+): TrpcRateLimitMiddleware<Ctx> {
+  const { admitter } = options;
+  const fail = options.fail ?? "open";
+  const costOpt = options.cost ?? 1;
+  const buildErr = options.errorFactory ?? ((d: Decision) => new RateLimitExceededError(d));
+
+  return async <Result>(params: TrpcMiddlewareParams<Ctx, Result>): Promise<Result> => {
+    const key = options.key(params);
+    const cost = typeof costOpt === "function" ? costOpt(params) : costOpt;
+
+    let decision: Decision;
+    let release: (opts?: { dropped?: boolean }) => void;
+    try {
+      const r = await admitter.admit({ key, cost });
+      decision = r.decision;
+      release = r.release;
+    } catch (err) {
+      options.onError?.(params.ctx, err);
+      if (fail === "open") return params.next();
+      throw err;
+    }
+
+    if (!decision.allowed) {
+      options.onLimited?.(params.ctx, decision);
+      throw buildErr(decision);
+    }
+
+    let thrown = false;
+    try {
+      return await params.next();
+    } catch (err) {
+      thrown = true;
+      throw err;
+    } finally {
+      release({ dropped: thrown });
+    }
+  };
+}
+
+/** Options for {@link trpcAdaptiveConcurrency}. */
+export type TrpcAdaptiveConcurrencyOptions<Ctx> = {
+  guard: ConcurrencyGuard;
+  /** Fired on deny. */
+  onLimited?: (ctx: Ctx, decision: Decision) => void;
+  /** Build the thrown error. */
+  errorFactory?: (decision: Decision) => unknown;
+};
+
+/** Build a tRPC middleware enforcing an adaptive {@link ConcurrencyGuard}. */
+export function trpcAdaptiveConcurrency<Ctx = unknown>(
+  options: TrpcAdaptiveConcurrencyOptions<Ctx>,
+): TrpcRateLimitMiddleware<Ctx> {
+  const { guard } = options;
+  const buildErr = options.errorFactory ?? ((d: Decision) => new RateLimitExceededError(d));
+
+  return async <Result>(params: TrpcMiddlewareParams<Ctx, Result>): Promise<Result> => {
+    const lease = guard.acquire();
+    if (!lease.ok) {
+      const lastRtt = guard.stats().lastRtt;
+      const decision: Decision = {
+        allowed: false,
+        limit: guard.limit,
+        remaining: 0,
+        resetAt: Date.now(),
+        retryAfterMs: Math.max(1, Math.round(lastRtt || 1)),
+      };
+      options.onLimited?.(params.ctx, decision);
+      throw buildErr(decision);
+    }
+    let thrown = false;
+    try {
+      return await params.next();
+    } catch (err) {
+      thrown = true;
+      throw err;
+    } finally {
+      lease.release({ dropped: thrown });
+    }
   };
 }

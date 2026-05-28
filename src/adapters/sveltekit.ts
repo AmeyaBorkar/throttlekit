@@ -5,10 +5,23 @@
  * SvelteKit's `event.getClientAddress()` (the platform-resolved client IP). The `RequestEvent`/
  * `Handle` shapes are modeled structurally, so a real `@sveltejs/kit` `Handle` satisfies them with no
  * dependency. See THROTTLEKIT.md §§14,15.
+ *
+ * Also exposes {@link sveltekitUnifiedAdmission} and {@link sveltekitAdaptiveConcurrency} (0.9.2,
+ * TK-1326) that wrap the resolved Response body for release lifecycle.
  */
 
-import type { Decision } from "../core/types";
+import type { UnifiedAdmitter, UnifiedAxis } from "../admission/unified";
+import type { ConcurrencyGuard } from "../concurrency/adaptive";
+import { systemClock } from "../core/clock";
+import type { Clock, Decision, FailMode } from "../core/types";
+import type { HeaderEmit } from "../http/headers";
 import { type CommonAdapterOptions, type LimiterOrStrategy, createGate } from "./core";
+import {
+  defaultDenyResponse,
+  defaultUnavailableResponse,
+  unifiedHeadersWeb,
+  wrapResponseStreamLifecycle,
+} from "./lifecycle-web";
 
 export type { CommonAdapterOptions, LimiterOrStrategy } from "./core";
 
@@ -100,6 +113,185 @@ export function sveltekitRateLimit(options: SvelteKitRateLimitOptions): SvelteKi
     return new Response(
       JSON.stringify({ error: "Too Many Requests", retryAfterMs: decision.retryAfterMs }),
       { status: 429, headers: denyHeaders },
+    );
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// unifiedAdmission + adaptiveConcurrency SvelteKit handle hooks (0.9.2 / TK-1326).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Per-axis Decision snapshot from `admitter.lastDecisions()`. */
+type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+
+/** Options for {@link sveltekitUnifiedAdmission}. */
+export type SvelteKitUnifiedAdmissionOptions = Pick<
+  CommonAdapterOptions,
+  "fail" | "emit" | "policyName"
+> & {
+  admitter: UnifiedAdmitter;
+  cost?: number | ((event: SvelteKitRequestEvent) => number);
+  key?: (event: SvelteKitRequestEvent) => string;
+  clock?: Clock;
+  dropOn5xx?: boolean;
+  onLimited?: (event: SvelteKitRequestEvent, decision: Decision, axes: AxisSnapshot) => void;
+  onError?: (event: SvelteKitRequestEvent, err: unknown) => void;
+  handler?: (
+    event: SvelteKitRequestEvent,
+    decision: Decision,
+    axes: AxisSnapshot,
+  ) => Response | Promise<Response>;
+};
+
+/** Build a SvelteKit `handle` hook enforcing a {@link UnifiedAdmitter}. */
+export function sveltekitUnifiedAdmission(
+  options: SvelteKitUnifiedAdmissionOptions,
+): SvelteKitHandle {
+  const { admitter } = options;
+  const keyFn = options.key ?? ((event: SvelteKitRequestEvent) => event.getClientAddress());
+  const costOpt = options.cost ?? 1;
+  const fail: FailMode = options.fail ?? "open";
+  const emit: HeaderEmit | false = options.emit ?? { draft: true };
+  const policyName = options.policyName ?? "unified";
+  const clock = options.clock ?? systemClock;
+  const dropOn5xx = options.dropOn5xx ?? false;
+
+  return async ({ event, resolve }: SvelteKitHandleInput): Promise<Response> => {
+    const key = keyFn(event);
+    const cost = typeof costOpt === "function" ? costOpt(event) : costOpt;
+
+    let decision: Decision;
+    let release: (opts?: { dropped?: boolean }) => void;
+    try {
+      const r = await admitter.admit({ key, cost });
+      decision = r.decision;
+      release = r.release;
+    } catch (err) {
+      options.onError?.(event, err);
+      if (fail === "open") return resolve(event);
+      return defaultUnavailableResponse();
+    }
+
+    const axes = admitter.lastDecisions();
+    const now = clock.now();
+
+    if (!decision.allowed) {
+      options.onLimited?.(event, decision, axes);
+      if (options.handler !== undefined) {
+        const custom = await options.handler(event, decision, axes);
+        const merged = new Headers(custom.headers);
+        for (const [n, v] of unifiedHeadersWeb(decision, emit, policyName, now).entries()) {
+          if (!merged.has(n)) merged.set(n, v);
+        }
+        return new Response(custom.body, {
+          status: custom.status,
+          statusText: custom.statusText,
+          headers: merged,
+        });
+      }
+      return defaultDenyResponse(decision, emit, policyName, now);
+    }
+
+    let response: Response;
+    try {
+      response = await resolve(event);
+    } catch (err) {
+      release({ dropped: true });
+      throw err;
+    }
+    const merged = new Headers(response.headers);
+    for (const [n, v] of unifiedHeadersWeb(decision, emit, policyName, now).entries()) {
+      merged.set(n, v);
+    }
+    return wrapResponseStreamLifecycle(
+      new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: merged,
+      }),
+      release,
+      dropOn5xx,
+    );
+  };
+}
+
+/** Options for {@link sveltekitAdaptiveConcurrency}. */
+export type SvelteKitAdaptiveConcurrencyOptions = Pick<
+  CommonAdapterOptions,
+  "fail" | "emit" | "policyName"
+> & {
+  guard: ConcurrencyGuard;
+  clock?: Clock;
+  dropOn5xx?: boolean;
+  onLimited?: (event: SvelteKitRequestEvent, decision: Decision) => void;
+  handler?: (event: SvelteKitRequestEvent, decision: Decision) => Response | Promise<Response>;
+};
+
+/** Build a SvelteKit `handle` hook enforcing an adaptive {@link ConcurrencyGuard}. */
+export function sveltekitAdaptiveConcurrency(
+  options: SvelteKitAdaptiveConcurrencyOptions,
+): SvelteKitHandle {
+  const { guard } = options;
+  const emit: HeaderEmit | false = options.emit ?? { draft: true };
+  const policyName = options.policyName ?? "adaptive";
+  const clock = options.clock ?? systemClock;
+  const dropOn5xx = options.dropOn5xx ?? false;
+
+  return async ({ event, resolve }: SvelteKitHandleInput): Promise<Response> => {
+    const lease = guard.acquire();
+    const now = clock.now();
+
+    if (!lease.ok) {
+      const lastRtt = guard.stats().lastRtt;
+      const decision: Decision = {
+        allowed: false,
+        limit: guard.limit,
+        remaining: 0,
+        resetAt: now,
+        retryAfterMs: Math.max(1, Math.round(lastRtt || 1)),
+      };
+      options.onLimited?.(event, decision);
+      if (options.handler !== undefined) {
+        const custom = await options.handler(event, decision);
+        const merged = new Headers(custom.headers);
+        for (const [n, v] of unifiedHeadersWeb(decision, emit, policyName, now).entries()) {
+          if (!merged.has(n)) merged.set(n, v);
+        }
+        return new Response(custom.body, {
+          status: custom.status,
+          statusText: custom.statusText,
+          headers: merged,
+        });
+      }
+      return defaultDenyResponse(decision, emit, policyName, now);
+    }
+
+    const decision: Decision = {
+      allowed: true,
+      limit: guard.limit,
+      remaining: Math.max(0, guard.limit - guard.inflight),
+      resetAt: now,
+      retryAfterMs: 0,
+    };
+    let response: Response;
+    try {
+      response = await resolve(event);
+    } catch (err) {
+      lease.release({ dropped: true });
+      throw err;
+    }
+    const merged = new Headers(response.headers);
+    for (const [n, v] of unifiedHeadersWeb(decision, emit, policyName, now).entries()) {
+      merged.set(n, v);
+    }
+    return wrapResponseStreamLifecycle(
+      new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: merged,
+      }),
+      lease.release,
+      dropOn5xx,
     );
   };
 }

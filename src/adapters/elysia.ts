@@ -5,9 +5,20 @@
  * `503`. The key derives from the Web `Request` — `cf-connecting-ip`/trusted `x-forwarded-for` →
  * `"anon"` (audit TK-S01) — overridable. The context shape is modeled structurally, so a real Elysia
  * context satisfies it with no dependency. See THROTTLEKIT.md §§14,15.
+ *
+ * Also exposes {@link elysiaUnifiedAdmission} and {@link elysiaAdaptiveConcurrency} (0.9.2,
+ * TK-1326) — wrap-style functions the user calls inside the route handler:
+ *   `app.get("/", (ctx) => admit(ctx, async () => "result"))`
+ *
+ * The wrap pattern is universal across Elysia's runtime versions; it doesn't require Elysia's
+ * own plugin lifecycle hooks. The release fires when the wrapped handler returns / throws.
  */
 
-import type { Decision } from "../core/types";
+import type { UnifiedAdmitter, UnifiedAxis } from "../admission/unified";
+import type { ConcurrencyGuard } from "../concurrency/adaptive";
+import { systemClock } from "../core/clock";
+import type { Clock, Decision, FailMode } from "../core/types";
+import type { HeaderEmit } from "../http/headers";
 import {
   type CommonAdapterOptions,
   type LimiterOrStrategy,
@@ -15,6 +26,7 @@ import {
   edgeClientIp,
   trustFrom,
 } from "./core";
+import { unifiedHeadersWeb } from "./lifecycle-web";
 
 export type { CommonAdapterOptions, LimiterOrStrategy } from "./core";
 
@@ -91,5 +103,168 @@ export function elysiaRateLimit(options: ElysiaRateLimitOptions): ElysiaRateLimi
     }
     ctx.set.status = 429;
     return { error: "Too Many Requests", retryAfterMs: decision.retryAfterMs };
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// unifiedAdmission + adaptiveConcurrency wrap (0.9.2 / TK-1326).
+// Elysia's lifecycle hooks (onBeforeHandle / onAfterHandle / onError) work
+// for rate-limiting but cannot tie a single admit() to its release() across
+// the three callbacks without per-request state. The wrap pattern is simpler
+// and universal: the user calls `await admit(ctx, async () => handler-body)`
+// inside their route handler. See DESIGN.md §4 (elysia row).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Per-axis Decision snapshot. */
+type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+
+/** Options for {@link elysiaUnifiedAdmission}. */
+export type ElysiaUnifiedAdmissionOptions = Pick<
+  CommonAdapterOptions,
+  "fail" | "emit" | "policyName" | "trustProxy" | "ipv6Prefix" | "trustClientIpHeader"
+> & {
+  admitter: UnifiedAdmitter;
+  cost?: number | ((ctx: ElysiaContextLike) => number);
+  key?: (ctx: ElysiaContextLike) => string;
+  clock?: Clock;
+  dropOn5xx?: boolean;
+  onLimited?: (ctx: ElysiaContextLike, decision: Decision, axes: AxisSnapshot) => void;
+  onError?: (ctx: ElysiaContextLike, err: unknown) => void;
+};
+
+/** A `(ctx, body) => result` wrap; user calls inside their handler. */
+export type ElysiaUnifiedAdmissionWrap = <R>(
+  ctx: ElysiaContextLike,
+  body: () => Promise<R> | R,
+) => Promise<R | undefined>;
+
+/**
+ * Build an Elysia admission wrap. The user calls `await admit(ctx, async () => ...)` inside
+ * their handler. The wrap admits (denying with 429 if blocked), forwards to the body inside
+ * a try/finally, and fires release with `dropped = thrown`.
+ *
+ * @example
+ * const admit = elysiaUnifiedAdmission({ admitter });
+ * app.get("/", (ctx) => admit(ctx, async () => "ok"));
+ */
+export function elysiaUnifiedAdmission(
+  options: ElysiaUnifiedAdmissionOptions,
+): ElysiaUnifiedAdmissionWrap {
+  const { admitter } = options;
+  const trust = trustFrom(options);
+  const keyFn =
+    options.key ??
+    ((ctx: ElysiaContextLike) => edgeClientIp(ctx.request, trust, options.trustClientIpHeader));
+  const costOpt = options.cost ?? 1;
+  const fail: FailMode = options.fail ?? "open";
+  const emit: HeaderEmit | false = options.emit ?? { draft: true };
+  const policyName = options.policyName ?? "unified";
+  const clock = options.clock ?? systemClock;
+  const dropOn5xx = options.dropOn5xx ?? false;
+
+  return async <R>(ctx: ElysiaContextLike, body: () => Promise<R> | R): Promise<R | undefined> => {
+    const key = keyFn(ctx);
+    const cost = typeof costOpt === "function" ? costOpt(ctx) : costOpt;
+
+    let decision: Decision;
+    let release: (opts?: { dropped?: boolean }) => void;
+    try {
+      const r = await admitter.admit({ key, cost });
+      decision = r.decision;
+      release = r.release;
+    } catch (err) {
+      options.onError?.(ctx, err);
+      if (fail === "open") return await body();
+      ctx.set.status = 503;
+      return undefined as R;
+    }
+
+    const axes = admitter.lastDecisions();
+    for (const [n, v] of unifiedHeadersWeb(decision, emit, policyName, clock.now()).entries()) {
+      ctx.set.headers[n] = v;
+    }
+
+    if (!decision.allowed) {
+      options.onLimited?.(ctx, decision, axes);
+      ctx.set.status = 429;
+      return undefined as R;
+    }
+
+    let thrown = false;
+    try {
+      return await body();
+    } catch (err) {
+      thrown = true;
+      throw err;
+    } finally {
+      const status = Number(ctx.set.status ?? 200);
+      release({ dropped: thrown || (dropOn5xx && status >= 500) });
+    }
+  };
+}
+
+/** Options for {@link elysiaAdaptiveConcurrency}. */
+export type ElysiaAdaptiveConcurrencyOptions = Pick<
+  CommonAdapterOptions,
+  "fail" | "emit" | "policyName"
+> & {
+  guard: ConcurrencyGuard;
+  clock?: Clock;
+  dropOn5xx?: boolean;
+  onLimited?: (ctx: ElysiaContextLike, decision: Decision) => void;
+};
+
+/** Build an Elysia adaptive-concurrency wrap. */
+export function elysiaAdaptiveConcurrency(
+  options: ElysiaAdaptiveConcurrencyOptions,
+): ElysiaUnifiedAdmissionWrap {
+  const { guard } = options;
+  const emit: HeaderEmit | false = options.emit ?? { draft: true };
+  const policyName = options.policyName ?? "adaptive";
+  const clock = options.clock ?? systemClock;
+  const dropOn5xx = options.dropOn5xx ?? false;
+
+  return async <R>(ctx: ElysiaContextLike, body: () => Promise<R> | R): Promise<R | undefined> => {
+    const lease = guard.acquire();
+    const now = clock.now();
+
+    if (!lease.ok) {
+      const lastRtt = guard.stats().lastRtt;
+      const decision: Decision = {
+        allowed: false,
+        limit: guard.limit,
+        remaining: 0,
+        resetAt: now,
+        retryAfterMs: Math.max(1, Math.round(lastRtt || 1)),
+      };
+      for (const [n, v] of unifiedHeadersWeb(decision, emit, policyName, now).entries()) {
+        ctx.set.headers[n] = v;
+      }
+      options.onLimited?.(ctx, decision);
+      ctx.set.status = 429;
+      return undefined as R;
+    }
+
+    const decision: Decision = {
+      allowed: true,
+      limit: guard.limit,
+      remaining: Math.max(0, guard.limit - guard.inflight),
+      resetAt: now,
+      retryAfterMs: 0,
+    };
+    for (const [n, v] of unifiedHeadersWeb(decision, emit, policyName, now).entries()) {
+      ctx.set.headers[n] = v;
+    }
+
+    let thrown = false;
+    try {
+      return await body();
+    } catch (err) {
+      thrown = true;
+      throw err;
+    } finally {
+      const status = Number(ctx.set.status ?? 200);
+      lease.release({ dropped: thrown || (dropOn5xx && status >= 500) });
+    }
   };
 }
