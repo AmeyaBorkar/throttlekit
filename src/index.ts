@@ -32,6 +32,7 @@ export {
   StoreUnavailableError,
   ThrottleKitError,
 } from "./core/errors";
+export { ALLOW_FULL, combineDecisions } from "./core/combine";
 export { rateLimit } from "./core/limiter";
 export type { RateLimitOptions } from "./core/limiter";
 export { MemoryStore } from "./stores/memory";
