@@ -8,6 +8,191 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.9.0] — 2026-05-28
+
+**Unified admission — one Decision across rate, concurrency, and cost.**
+The 0.9.0 deliverable: `unifiedAdmission(...)` composes the three
+orthogonal admission axes a real API request must clear into ONE
+`Decision`, with a four-law pure algebra (`combineDecisions`) and both
+sequential (any backend) and Lua-fused (Redis-only opt-in) execution.
+The LLM-gateway shape: rate (req/min) + concurrency (in-flight) +
+cost (tokens) is the production target. Versioned as a **minor** bump
+because it introduces a NEW admission primitive — the algebra,
+`UnifiedAdmitter`, the Lua-fused atomic script, and the
+`tk.binding_axis` OTel attribute are all new public surfaces (all
+additive — no breaking changes to 0.8.5). Test count **913 → 996**
+(+83 new tests across `combine.test.ts`, `lease-shim.test.ts`,
+`unified.test.ts`, `unified-fused.test.ts`, `fused-conformance.test.ts`,
+`metrics-contract.test.ts`).
+
+### Added
+
+- **`combineDecisions(a, b): Decision` + `ALLOW_FULL`** (`src/core/combine.ts`
+  — TK-1002). The pure field-by-field algebra at the heart of unified
+  admission: AND on `allowed`, MIN on `limit`/`remaining`, MAX on
+  `resetAt`/`retryAfterMs`. Four algebraic laws proven via fast-check
+  at `numRuns ≥ 500`: **identity** (combine with `ALLOW_FULL` = no-op),
+  **associativity** (N inputs reduce flat), **commutativity** (order
+  doesn't change the result), **idempotency** (retried sub-checks are
+  safe). `ALLOW_FULL` uses `Number.MAX_SAFE_INTEGER` for `limit` /
+  `remaining` (not `+Infinity`) to preserve the project-wide JS-Lua
+  bit-identity guarantee. Re-exported from the root + `throttlekit/core`.
+
+- **`leaseAsAdmission(guard, opts?)`** (`src/admission/lease-shim.ts`
+  — TK-1003). Bridges `ConcurrencyGuard.acquire() → Lease` into a
+  Decision-shaped admission so the concurrency axis composes with
+  rate / cost axes via `combineDecisions`. The release is kept
+  separate from the Decision (returned in the same object) so the
+  caller can wire it to the request lifecycle — that's the mechanical
+  reason `unifiedAdmission` returns `{ decision, release }` and NOT
+  `Limiter` (D-U4 / DR-08 — concurrency's lease semantics don't fit
+  `Limiter`'s stateless `.check() → Decision` shape). On rejection,
+  `retryAfterMs` is a Little's-Law-honest hint (`max(1,
+  round(lastRtt || 1))`) since the slot frees by *event*, not by clock.
+
+- **`unifiedAdmission({ rate?, concurrency?, cost?, backend?, fused?,
+  clock? }): UnifiedAdmitter`** (`src/admission/unified.ts` — TK-1004
+  / TK-1005). The composition primitive. Two backend modes:
+  - **`backend: "sequential"`** (default): each axis runs in turn
+    (concurrency → rate → cost — in-process fastest fail first); first
+    deny short-circuits and releases any transiently-held slot.
+    Works with any backend mix.
+  - **`backend: "lua-fused"`** (opt-in, requires `fused` option group
+    with explicit `client` + per-axis strategy params): one Redis
+    `EVALSHA` of `tk:v1:fused-rc:check` evaluates rate + cost
+    atomically. 0.9.0 ships GCRA + tokenBucket fusion (the LLM-gateway
+    combination); other strategy pairs throw at construction with a
+    clear error and land as 0.9.x patches per demand.
+
+  `UnifiedAdmitter` exposes both `admit() → Promise<UnifiedAdmission>`
+  (universal) and `admitSync() → UnifiedAdmission` (sync; throws if any
+  axis lacks `checkSync` or if `backend: "lua-fused"`), mirroring the
+  project's existing `Limiter.check` / `Limiter.checkSync` pattern.
+  `lastDecisions()` returns a frozen per-axis snapshot for OTel /
+  metrics consumption.
+
+- **`FusedDispatcher` + `FUSED_GCRA_TOKEN_BUCKET_LUA`**
+  (`src/admission/fused-lua.ts` — TK-1005). The standalone fused-script
+  dispatcher (mirroring `RedisCoordinator`'s `EVALSHA → EVAL on NOSCRIPT`
+  pattern). Public so power users can dispatch the fused script
+  directly outside `unifiedAdmission`. The script returns a 13-element
+  integer tuple `[combined.allowed, combined.limit, combined.remaining,
+  combined.resetAt, combined.retryAfterMs, rate.allowed, rate.remaining,
+  rate.resetAt, rate.retryAfterMs, cost.allowed, cost.remaining,
+  cost.resetAt, cost.retryAfterMs]`. Semantic match to sequential mode:
+  each axis writes its own state per its own admit decision,
+  independent of the other axis's outcome (preserves the byte-identity
+  claim across the two backends).
+
+- **`bindingAxisOf(lastDecisions)`** and
+  **`recordUnifiedAdmissionOnSpan(span, decision, lastDecisions,
+  extra?)`** (`src/observability/otel.ts` — TK-1008). Identify the
+  binding axis of a denied unified-admission decision (`"concurrency"`
+  | `"rate"` | `"cost"`, omitted from admitted decisions) and record
+  it onto an OTel span via the new
+  `SPAN_ATTRIBUTES.bindingAxis = "throttlekit.binding_axis"` key.
+  Convention: deterministic priority is concurrency → rate → cost
+  (matches sequential's evaluation order), so the attribute is
+  consistent across backends. Closes the #1 missing OTel signal for
+  LLM gateways (which axis blocked me?).
+
+### Tested
+
+- **Algebra laws property test** (`test/core/combine.test.ts`, +16):
+  identity (right + left), associativity, commutativity, idempotency
+  via fast-check at `numRuns: 500` per law; N-ary reduction consistency
+  (foldLeft = foldRight); explicit field-by-field semantic cases;
+  `ALLOW_FULL` shape pin.
+
+- **Lease-shim shape + lifecycle**
+  (`test/admission/lease-shim.test.ts`, +13): accepted-lease Decision
+  shape, rejected-lease shape with `retryAfterMs = lastRtt` heuristic,
+  release pass-through, `dropped: true` AIMD-limit-contraction,
+  double-release idempotency, integer bit-identity on all numeric
+  fields, composition with `combineDecisions`.
+
+- **Sequential composition** (`test/admission/unified.test.ts`, +26):
+  construction validation (empty axes, invalid backend, missing
+  `fused` group), every axis subset (single / pair / triple),
+  short-circuit + binding-axis identification, release lifecycle,
+  `admitSync` error propagation, key / cost forwarding.
+
+- **Lua-fused mode** (`test/admission/unified-fused.test.ts`, +14
+  gated): `FusedDispatcher` construction validation, dispatch happy
+  path (rate-deny, cost-deny, 13-tuple shape, integer bit-identity),
+  `unifiedAdmission` integration (concurrency-deny short-circuit
+  without consulting Redis, `admitSync` throws, Redis-error releases
+  slot), atomicity (20 parallel admits at capacity 10 admit ≤ 10).
+
+- **Dual-path conformance** (`test/admission/fused-conformance.test.ts`,
+  +4 gated): byte-identical Decision streams across 100 fast-check
+  timelines per (rate-binding / cost-binding / both-binding)
+  configuration (300 timelines total, ~9000 Redis ops per run). Pins
+  both per-axis and combined Decisions agree field-by-field. Sequential
+  uses `useServerTime: false` + ManualClock; fused uses `dispatchAt`
+  with the same explicit `now`.
+
+- **`bindingAxisOf` + `recordUnifiedAdmissionOnSpan`**
+  (`test/observability/metrics-contract.test.ts`, +10): single-axis /
+  multi-axis priority / all-allow / all-undefined cases for
+  `bindingAxisOf`; attribute-set / attribute-omit / extras-merge cases
+  for `recordUnifiedAdmissionOnSpan`; updated `SPAN_ATTRIBUTES`
+  contract pin.
+
+### Research
+
+- **`research/bigger-bets/unified/DESIGN.md`** — the design lock (TK-1001).
+  Lit synthesis citing Netflix concurrency-limits gradient2, Envoy
+  adaptive concurrency, Google SRE Ch.21, Little's Law,
+  Devanur-Hayes 2009 (Adwords primal-dual, 1−1/e), Talluri-van Ryzin
+  1998 (network revenue management bid prices), Buchbinder-Jain-Naor
+  2007 (multi-resource online matching), TALE work for the cost axis.
+  15 decision records (D-U1..D-U15).
+
+- **`research/bigger-bets/unified/THEORY.md` + `sim.ts`** — the
+  empirical joint-vs-marginal regret analysis (TK-1007). Markov-
+  correlated workload, fluid-LP closed form, three policies
+  (marginal-AND, joint-LP, clairvoyant-via-fluid-upper-bound), ρ
+  sweep in {−1, −0.5, 0, +0.5, +1} × 20 seeds. **Mean ε = 25.33%**
+  (well above DR-19's 5% threshold). **Verdict: SHIP** the joint-LP
+  runtime as `policy: "joint-lp"` in 0.10.1. Honest documentation of
+  the ρ = +1 negative result (well-known fluid-LP failure under
+  non-stationarity); production workloads sit in moderate-ρ regimes
+  where joint-LP wins consistently.
+
+### Docs
+
+- `docs/FAILURE-MODES.md` — new "`unifiedAdmission` — outage shapes"
+  section: per-backend failure-mode matrix (sequential vs lua-fused),
+  observability conventions, pointers to DESIGN.md / THEORY.md.
+
+- `examples/unified.ts` — runnable LLM-gateway-style demo (concurrency
+  binding, binding-axis observability, release lifecycle). Async /
+  Express shape documented as a commented recipe.
+
+- Wiki: new **`Unified-Admission`** page (algebra + two backends +
+  observability + lifecycle + joint-LP roadmap + recipes). Updates to
+  `Home` and `_Sidebar` navigation.
+
+### Removed / breaking
+
+_None._ The release is purely additive: every 0.8.5 surface remains
+available with bit-identical behavior. The new `unifiedAdmission(...)`
+sits alongside `rateLimit(...)`, `adaptiveConcurrency(...)`,
+`tokenBudget(...)` — opt in by calling it.
+
+### Out of scope (deferred)
+
+- **`policy: "joint-lp"` runtime** — gated by DR-19 to 0.10.1 (the
+  conditional ship is now GREEN per TK-1007's ε = 25.33% finding);
+  TK-1319 design will lock the API.
+- **Distributed adaptive concurrency** (DR-10) — 0.10.0 follow-up.
+- **`Decision.bindingAxis` field** — breaking change to the Decision
+  shape; use the `tk.binding_axis` OTel attribute + `lastDecisions()`
+  introspection instead. Revisit at 1.0.
+- **Online primal-dual** (Devanur-Hayes update rule for
+  non-stationary workloads) — 0.10.2 candidate.
+
 ## [0.8.5] — 2026-05-28
 
 **Multi-process regional escrow + regional-only outage mode.** Closes the
