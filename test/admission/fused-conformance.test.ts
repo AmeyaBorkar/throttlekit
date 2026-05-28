@@ -1,0 +1,286 @@
+/**
+ * TK-1006 — dual-path conformance: sequential ≡ Lua-fused.
+ *
+ * The byte-identity claim from DESIGN.md §6 / D-U9: for the same admit
+ * timeline run against (a) `unifiedAdmission({ rate, cost })` in
+ * sequential mode and (b) `unifiedAdmission({ backend: "lua-fused",
+ * fused: ... })`, the per-step combined Decision streams agree
+ * field-by-field. The fused script is **two existing pure-Lua
+ * transitions glued together via the algebra** (TK-1002), so the only
+ * way they could diverge is a Lua-side arithmetic bug or a `now` skew.
+ * We eliminate the latter by pinning both paths to an explicit `now`
+ * (`useServerTime: false` + the limiter's ManualClock for sequential;
+ * `dispatchAt(...)` for fused).
+ *
+ * Coverage per the task spec: 100 timelines × {rate-binding,
+ * cost-binding, both-binding} = 300 timeline assertions per run, each
+ * timeline ≥ 30 steps with mixed keys, costs, and clock advances.
+ *
+ * Gated on `THROTTLEKIT_TEST_REDIS` (uses Redis DB 12 — non-colliding
+ * with DB 8 / 9 / 10 / 11 used by other gated suites).
+ */
+
+import fc from "fast-check";
+import { createClient } from "redis";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+import { FusedDispatcher } from "../../src/admission/fused-lua";
+import { gcra } from "../../src/algorithms/gcra";
+import { tokenBucket } from "../../src/algorithms/token-bucket";
+import { ManualClock } from "../../src/core/clock";
+import { combineDecisions } from "../../src/core/combine";
+import { rateLimit } from "../../src/core/limiter";
+import type { Decision, Limiter } from "../../src/core/types";
+import { fromNodeRedis } from "../../src/redis/clients";
+import { RedisStore } from "../../src/redis/store";
+
+const url = process.env.THROTTLEKIT_TEST_REDIS;
+const d = url ? describe : describe.skip;
+
+/** One step of a generated admit timeline. */
+interface Step {
+  /** How much the ManualClock advances before this step (ms; ≥ 0). */
+  deltaMs: number;
+  /** Tenant key. A small set so the timeline exercises both fresh and reused state. */
+  key: string;
+  /** Cost-axis weight for this admit. */
+  cost: number;
+}
+
+/** Generate a 30-step timeline over 3 distinct keys. */
+const stepArb: fc.Arbitrary<Step> = fc.record({
+  deltaMs: fc.integer({ min: 0, max: 5_000 }),
+  key: fc.constantFrom("a", "b", "c"),
+  cost: fc.integer({ min: 1, max: 50 }),
+});
+const timelineArb: fc.Arbitrary<Step[]> = fc.array(stepArb, {
+  minLength: 30,
+  maxLength: 30,
+});
+
+/** Strict structural Decision equality with a precise diff in the assertion message. */
+function expectDecisionsEqual(a: Decision, b: Decision, label: string): void {
+  expect(
+    {
+      allowed: a.allowed,
+      limit: a.limit,
+      remaining: a.remaining,
+      resetAt: a.resetAt,
+      retryAfterMs: a.retryAfterMs,
+    },
+    label,
+  ).toEqual({
+    allowed: b.allowed,
+    limit: b.limit,
+    remaining: b.remaining,
+    resetAt: b.resetAt,
+    retryAfterMs: b.retryAfterMs,
+  });
+}
+
+interface Config {
+  rate: { limit: number; periodMs: number; burst?: number };
+  cost: { capacity: number; refillPerSec: number };
+  label: string;
+}
+
+/** The three configurations spec'd by TK-1006. */
+const configs: Config[] = [
+  // rate-binding: rate is the bottleneck; cost is permissive (large capacity, fast refill).
+  {
+    label: "rate-binding (rate=10/60s; cost=10k/1k_per_s)",
+    rate: { limit: 10, periodMs: 60_000 },
+    cost: { capacity: 10_000, refillPerSec: 1_000 },
+  },
+  // cost-binding: cost is the bottleneck; rate is permissive.
+  // Note: rate.limit chosen so rate.T = period/limit = 600ms, giving GCRA's
+  // PEXPIRE TTL (≈ new_tat − now in ms) plenty of headroom over the few-ms
+  // real-wall-clock latency between sequential's two Redis ops and fused's
+  // single one. Setting rate.limit too high (e.g. 10000 → T=6ms) makes the
+  // TTL comparable to Redis round-trip latency, racing key expiry against
+  // the next admit — both paths face it, but independently (sequential's
+  // SET happens ~2ms before fused's SET, so each path's TTL race resolves
+  // separately; the resulting Decisions can diverge despite identical
+  // ManualClock-time inputs). At T=600ms this is robust.
+  {
+    label: "cost-binding (rate=100/60s; cost=200/10_per_s)",
+    rate: { limit: 100, periodMs: 60_000 },
+    cost: { capacity: 200, refillPerSec: 10 },
+  },
+  // both-binding: tight on both axes; the algebra resolves the tighter axis per Decision.
+  {
+    label: "both-binding (rate=50/60s; cost=500/10_per_s)",
+    rate: { limit: 50, periodMs: 60_000 },
+    cost: { capacity: 500, refillPerSec: 10 },
+  },
+];
+
+d("fused ≡ sequential (TK-1006 byte-identity)", () => {
+  let client: ReturnType<typeof createClient>;
+
+  beforeAll(async () => {
+    client = createClient({ url: url as string, database: 12 });
+    await client.connect();
+    await client.flushDb();
+  });
+
+  afterAll(async () => {
+    if (client?.isOpen) {
+      await client.flushDb();
+      await client.quit();
+    }
+  });
+
+  beforeEach(async () => {
+    await client.flushDb();
+  });
+
+  for (const cfg of configs) {
+    it(`${cfg.label}: byte-identical Decision streams across 100 timelines`, async () => {
+      await fc.assert(
+        fc.asyncProperty(timelineArb, async (timeline) => {
+          // Fresh state for every timeline — flushDb between iterations so
+          // earlier timelines' admits don't pollute the comparison.
+          await client.flushDb();
+
+          // ── Sequential setup ────────────────────────────────────────────
+          // useServerTime: false + injected ManualClock → Lua's `now` =
+          // clock.now() at the moment of each .check() call.
+          const seqClock = new ManualClock(1_000_000);
+          const seqStore = new RedisStore({
+            client: fromNodeRedis(client),
+            useServerTime: false,
+            prefix: "seq",
+          });
+          const seqRate: Limiter = rateLimit({
+            strategy: gcra(cfg.rate),
+            store: seqStore,
+            clock: seqClock,
+            prefix: "rate",
+          });
+          const seqCost: Limiter = rateLimit({
+            strategy: tokenBucket(cfg.cost),
+            store: seqStore,
+            clock: seqClock,
+            prefix: "cost",
+          });
+
+          // ── Fused setup ─────────────────────────────────────────────────
+          // FusedDispatcher with useServerTime: false; we'll call
+          // dispatchAt with the same explicit `now` as the sequential clock.
+          const fusedDispatcher = new FusedDispatcher({
+            client: fromNodeRedis(client),
+            useServerTime: false,
+            rate: {
+              strategy: "gcra",
+              limit: cfg.rate.limit,
+              periodMs: cfg.rate.periodMs,
+              ...(cfg.rate.burst !== undefined ? { burst: cfg.rate.burst } : {}),
+              prefix: "fused:rate",
+            },
+            cost: {
+              strategy: "tokenBucket",
+              capacity: cfg.cost.capacity,
+              refillPerSec: cfg.cost.refillPerSec,
+              prefix: "fused:cost",
+            },
+          });
+
+          // ── Drive both timelines step-by-step, comparing each combined Decision ──
+          for (let i = 0; i < timeline.length; i++) {
+            const step = timeline[i] as Step;
+            seqClock.advance(step.deltaMs);
+            const now = seqClock.now();
+
+            // Sequential: rate then cost (matches the unified admission order
+            // — but for byte-identity at the algebra level, we run both
+            // unconditionally and combine, mirroring the fused script).
+            const seqRateDecision = await seqRate.check(step.key, 1);
+            const seqCostDecision = await seqCost.check(step.key, step.cost);
+            const seqCombined = combineDecisions(seqRateDecision, seqCostDecision);
+
+            // Fused: one EVALSHA pinned to the same `now`.
+            const fusedResult = await fusedDispatcher.dispatchAt(step.key, step.cost, now);
+
+            // The per-axis Decisions and the combined Decision must agree
+            // field-by-field. Use precise labels so a shrunken failure points
+            // at the exact step.
+            expectDecisionsEqual(
+              fusedResult.rate,
+              seqRateDecision,
+              `${cfg.label} step=${i} key=${step.key} now=${now}: rate axis`,
+            );
+            expectDecisionsEqual(
+              fusedResult.cost,
+              seqCostDecision,
+              `${cfg.label} step=${i} key=${step.key} now=${now} cost=${step.cost}: cost axis`,
+            );
+            expectDecisionsEqual(
+              fusedResult.combined,
+              seqCombined,
+              `${cfg.label} step=${i} key=${step.key} now=${now} cost=${step.cost}: combined`,
+            );
+          }
+          return true;
+        }),
+        { numRuns: 100 },
+      );
+    }, 60_000); // generous timeout — 100 timelines × 30 steps × 2 backends ≈ 6000 Redis ops
+  }
+
+  // ── A small explicit case as a sanity-check / read-as-spec example ────────────────────────────
+
+  it("hand-rolled 5-step sequence agrees byte-identically (representative case)", async () => {
+    await client.flushDb();
+
+    const clock = new ManualClock(2_000_000);
+    const seqStore = new RedisStore({
+      client: fromNodeRedis(client),
+      useServerTime: false,
+      prefix: "h-seq",
+    });
+    const seqRate = rateLimit({
+      strategy: gcra({ limit: 5, periodMs: 60_000 }),
+      store: seqStore,
+      clock,
+      prefix: "rate",
+    });
+    const seqCost = rateLimit({
+      strategy: tokenBucket({ capacity: 100, refillPerSec: 10 }),
+      store: seqStore,
+      clock,
+      prefix: "cost",
+    });
+    const fused = new FusedDispatcher({
+      client: fromNodeRedis(client),
+      useServerTime: false,
+      rate: { strategy: "gcra", limit: 5, periodMs: 60_000, prefix: "h-fused:rate" },
+      cost: { strategy: "tokenBucket", capacity: 100, refillPerSec: 10, prefix: "h-fused:cost" },
+    });
+
+    const steps = [
+      { deltaMs: 0, cost: 10 }, // cold start; both admit
+      { deltaMs: 100, cost: 30 }, // both admit
+      { deltaMs: 200, cost: 40 }, // both admit (cost: 100-10-30-40 = 20 left)
+      { deltaMs: 100, cost: 50 }, // cost denies (only 20 left + tiny refill); rate admits
+      { deltaMs: 60_000, cost: 1 }, // both fully refilled (60 s elapsed); both admit
+    ];
+
+    for (const s of steps) {
+      clock.advance(s.deltaMs);
+      const now = clock.now();
+      const seqRateD = await seqRate.check("k", 1);
+      const seqCostD = await seqCost.check("k", s.cost);
+      const seqCombined = combineDecisions(seqRateD, seqCostD);
+      const fusedResult = await fused.dispatchAt("k", s.cost, now);
+
+      expectDecisionsEqual(fusedResult.rate, seqRateD, `step now=${now} cost=${s.cost} rate`);
+      expectDecisionsEqual(fusedResult.cost, seqCostD, `step now=${now} cost=${s.cost} cost`);
+      expectDecisionsEqual(
+        fusedResult.combined,
+        seqCombined,
+        `step now=${now} cost=${s.cost} combined`,
+      );
+    }
+  });
+});
