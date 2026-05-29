@@ -129,6 +129,19 @@ describe("joint-LP — default-unchanged (D-JLP-2)", () => {
       { numRuns: NUM_RUNS, seed: 20260529 },
     );
   });
+
+  it("golden: a successful admit reports the cost axis's real remaining (guards the shared finalize/combine path)", () => {
+    // The omitted-vs-marginal comparison above runs both on the same code path, so a
+    // regression in the SHARED finalize/combine could pass it unseen. This pins the
+    // exact Decision a known cost-axis state must produce — independent of policy.
+    const admit = unifiedAdmission({ cost: costAxis(500, new ManualClock(0)) });
+    const r = admit.admitSync({ cost: 100 });
+    expect(r.decision.allowed).toBe(true);
+    expect(r.decision.limit).toBe(500);
+    expect(r.decision.remaining).toBe(400); // 500 − 100; catches a corrupted `remaining`
+    expect(r.decision.retryAfterMs).toBe(0);
+    expect(r.policyDenied).toBeFalsy();
+  });
 });
 
 describe("joint-LP — duals = 0 ≡ marginal", () => {
@@ -165,7 +178,7 @@ describe("joint-LP — duals = 0 ≡ marginal", () => {
 });
 
 describe("joint-LP — policy-denial shape + lifecycle", () => {
-  it("a filter denial: allowed:false, remaining:0, policyDenied:true, all axes allowed", () => {
+  it("a filter denial: allowed:false, remaining:0, policyDenied:true, axes NOT consulted", () => {
     const a = unifiedAdmission({
       cost: costAxis(1e9, new ManualClock(0)), // generous: only the filter denies
       policy: "joint-lp",
@@ -175,8 +188,9 @@ describe("joint-LP — policy-denial shape + lifecycle", () => {
     expect(r.decision.allowed).toBe(false);
     expect(r.decision.remaining).toBe(0);
     expect(r.policyDenied).toBe(true);
-    // The cost axis itself allowed — the filter bound, not the budget.
-    expect(a.lastDecisions().cost?.allowed).toBe(true);
+    // The filter runs BEFORE the rate/cost axes (so a filtered request consumes no
+    // budget), hence the cost axis was never consulted — that is the whole point.
+    expect(a.lastDecisions().cost).toBeUndefined();
   });
 
   it("a cleared request is a normal admit (policyDenied falsy)", () => {

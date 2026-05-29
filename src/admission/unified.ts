@@ -219,6 +219,19 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       );
     }
     duals = hasDuals ? jl!.duals! : solveFluidLp(jl!.workload!).duals;
+    // Validate the bid prices. The `workload` path produces these from a validated
+    // solve; the `duals` escape hatch is caller-supplied, so guard it here — a NaN
+    // or negative shadow price would silently deny or admit everything.
+    for (const [field, value] of [
+      ["rate", duals.rate],
+      ["cost", duals.cost],
+    ] as const) {
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        throw new ThrottleKitError(
+          `unifiedAdmission: jointLp.duals.${field} must be a finite number ≥ 0 (got ${String(value)})`,
+        );
+      }
+    }
   } else if (options.policy !== "marginal" && options.policy !== undefined) {
     throw new RangeError(
       `unifiedAdmission.policy: expected "marginal" | "joint-lp", got ${String(options.policy)}`,
@@ -297,13 +310,19 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
   }
 
   /**
-   * The joint-LP bid-price filter (D-JLP-6). Inert unless `policy: "joint-lp"`
-   * is configured (`duals` defined). Runs AFTER every per-axis budget has allowed
-   * — so by the time it can deny, the combined snapshot is all-allow. Pure JS and
-   * backend-agnostic (works under sequential and lua-fused alike). Returns a
-   * policy-denial {@link UnifiedAdmission} (releasing the held slot) when the
-   * request's value doesn't clear `p_R + p_C·cost`, or `undefined` to let the
-   * admit finalize.
+   * The joint-LP bid-price filter (D-JLP-6). Inert unless `policy: "joint-lp"` is
+   * configured (`duals` defined). Pure JS (only `value`, `requestCost`, and the
+   * static `duals`), so it is backend-agnostic AND must run **BEFORE the rate/cost
+   * limiters debit** — the rate/cost `check()` consumes budget on success with no
+   * rollback, so filtering *after* them would let a rejected low-value request
+   * still drain the budget the policy exists to preserve. Returns a policy-denial
+   * {@link UnifiedAdmission} (releasing any held concurrency slot — an
+   * upstream-style deny, not an overload drop) when value doesn't clear
+   * `p_R + p_C·cost`, or `undefined` to let the admit proceed to rate/cost.
+   *
+   * On a policy deny the per-axis decisions are left unset (the axes were never
+   * consulted — that is exactly what preserves their budget); `policyDenied: true`
+   * is the signal that the filter, not an axis, bound (D-JLP-4).
    */
   function applyPolicyGate(
     value: number,
@@ -313,8 +332,6 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
     if (duals === undefined) return undefined;
     const bid = duals.rate + duals.cost * requestCost;
     if (value >= bid) return undefined;
-    // Value doesn't clear the budget's shadow price — deny by policy. Release the
-    // held concurrency slot (an upstream-style deny, not an overload drop).
     leaseRelease?.({ dropped: false });
     return { decision: denyByPolicy(combineSnapshot()), release: NOOP_RELEASE, policyDenied: true };
   }
@@ -331,49 +348,55 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       }
       const leaseRelease = concStep.leaseRelease;
 
-      // Step 2 — rate + cost.
-      if (fusedDispatcher !== undefined) {
-        // Lua-fused path: one Redis EVALSHA covers both axes atomically.
-        let result: Awaited<ReturnType<FusedDispatcher["dispatch"]>>;
-        try {
-          result = await fusedDispatcher.dispatch(key, requestCost);
-        } catch (err) {
-          // Redis hiccup: release any held slot before bubbling up.
-          leaseRelease?.({ dropped: false });
-          throw err;
-        }
-        lastRate = result.rate;
-        lastCost = result.cost;
-        if (!result.combined.allowed) {
-          leaseRelease?.({ dropped: false });
-          // Combined Decision still folds in concurrency (which allowed; ALLOW_FULL-ish).
-          return { decision: combineSnapshot(), release: NOOP_RELEASE };
-        }
-        return applyPolicyGate(value, requestCost, leaseRelease) ?? finalize(leaseRelease);
-      }
+      // Step 2 — joint-LP bid-price filter, BEFORE any rate/cost debit (inert under
+      // the default policy). A filtered request must not consume budget.
+      const policyDeny = applyPolicyGate(value, requestCost, leaseRelease);
+      if (policyDeny !== undefined) return policyDeny;
 
-      // Sequential path — rate (async).
-      if (rate !== undefined) {
-        const d = await rate.check(key, 1);
-        lastRate = d;
-        if (!d.allowed) {
-          // Release the held concurrency slot (deny is upstream, not an overload).
-          leaseRelease?.({ dropped: false });
-          return { decision: combineSnapshot(), release: NOOP_RELEASE };
+      // Step 3 — rate + cost. The outer try/catch releases the held concurrency
+      // slot if a limiter throws (e.g. a store outage), so the slot never leaks.
+      try {
+        if (fusedDispatcher !== undefined) {
+          // Lua-fused path: one Redis EVALSHA covers both axes atomically.
+          const result = await fusedDispatcher.dispatch(key, requestCost);
+          lastRate = result.rate;
+          lastCost = result.cost;
+          if (!result.combined.allowed) {
+            leaseRelease?.({ dropped: false });
+            // Combined Decision still folds in concurrency (which allowed; ALLOW_FULL-ish).
+            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+          }
+          return finalize(leaseRelease);
         }
-      }
 
-      // Sequential path — cost (async).
-      if (cost !== undefined) {
-        const d = await cost.check(key, requestCost);
-        lastCost = d;
-        if (!d.allowed) {
-          leaseRelease?.({ dropped: false });
-          return { decision: combineSnapshot(), release: NOOP_RELEASE };
+        // Sequential path — rate (async).
+        if (rate !== undefined) {
+          const d = await rate.check(key, 1);
+          lastRate = d;
+          if (!d.allowed) {
+            // Release the held concurrency slot (deny is upstream, not an overload).
+            leaseRelease?.({ dropped: false });
+            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+          }
         }
-      }
 
-      return applyPolicyGate(value, requestCost, leaseRelease) ?? finalize(leaseRelease);
+        // Sequential path — cost (async).
+        if (cost !== undefined) {
+          const d = await cost.check(key, requestCost);
+          lastCost = d;
+          if (!d.allowed) {
+            leaseRelease?.({ dropped: false });
+            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+          }
+        }
+
+        return finalize(leaseRelease);
+      } catch (err) {
+        // A rate/cost limiter threw (store outage, async-only store, …) after the
+        // slot was acquired — release it before propagating (idempotent).
+        leaseRelease?.({ dropped: false });
+        throw err;
+      }
     },
 
     admitSync(opts?: UnifiedAdmitOptions): UnifiedAdmission {
@@ -396,27 +419,39 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       }
       const leaseRelease = concStep.leaseRelease;
 
-      // Step 2 — rate. Will throw if the underlying store is async-only.
-      if (rate !== undefined) {
-        const d = rate.checkSync(key, 1);
-        lastRate = d;
-        if (!d.allowed) {
-          leaseRelease?.({ dropped: false });
-          return { decision: combineSnapshot(), release: NOOP_RELEASE };
-        }
-      }
+      // Step 2 — joint-LP bid-price filter, BEFORE any rate/cost debit (inert under
+      // the default policy). A filtered request must not consume budget.
+      const policyDeny = applyPolicyGate(value, requestCost, leaseRelease);
+      if (policyDeny !== undefined) return policyDeny;
 
-      // Step 3 — cost.
-      if (cost !== undefined) {
-        const d = cost.checkSync(key, requestCost);
-        lastCost = d;
-        if (!d.allowed) {
-          leaseRelease?.({ dropped: false });
-          return { decision: combineSnapshot(), release: NOOP_RELEASE };
+      // Step 3 — rate + cost. The try/catch releases the held slot if a limiter
+      // throws (e.g. an async-only store under admitSync), so the slot never leaks.
+      try {
+        // Rate. Will throw if the underlying store is async-only.
+        if (rate !== undefined) {
+          const d = rate.checkSync(key, 1);
+          lastRate = d;
+          if (!d.allowed) {
+            leaseRelease?.({ dropped: false });
+            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+          }
         }
-      }
 
-      return applyPolicyGate(value, requestCost, leaseRelease) ?? finalize(leaseRelease);
+        // Cost.
+        if (cost !== undefined) {
+          const d = cost.checkSync(key, requestCost);
+          lastCost = d;
+          if (!d.allowed) {
+            leaseRelease?.({ dropped: false });
+            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+          }
+        }
+
+        return finalize(leaseRelease);
+      } catch (err) {
+        leaseRelease?.({ dropped: false });
+        throw err;
+      }
     },
 
     lastDecisions(): Readonly<Record<UnifiedAxis, Decision | undefined>> {

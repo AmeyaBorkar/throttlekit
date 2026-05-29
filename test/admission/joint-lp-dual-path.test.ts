@@ -131,14 +131,19 @@ d("joint-LP dual-path conformance (D-JLP-6)", () => {
 
     const seqAllowed: boolean[] = [];
     const fusedAllowed: boolean[] = [];
+    let seqPolicyDenials = 0;
     for (const s of stream) {
       const r = await seq.admit(s);
       seqAllowed.push(r.decision.allowed);
+      if (r.policyDenied) seqPolicyDenials++;
       r.release();
       const f = await fused.admit(s);
       fusedAllowed.push(f.decision.allowed);
       f.release();
     }
     expect(fusedAllowed).toEqual(seqAllowed);
+    // Sanity: the filter actually fired (else this comparison would be trivially
+    // satisfiable by a no-op gate).
+    expect(seqPolicyDenials).toBeGreaterThan(0);
   });
 });
