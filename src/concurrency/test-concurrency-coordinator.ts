@@ -72,6 +72,23 @@ export interface TestConcurrencyCoordinatorOptions {
    * (like {@link aggregate}); enable only once every guard echoes `appliedGen`.
    */
   acknowledgedHandoff?: boolean;
+  /**
+   * Capacity ALLOCATION rule (D-DAC-9 / TK-1403) — how `L_global` is split into
+   * per-node TARGETs. `"equal-split"` (**default**, behavior-preserving) gives every
+   * live node ≈`L/N` regardless of use: simple and fair, but under skew an idle node's
+   * share is stranded — a busy peer is capped below what idle nodes waste, and the cap
+   * can't re-grant it (§6 "Known limitation"). `"demand-proportional"` lets a SATISFIED
+   * node (`inflight < share`) drain to its occupancy + 1 probe slot, RELEASING the rest,
+   * which the cap then re-grants to HUNGRY nodes (`inflight ≥ share` — saturated, incl. a
+   * new share-0 node). The TK-1403a gate measured +25–50pp utilization under skew with
+   * ZERO regression when load is balanced. SAFETY IS UNAFFECTED: the occupancy cap (step
+   * 5) enforces `Σ share ≤ L_global` and (synchronously) `Σ inflight ≤ L_global` for ANY
+   * target — only the cap matters (§6, §9.4: "neither bound depends on the exact target").
+   * Every node keeps a ≥1 probe slot so it can always reveal demand (starvation-free); the
+   * cost is `N_idle` reserved slots, visible only when `L_global < N`. All nodes on a key
+   * MUST agree (like {@link aggregate}). Default `"equal-split"`.
+   */
+  allocation?: "equal-split" | "demand-proportional";
 }
 
 /** One node's last report + currently-granted share, retained per key. */
@@ -99,6 +116,7 @@ export class TestConcurrencyCoordinator implements ConcurrencyCoordinator {
   readonly #aggregate: "min" | "median";
   readonly #clock: Clock;
   readonly #acknowledgedHandoff: boolean;
+  readonly #allocation: "equal-split" | "demand-proportional";
   /** key -> (nodeId -> last report + granted share). */
   readonly #state = new Map<string, Map<string, NodeRecord>>();
 
@@ -106,6 +124,7 @@ export class TestConcurrencyCoordinator implements ConcurrencyCoordinator {
     this.#aggregate = options.aggregate ?? "median";
     this.#clock = options.clock ?? systemClock;
     this.#acknowledgedHandoff = options.acknowledgedHandoff ?? false;
+    this.#allocation = options.allocation ?? "equal-split";
   }
 
   /** Simulate a coordinator partition. `heartbeat()` throws until `setHealthy(true)`. */
@@ -183,13 +202,12 @@ export class TestConcurrencyCoordinator implements ConcurrencyCoordinator {
     const liveIds = [...perKey.keys()];
     const lGlobal = this.#aggregateOf(liveIds.map((id) => perKey.get(id)!.lLocal));
 
-    // 4. equal-split TARGET for self (§6): base + 1 for the first `rem` by sorted id.
+    // 4. TARGET for self (§6): equal-split (default) or demand-proportional (D-DAC-9 /
+    //    TK-1403). The CAP (step 5) enforces Σshare≤L / Σinflight≤L for ANY target — this
+    //    choice only affects utilization/fairness under skew, never the safety bound.
     const n = liveIds.length;
-    const base = Math.floor(lGlobal / n);
-    const rem = lGlobal - base * n;
     const sorted = [...liveIds].sort();
-    const rank = sorted.indexOf(report.nodeId);
-    const target = base + (rank < rem ? 1 : 0);
+    const target = this.#targetFor(report.nodeId, sorted, lGlobal, perKey);
 
     // 5. CAP the grant at the budget no OTHER live node is currently HOLDING.
     //    Default (D-DAC-18): max(share, inflight) — reserve a peer's committed share
@@ -243,6 +261,49 @@ export class TestConcurrencyCoordinator implements ConcurrencyCoordinator {
 
   async isHealthy(): Promise<boolean> {
     return this.#healthy;
+  }
+
+  /**
+   * Per-node equal-split or demand-proportional TARGET (§6 step 4 / D-DAC-9). The CAP
+   * (step 5) enforces both safety bounds for ANY target this returns, so this method is
+   * purely a utilization/fairness policy. `sortedIds` is the live set sorted ascending;
+   * `perKey` holds each live node's carried `share` + reported `inflight` (the demand
+   * signal). MUST stay bit-identical to the Lua twin (RedisConcurrencyCoordinator §10.2).
+   */
+  #targetFor(
+    selfId: string,
+    sortedIds: string[],
+    lGlobal: number,
+    perKey: Map<string, NodeRecord>,
+  ): number {
+    if (this.#allocation === "equal-split") {
+      const nn = sortedIds.length;
+      const base = Math.floor(lGlobal / nn);
+      const rem = lGlobal - base * nn;
+      const rank = sortedIds.indexOf(selfId);
+      return base + (rank < rem ? 1 : 0);
+    }
+    // demand-proportional (TK-1403): a SATISFIED node (inflight < share) aspires only to
+    // its occupancy + 1 probe slot, releasing the rest; HUNGRY nodes (inflight ≥ share —
+    // saturated, incl. a new share-0 node) equal-split the released budget; floor 1 keeps
+    // every node able to reveal demand (starvation-free). Iterating the SORTED ids makes
+    // the hungry-rank tiebreak deterministic and matches the Lua single-pass.
+    const hungry: string[] = [];
+    let reservedForSatisfied = 0;
+    for (const id of sortedIds) {
+      const rec = perKey.get(id)!;
+      if (rec.inflight >= rec.share) hungry.push(id);
+      else reservedForSatisfied += rec.inflight + 1;
+    }
+    const self = perKey.get(selfId)!;
+    if (self.inflight < self.share) return self.inflight + 1; // satisfied → drain + probe
+    const H = hungry.length;
+    if (H === 0) return self.inflight + 1; // (self is hungry ⇒ H ≥ 1; defensive)
+    const spare = Math.max(0, lGlobal - reservedForSatisfied);
+    const base = Math.floor(spare / H);
+    const rem = spare - base * H;
+    const rank = hungry.indexOf(selfId);
+    return Math.max(1, base + (rank < rem ? 1 : 0));
   }
 
   /** Aggregate the live `lLocal` list per the configured policy (§7). */

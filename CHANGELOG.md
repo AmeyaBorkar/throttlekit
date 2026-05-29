@@ -6,7 +6,21 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`allocation: "demand-proportional"` on the distributed concurrency coordinators
+  (TK-1403, D-DAC-22).** Opt-in — default stays `"equal-split"`, byte-for-byte unchanged.
+  Under skewed load, equal-split strands an idle node's `≈ L/N` share where a busy peer
+  needs it; demand-proportional lets a *satisfied* node (`inflight < share`) drain to a
+  1-slot probe and re-grants the released budget to *hungry* nodes (`inflight ≥ share`) —
+  **+25–50pp utilization under skew** (gate-measured), **0 regression** when load is
+  balanced. It is a **TARGET-only** change: the occupancy cap is untouched, so `GlobalCap`
+  (`Σ share ≤ L_global`) and the synchronous `InflightCap` (`Σ inflight ≤ L_global`) hold
+  for the new target exactly as for equal-split — re-verified **exhaustively** in the BFS
+  twin and **bit-identically** across the `TestConcurrencyCoordinator` ↔
+  `RedisConcurrencyCoordinator` dual path. Every node keeps a `≥ 1` probe slot, so it is
+  starvation-free when `L_global ≥ N`. All nodes/coordinators on a key must agree (like
+  `aggregate`).
 
 ## [0.11.1] — 2026-05-29
 

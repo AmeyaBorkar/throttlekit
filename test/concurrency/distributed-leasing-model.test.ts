@@ -91,8 +91,45 @@ const sumOver = (f: Readonly<Record<string, number>>, nodes: Iterable<string>): 
 const min2 = (a: number, b: number): number => (a < b ? a : b);
 const ceil = (a: number, b: number): number => Math.floor((a + b - 1) / b);
 
+/** Allocation rule for the TARGET fed into the cap (D-DAC-9 / TK-1403). */
+type Allocation = "equal-split" | "demand-proportional";
+
 /** Target == Ceil(L, Cardinality(active)) — the per-node fair-share over-approx. */
 const targetFor = (p: Params, active: ReadonlySet<string>): number => ceil(p.l, active.size);
+
+/**
+ * Demand-proportional TARGET (TK-1403), the exact model of
+ * TestConcurrencyCoordinator.#targetFor: a SATISFIED node (inflight < share)
+ * aspires to occupancy + 1 probe slot; HUNGRY nodes (inflight ≥ share) equal-split
+ * the released budget, floor 1. Computed over the current active set's (share,
+ * inflight). The CAP in Reallocate clamps it, so — like equal-split — it cannot
+ * break GlobalCap/InflightCap; this run PROVES that exhaustively for the new rule.
+ */
+const targetDemandProportional = (p: Params, s: State, self: string): number => {
+  const active = [...s.active].sort();
+  const hungry: string[] = [];
+  let reservedForSatisfied = 0;
+  for (const id of active) {
+    const inf = s.inflight[id] ?? 0;
+    const sh = s.share[id] ?? 0;
+    if (inf >= sh) hungry.push(id);
+    else reservedForSatisfied += inf + 1;
+  }
+  const selfInf = s.inflight[self] ?? 0;
+  const selfSh = s.share[self] ?? 0;
+  if (selfInf < selfSh) return selfInf + 1;
+  const H = hungry.length;
+  if (H === 0) return selfInf + 1;
+  const spare = Math.max(0, p.l - reservedForSatisfied);
+  const base = Math.floor(spare / H);
+  const rem = spare - base * H;
+  const rank = hungry.indexOf(self);
+  return Math.max(1, base + (rank < rem ? 1 : 0));
+};
+
+/** The TARGET for node `self` under the chosen allocation rule. */
+const targetOf = (p: Params, s: State, self: string, allocation: Allocation): number =>
+  allocation === "equal-split" ? targetFor(p, s.active) : targetDemandProportional(p, s, self);
 
 /**
  * Held[n] = max(share[n], inflight[n]) — what node n is currently HOLDING: the
@@ -120,7 +157,7 @@ const keyOf = (p: Params, s: State): string => {
  * Each edge is tagged with the action so the caller can witness that Join is
  * actually reachable/exercised.
  */
-function successors(p: Params, s: State): Edge[] {
+function successors(p: Params, s: State, allocation: Allocation = "equal-split"): Edge[] {
   const out: Edge[] = [];
 
   for (const n of p.nodes) {
@@ -139,7 +176,7 @@ function successors(p: Params, s: State): Edge[] {
         heldOf(p, s),
         [...s.active].filter((m) => m !== n),
       );
-      const granted = Math.max(0, min2(targetFor(p, s.active), p.l - others));
+      const granted = Math.max(0, min2(targetOf(p, s, n, allocation), p.l - others));
       out.push({
         action: "Reallocate",
         state: { active: s.active, share: { ...s.share, [n]: granted }, inflight: s.inflight },
@@ -218,7 +255,7 @@ interface ExploreResult {
  * state broke. `Init` enumerates every nonempty starting fleet with all shares
  * and in-flight zero (the cold start).
  */
-function explore(p: Params): ExploreResult {
+function explore(p: Params, allocation: Allocation = "equal-split"): ExploreResult {
   const zero: Record<string, number> = {};
   for (const n of p.nodes) zero[n] = 0;
 
@@ -288,7 +325,7 @@ function explore(p: Params): ExploreResult {
     }
     if (sumInflight > maxSumInflight) maxSumInflight = sumInflight;
 
-    for (const { action, state: next } of successors(p, s)) {
+    for (const { action, state: next } of successors(p, s, allocation)) {
       if (action === "Join") joinExercised = true;
       const k = keyOf(p, next);
       if (!visited.has(k)) {
@@ -371,6 +408,47 @@ describe("GALE distributed (heartbeat) leasing — exhaustive BFS twin (TK-1316)
     // property of the cap, not an artifact of the pinned 2-node/L=4 config.
     expect(maxSumInflight).toBe(cfg.l);
     expect(maxSumShare).toBe(cfg.l);
+    expect(joinExercised).toBe(true);
+  });
+});
+
+describe("GALE distributed leasing — demand-proportional TARGET is exhaustively safe (TK-1403)", () => {
+  // The §6/§9.4 claim is that BOTH safety bounds depend ONLY on the cap, never on the
+  // target. TK-1403 swaps the equal-split target for demand-proportional; this re-runs the
+  // SAME exhaustive BFS with that target and asserts TypeOK/GlobalCap/InflightCap hold on
+  // every reachable state — a full counterexample search proving the new allocation can't
+  // over-commit or over-occupy. explore() throws on any violation, so a clean run is the proof.
+  it("TypeOK + GlobalCap + InflightCap hold on every reachable state — Nodes={n1,n2}, L=4", () => {
+    const { distinct, maxSumShare, maxSumInflight, joinExercised } = explore(
+      { nodes: ["n1", "n2"], l: 4 },
+      "demand-proportional",
+    );
+    // No throw ⇒ both caps held under the demand-proportional target. Both bounds remain
+    // TIGHT (reach L — no steady-state capacity lost: balanced load makes both nodes hungry
+    // and they split L), and membership growth is exercised.
+    expect(maxSumShare).toBe(4);
+    expect(maxSumInflight).toBe(4);
+    expect(joinExercised).toBe(true);
+    // Pinned distinct-state count for the demand-proportional transition system (guards it
+    // against regressions, like the equal-split 76 above). Larger than equal-split's 76
+    // because the target — and thus the set of reachable share vectors — is richer.
+    expect(distinct).toBe(112);
+  });
+
+  it.each([
+    { nodes: ["n1", "n2"], l: 6 },
+    { nodes: ["n1", "n2", "n3"], l: 4 },
+    { nodes: ["n1", "n2", "n3"], l: 6 },
+    { nodes: ["n1", "n2", "n3"], l: 2 }, // L < N: probe floors can't all be honored, caps still hold
+  ])("demand-proportional: caps hold exhaustively for Nodes=$nodes, L=$l", (cfg) => {
+    const { maxSumShare, maxSumInflight, joinExercised } = explore(
+      { nodes: cfg.nodes, l: cfg.l },
+      "demand-proportional",
+    );
+    // No throw ⇒ GlobalCap + InflightCap held on every reachable state under demand-
+    // proportional, across larger fleets/budgets — the bound is the cap's, not the target's.
+    expect(maxSumShare).toBe(cfg.l);
+    expect(maxSumInflight).toBe(cfg.l);
     expect(joinExercised).toBe(true);
   });
 });

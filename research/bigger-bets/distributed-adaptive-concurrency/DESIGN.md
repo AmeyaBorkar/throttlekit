@@ -5,7 +5,8 @@
 > commit shape below is fixed. Implementers follow it literally — open
 > questions are confined to §14.
 >
-> Decision records: **D-DAC-1 .. D-DAC-21** in §13 (D-DAC-19 = the opt-in
+> Decision records: **D-DAC-1 .. D-DAC-22** in §13 (D-DAC-22 = demand-proportional
+> allocation, opt-in target-only change, TK-1403; D-DAC-19 = the opt-in
 > acknowledged-handoff async hard bound, §9.5 / `HARD-ASYNC-BOUND.md`; D-DAC-20 =
 > eager event-driven handoff — hard bound at near-floor ramp, TK-1331; D-DAC-21 =
 > self-fencing — closes the lease-expiry / partition overshoot under bounded clock
@@ -129,7 +130,8 @@ the fleet's aggregate RTT signal**, not configured by hand. The gate must:
 
 ### 1.3 Non-goals (0.10.0)
 
-- Demand-proportional allocation under skew (v1 is equal-split; see §6, §14.1).
+- Demand-proportional allocation under skew was a 0.10.0 non-goal (v1 shipped equal-split);
+  now available opt-in via `allocation:"demand-proportional"` (D-DAC-22 / TK-1403). See §6.
 - A Postgres concurrency coordinator (Test + Redis ship; Postgres is §14.2).
 - Distributing the *rate* or *cost* axes (those are federation's job, 0.8.3+).
 - Online `L_global` smoothing beyond the per-node `adaptiveConcurrency` EMA.
@@ -550,12 +552,13 @@ simplification over the abandoned provisional-join design.
 **Properties:** deterministic (sorted-nodeId tiebreak — no RNG), `O(N log N)`,
 needs no carry-over or clawback (the cap is exact, not approximate), and maps
 directly onto the TLA⁺ `Reallocate` action's `Min2(Target, L − others)` cap over
-the active set (§9). **Known limitation:** an idle node still holds `≈ L/N`, so
+the active set (§9). **Known limitation (equal-split):** an idle node still holds `≈ L/N`, so
 under skew the busy nodes are capped below what the idle nodes are wasting.
-Documented as a FAILURE-MODES row (§12) and a future refinement (§14.1).
 Budget-capped equal-split is the *conservative* choice: it never over-commits,
 and "leaves capacity on the table under skew" is a utilization bug, not a safety
-bug.
+bug. **Now addressed opt-in** by `allocation:"demand-proportional"` (D-DAC-22 / TK-1403),
+which recovers +25–50pp under skew with the cap (and thus both safety bounds) unchanged;
+equal-split stays the default, and the FAILURE-MODES row (§12) documents the default.
 
 ---
 
@@ -1352,8 +1355,9 @@ isHealthy(): healthy   // toggled by setHealthy() for tests; when false, heartbe
   committed to other live nodes (`max(0, min(target, L_global − Σ other live
   shares))`, the D-DAC-17 cap). At steady state `Σ share = L_global` exactly;
   under staggered heartbeats the cap holds `Σ share ≤ L_global` (`GlobalCap`)
-  invariantly. Deterministic, no clawback. Skew under-utilization is a documented
-  limitation (§6, §14.1). (User-approved, 2026-05-29.)
+  invariantly. Deterministic, no clawback. Skew under-utilization (an idle node's ≈L/N is
+  stranded) was a documented limitation — now ADDRESSED opt-in by demand-proportional
+  allocation (D-DAC-22 / TK-1403). (User-approved, 2026-05-29.)
 - **D-DAC-10 — Aggregate with `median` (default) or `min`; NEVER `sum`.**
   Summing rebuilds the `N·C` overshoot bug. Nodes estimate one shared quantity.
   See §7.
@@ -1534,12 +1538,28 @@ isHealthy(): healthy   // toggled by setHealthy() for tests; when false, heartbe
   job, a different architecture; documented). The unbounded-skew + uncooperative-backend
   corner is **provably impossible** (FLP + Two Generals + CAP) — not a tradeoff, a theorem.
   See `HARD-ASYNC-BOUND.md` §8. TK-1332.
+- **D-DAC-22 — Demand-proportional allocation is a TARGET-only change (opt-in).**
+  `allocation:"demand-proportional"` (default `"equal-split"`) sizes each node's step-4
+  TARGET by demand: a satisfied node (`inflight < share`) aspires to occupancy + 1 probe
+  slot, releasing the rest; hungry nodes (`inflight ≥ share`, incl. a new share-0 node)
+  equal-split the released budget, floor 1. The occupancy cap (step 5) is UNCHANGED, so
+  `GlobalCap` / `InflightCap` hold for this target exactly as for equal-split (§6/§9.4 — the
+  bounds depend only on the cap), re-verified exhaustively under the new target in the BFS
+  twin and bit-identically across the JS/Lua dual path (TK-1403c). Recovers +25–50pp
+  utilization under skew (gate `skew-gate.ts`), 0 regression when balanced. Cost: a +1 probe
+  slot per idle node guarantees starvation-freedom when `L_global ≥ N` (when `L_global < N`
+  the floor can't be universally honored — DP then ties equal-split, never worse). (TK-1403,
+  2026-05-30.)
 
-1. **Demand-proportional allocation.** Replace equal-split with a leasing scheme
-   that gives busy nodes more and idle nodes less, while preserving
-   `Σ share ≤ L_global` via federation-style on-demand grants + clawback. The
-   `inflight` field is already carried in `ConcurrencyReport` for exactly this.
-   Candidate: 0.10.2.
+1. **Demand-proportional allocation — SHIPPED (TK-1403, D-DAC-22, opt-in).** Gives busy
+   nodes more and idle nodes less under skew. It came in SIMPLER than this note anticipated:
+   NO leasing/clawback scheme was needed, because §6/§9.4 show the occupancy cap enforces
+   `Σ share ≤ L_global` and `Σ inflight ≤ L_global` for ANY target. So it is a TARGET-ONLY
+   change (`allocation:"demand-proportional"`): a satisfied node (`inflight < share`) drains
+   to occupancy + 1 probe slot; hungry nodes (`inflight ≥ share`) equal-split the released
+   budget. The gate measured +25–50pp utilization under skew, 0 regression when balanced; the
+   cap is untouched so all safety proofs carry over (re-checked exhaustively under the new
+   target). Default stays equal-split. See §6 / D-DAC-22.
 2. **`PostgresConcurrencyCoordinator`.** Same `INSERT … ON CONFLICT` +
    per-window-marker shape as `PostgresCoordinator`, with a `tk_conc_state`
    table keyed by `(key, nodeId)` and a single-statement aggregate-split. Follow-up patch.

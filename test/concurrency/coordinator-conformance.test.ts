@@ -89,8 +89,13 @@ d("coordinator dual-path conformance (TK-1316)", () => {
      * the `{share, lGlobal, nodes}` grants match step for step. A unique `key`
      * per case keeps Redis state isolated across cases.
      */
-    async function expectConformant(label: string, beats: Beat[], handoff = false): Promise<void> {
-      const key = `${aggregate}-${label}`;
+    async function expectConformant(
+      label: string,
+      beats: Beat[],
+      handoff = false,
+      allocation: "equal-split" | "demand-proportional" = "equal-split",
+    ): Promise<void> {
+      const key = `${aggregate}-${allocation}-${label}`;
       // expiresAt far in the future for BOTH the Test clock and the server's
       // wall clock, so no eviction fires on either path.
       const expiresAt = Date.now() + 60_000;
@@ -99,12 +104,14 @@ d("coordinator dual-path conformance (TK-1316)", () => {
         aggregate,
         clock: new ManualClock(0),
         acknowledgedHandoff: handoff,
+        allocation,
       });
       const redisCoord = new RedisConcurrencyCoordinator({
         client: fromNodeRedis(client),
         aggregate,
         prefix: key,
         acknowledgedHandoff: handoff,
+        allocation,
       });
 
       for (let i = 0; i < beats.length; i++) {
@@ -300,6 +307,93 @@ d("coordinator dual-path conformance (TK-1316)", () => {
               { nodeId: "n1", lLocal: 6, inflight: 0, seq: 2, appliedGen: 1 }, // stale: ignored
             ],
             true,
+          );
+        });
+      });
+
+      describe("demand-proportional allocation (TK-1403)", () => {
+        const DP = "demand-proportional" as const;
+
+        it("skew: a saturated node ramps as an idle peer drains to its probe slot", async () => {
+          // n1 fills the budget, then n2 joins idle. Under DP, n2 drains toward a 1-slot
+          // probe and n1 reclaims the rest. Only Test≡Redis is asserted here (the
+          // utilization win is the gate's job); divergence ⇒ a Lua target transcription bug.
+          await expectConformant(
+            "dp-skew",
+            [
+              { nodeId: "n1", lLocal: 12, inflight: 12 },
+              { nodeId: "n2", lLocal: 12, inflight: 0 },
+              { nodeId: "n1", lLocal: 12, inflight: 12 },
+              { nodeId: "n2", lLocal: 12, inflight: 0 },
+              { nodeId: "n1", lLocal: 12, inflight: 11 },
+            ],
+            false,
+            DP,
+          );
+        });
+
+        it("multiple hungry nodes split the released budget (rank tiebreak)", async () => {
+          await expectConformant(
+            "dp-multi-hungry",
+            [
+              { nodeId: "a", lLocal: 10, inflight: 0 },
+              { nodeId: "b", lLocal: 10, inflight: 0 },
+              { nodeId: "c", lLocal: 10, inflight: 0 },
+              { nodeId: "a", lLocal: 10, inflight: 4 },
+              { nodeId: "b", lLocal: 10, inflight: 4 },
+              { nodeId: "c", lLocal: 10, inflight: 0 },
+              { nodeId: "a", lLocal: 10, inflight: 5 },
+            ],
+            false,
+            DP,
+          );
+        });
+
+        it("L<N edge: probe floors exceed the budget (still conformant)", async () => {
+          await expectConformant(
+            "dp-l-lt-n",
+            [
+              { nodeId: "n1", lLocal: 3, inflight: 0 },
+              { nodeId: "n2", lLocal: 3, inflight: 0 },
+              { nodeId: "n3", lLocal: 3, inflight: 0 },
+              { nodeId: "n4", lLocal: 3, inflight: 0 },
+              { nodeId: "n1", lLocal: 3, inflight: 3 },
+              { nodeId: "n2", lLocal: 3, inflight: 0 },
+            ],
+            false,
+            DP,
+          );
+        });
+
+        it("longer mixed demand-proportional sequence over a 3-node fleet", async () => {
+          const beats: Beat[] = [];
+          const ids = ["alpha", "bravo", "charlie"];
+          for (let i = 0; i < 30; i++) {
+            beats.push({
+              nodeId: ids[i % ids.length]!,
+              lLocal: 8 + ((i * 5) % 11),
+              inflight: (i * 4) % 9,
+            });
+          }
+          await expectConformant("dp-mixed-30", beats, false, DP);
+        });
+
+        it("composes with acknowledged handoff (demand-proportional target ⟂ handoff cap)", async () => {
+          // The target (allocation) and the cap's reserve term (handoff) are orthogonal; this
+          // locks the cross-product both flags on. n1 fills, lowers, holds in-flight debt while
+          // n2 ramps — Test ≡ Redis on {share,lGlobal,nodes,gen} proves the Lua composes both.
+          await expectConformant(
+            "dp-handoff",
+            [
+              { nodeId: "n1", lLocal: 12, inflight: 0, seq: 1, appliedGen: 0 },
+              { nodeId: "n2", lLocal: 12, inflight: 0, seq: 1, appliedGen: 0 },
+              { nodeId: "n1", lLocal: 12, inflight: 6, seq: 2, appliedGen: 1 },
+              { nodeId: "n2", lLocal: 12, inflight: 0, seq: 2, appliedGen: 0 },
+              { nodeId: "n1", lLocal: 12, inflight: 6, seq: 3, appliedGen: 2 },
+              { nodeId: "n2", lLocal: 12, inflight: 0, seq: 3, appliedGen: 0 },
+            ],
+            true,
+            DP,
           );
         });
       });

@@ -373,8 +373,14 @@ export function distributedAdaptiveConcurrency(
     return Math.min(share, local.limit);
   }
 
-  /** Capped BELOW our fair share — peers are draining budget we should claim. Computed
-   *  from already-returned telemetry (lGlobal/nodes), so no extra wire field (D-DAC-20). */
+  /** Capped BELOW our equal-split fair share — peers are draining budget we should claim.
+   *  Computed from already-returned telemetry (lGlobal/nodes), so no extra wire field
+   *  (D-DAC-20). NOTE (TK-1403): `⌊lGlobal/nodes⌋` is the EQUAL-SPLIT reference; under
+   *  `allocation:"demand-proportional"` a node may legitimately sit above or below it, so this
+   *  is a coarse heuristic there — but it is NON-LOAD-BEARING: it only gates the opt-in eager
+   *  off-cycle heartbeat (an idempotent, debounced beat scheduled AFTER admission was already
+   *  denied), never admission or any safety bound. Worst case it fires (or skips) one extra
+   *  beat during a rebalance. */
   function belowFair(): boolean {
     return nodes > 0 && share < Math.floor(lGlobal / nodes);
   }

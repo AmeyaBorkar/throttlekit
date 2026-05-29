@@ -69,6 +69,18 @@ export interface RedisConcurrencyCoordinatorOptions {
    * enabled (additive; the parser reads legacy 4-int values as gen/maxSeq/high = 0).
    */
   acknowledgedHandoff?: boolean;
+  /**
+   * Capacity ALLOCATION rule (D-DAC-9 / TK-1403) — the Lua twin of
+   * {@link TestConcurrencyCoordinatorOptions.allocation}. `"equal-split"` (**default**,
+   * behavior-preserving) splits `L_global` ≈`L/N`; `"demand-proportional"` lets satisfied
+   * nodes (`inflight < share`) drain to occupancy + 1 probe slot and re-grants the released
+   * budget to hungry (`inflight ≥ share`) nodes — +25–50pp utilization under skew (TK-1403a
+   * gate), zero regression when balanced. SAFETY IS UNAFFECTED: the occupancy cap is
+   * unchanged; only the TARGET changes, and §6/§9.4 prove both bounds hold for ANY target.
+   * Every node keeps a ≥1 probe slot (starvation-free). All nodes/coordinators on a key MUST
+   * agree (like {@link aggregate}). Default `"equal-split"`.
+   */
+  allocation?: "equal-split" | "demand-proportional";
 }
 
 /**
@@ -85,7 +97,8 @@ export interface RedisConcurrencyCoordinatorOptions {
  *   ARGV[6] = aggregate ("min" | "median")
  *   ARGV[7] = seq         (acknowledged handoff: heartbeat sequence; -1 if absent)
  *   ARGV[8] = appliedGen  (acknowledged handoff: gen the guard enforces; -1 if absent)
- *   ARGV[9] = handoff     ("1" = acknowledged handoff cap, "0" = D-DAC-18 occupancy cap)
+ *   ARGV[9]  = handoff    ("1" = acknowledged handoff cap, "0" = D-DAC-18 occupancy cap)
+ *   ARGV[10] = allocation ("1" = demand-proportional target, "0" = equal-split — D-DAC-9)
  *
  * Per-node field value is space-joined integers. Default (handoff off): four —
  * `"lLocal inflight expiresAt share"` (unchanged from 0.10.0). Acknowledged handoff
@@ -106,6 +119,7 @@ local aggregate = ARGV[6]
 local seq = tonumber(ARGV[7])
 local appliedGen = tonumber(ARGV[8])
 local handoff = ARGV[9] == '1'
+local allocationDP = ARGV[10] == '1'
 
 -- parse a field value into 7 ints; a legacy 4-int value yields gen/maxSeq/unacked = 0.
 -- order: lLocal inflight expiresAt share [committedGen maxSeq unackedHigh]
@@ -189,16 +203,51 @@ else
   lGlobal = limits[math.floor((n - 1) / 2) + 1]
 end
 
--- 4. equal-split TARGET for self — DESIGN §6: base + 1 for the first \`rem\` by sorted id.
+-- 4. TARGET for self — DESIGN §6. equal-split (default) or demand-proportional (D-DAC-9
+--    / TK-1403). The CAP (step 5) enforces Σshare≤L / Σinflight≤L for ANY target, so this
+--    only affects utilization under skew. Kept bit-identical to the JS twin
+--    TestConcurrencyCoordinator.#targetFor (dual-path conformance).
 table.sort(ids)
 local N = #ids
-local base = math.floor(lGlobal / N)
-local rem = lGlobal - base * N
-local rank = 0
-for i = 1, N do
-  if ids[i] == nodeId then rank = i - 1 end
+local target
+if allocationDP then
+  -- demand-proportional: a SATISFIED node (inflight < share) aspires to occupancy + 1
+  -- probe slot, releasing the rest; HUNGRY nodes (inflight >= share, incl. a new share-0
+  -- node) equal-split the released budget; floor 1 keeps every node able to reveal demand.
+  -- One pass over the SORTED ids yields self's rank among hungry deterministically.
+  local reservedForSatisfied = 0
+  local H = 0
+  local hungryRank = 0
+  for i = 1, N do
+    local id = ids[i]
+    if inflightById[id] >= sharesById[id] then
+      if id == nodeId then hungryRank = H end
+      H = H + 1
+    else
+      reservedForSatisfied = reservedForSatisfied + inflightById[id] + 1
+    end
+  end
+  if inflightById[nodeId] < sharesById[nodeId] then
+    target = inflightById[nodeId] + 1
+  elseif H == 0 then
+    target = inflightById[nodeId] + 1
+  else
+    local spare = lGlobal - reservedForSatisfied
+    if spare < 0 then spare = 0 end
+    local b = math.floor(spare / H)
+    local rm = spare - b * H
+    target = b + (hungryRank < rm and 1 or 0)
+    if target < 1 then target = 1 end
+  end
+else
+  local base = math.floor(lGlobal / N)
+  local rem = lGlobal - base * N
+  local rank = 0
+  for i = 1, N do
+    if ids[i] == nodeId then rank = i - 1 end
+  end
+  target = base + (rank < rem and 1 or 0)
 end
-local target = base + (rank < rem and 1 or 0)
 
 -- 5. CAP the grant at the budget no OTHER live node is currently HOLDING. Default
 --    (D-DAC-18): max(share, inflight). Acknowledged handoff (D-DAC-19):
@@ -263,6 +312,7 @@ export class RedisConcurrencyCoordinator implements ConcurrencyCoordinator {
   readonly #aggregate: "min" | "median";
   readonly #prefix: string;
   readonly #acknowledgedHandoff: boolean;
+  readonly #allocation: "equal-split" | "demand-proportional";
   readonly #shaCache = new Map<string, string>();
 
   constructor(options: RedisConcurrencyCoordinatorOptions) {
@@ -270,6 +320,7 @@ export class RedisConcurrencyCoordinator implements ConcurrencyCoordinator {
     this.#aggregate = options.aggregate ?? "median";
     this.#prefix = options.prefix ?? DEFAULT_PREFIX;
     this.#acknowledgedHandoff = options.acknowledgedHandoff ?? false;
+    this.#allocation = options.allocation ?? "equal-split";
   }
 
   async heartbeat(report: ConcurrencyReport): Promise<ConcurrencyGrant> {
@@ -291,6 +342,7 @@ export class RedisConcurrencyCoordinator implements ConcurrencyCoordinator {
           report.seq ?? -1,
           report.appliedGen ?? -1,
           this.#acknowledgedHandoff ? "1" : "0",
+          this.#allocation === "demand-proportional" ? "1" : "0",
         ],
       );
       const arr = raw as [number, number, number, number];

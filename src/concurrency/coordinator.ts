@@ -6,8 +6,11 @@ export interface ConcurrencyReport {
   nodeId: string;
   /** This node's locally-inferred ceiling (its private adaptiveConcurrency `limit`). */
   lLocal: number;
-  /** This node's current in-flight count (the demand signal; reserved for future
-   *  demand-proportional allocation — equal-split ignores it in 0.10.0). */
+  /** This node's current in-flight count — the demand signal. Equal-split (the default
+   *  allocation) uses it only in the occupancy cap; `allocation:"demand-proportional"`
+   *  (TK-1403, opt-in) additionally uses it to size each node's TARGET — a saturated node
+   *  (`inflight ≥ share`) is "hungry" and claims released budget, an under-occupied node
+   *  drains to a probe slot. */
   inflight: number;
   /** Lease expiry, epoch-ms. The coordinator MUST treat any node with
    *  `expiresAt < now` as departed and reclaim its share. */
