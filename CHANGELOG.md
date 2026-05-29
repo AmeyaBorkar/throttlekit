@@ -6,6 +6,18 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.10.1] — 2026-05-29
+
+**Acknowledged handoff — an opt-in HARD async `Σ inflight ≤ L_global` bound
+(TK-1330).** A follow-up to 0.10.0's distributed adaptive concurrency: it closes the
+bounded (~1.5×), self-draining `Σ inflight` residual that 0.10.0 honestly documented
+(grant-reply + reporting lag) — turning it into a hard *instantaneous* invariant
+under an opt-in coordinator flag, machine-checked by a new TLA⁺ spec (TLC) + a
+Java-free BFS twin. **Patch** versioned because the surface is purely additive and
+the default behavior is byte-identical to 0.10.0.
+
 ### Added
 
 - **Acknowledged handoff for `distributedAdaptiveConcurrency` — an opt-in HARD
