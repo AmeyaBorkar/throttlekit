@@ -10,6 +10,9 @@
 import { fixedWindow } from "../src/algorithms/fixed-window";
 import { gcra } from "../src/algorithms/gcra";
 import { tokenBucket } from "../src/algorithms/token-bucket";
+import { adaptiveConcurrency } from "../src/concurrency/adaptive";
+import { distributedAdaptiveConcurrency } from "../src/concurrency/distributed";
+import { TestConcurrencyCoordinator } from "../src/concurrency/test-concurrency-coordinator";
 import { rateLimit } from "../src/core/limiter";
 import { MemoryStore } from "../src/stores/memory";
 
@@ -116,6 +119,38 @@ async function asyncSection(): Promise<void> {
   );
 }
 
+async function concurrencySection(): Promise<void> {
+  console.log("\nConcurrency — acquire + release (per request, healthy):");
+  // High limits so the inflight ceiling never binds in a tight acquire→release
+  // loop (inflight goes 0→1→0); this isolates the per-request guard overhead.
+  const ac = adaptiveConcurrency({ minLimit: 1_000_000, maxLimit: 1_000_000 });
+  reportThroughput(
+    "adaptiveConcurrency acq+release",
+    throughput((_) => {
+      const l = ac.acquire();
+      l.release();
+      return l.ok;
+    }, 5_000_000),
+  );
+
+  const coord = new TestConcurrencyCoordinator();
+  const dac = distributedAdaptiveConcurrency({
+    coordinator: coord,
+    nodeId: "bench",
+    local: { minLimit: 1_000_000, maxLimit: 1_000_000 },
+  });
+  await dac.heartbeat(); // take a share so acquire admits (cold start is fail-closed)
+  reportThroughput(
+    "distributed acq+release",
+    throughput((_) => {
+      const l = dac.acquire();
+      l.release();
+      return l.ok;
+    }, 5_000_000),
+  );
+  await dac.close();
+}
+
 async function redisSection(): Promise<void> {
   const url = process.env.THROTTLEKIT_TEST_REDIS;
   if (!url) {
@@ -189,6 +224,7 @@ async function main(): Promise<void> {
   );
   memorySection();
   await asyncSection();
+  await concurrencySection();
   if (process.argv.includes("--redis")) await redisSection();
   else console.log("\n(pass --redis to also benchmark the Redis paths)");
 }
