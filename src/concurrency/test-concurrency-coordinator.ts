@@ -57,6 +57,21 @@ export interface TestConcurrencyCoordinatorOptions {
    * {@link systemClock}.
    */
   clock?: Clock;
+  /**
+   * ACKNOWLEDGED HANDOFF (D-DAC-19) — opt-in, default `false`. When `true`, the
+   * cap reserves each peer's MAX UN-ACKNOWLEDGED grant (the largest share the
+   * coordinator has issued that the peer has not yet confirmed superseding, via
+   * the grant-generation echo) unioned with its reported in-flight — making
+   * `Σ inflight ≤ L_global` a HARD instantaneous bound even under async
+   * grant-reply + reporting lag (the residual D-DAC-18 leaves; TLA⁺
+   * `GaleHeartbeatHandoff` + the BFS twin TK-1330). The cost is RAMP LATENCY: a
+   * node gaining share waits for incumbents' lowered grants to land AND be
+   * reported (≈1–2 extra heartbeats). When `false` (default), the cap is the
+   * 0.10.0 occupancy cap `max(share, inflight)` (D-DAC-18) — faster ramp, a
+   * bounded ~1.5× self-draining async overshoot. All nodes on a key MUST agree
+   * (like {@link aggregate}); enable only once every guard echoes `appliedGen`.
+   */
+  acknowledgedHandoff?: boolean;
 }
 
 /** One node's last report + currently-granted share, retained per key. */
@@ -66,18 +81,31 @@ interface NodeRecord {
   expiresAt: number;
   /** The share this node currently holds (the value its last grant returned). */
   share: number;
+  /** Acknowledged handoff (D-DAC-19): generation of `share` — bumped only when the
+   *  granted VALUE changes, so the guard's echoed `appliedGen` reaching it means
+   *  "caught up to the current value". 0 when handoff is off. */
+  committedGen: number;
+  /** Acknowledged handoff: the freshest heartbeat `seq` processed for this node
+   *  (reordered/stale heartbeats with `seq ≤ maxSeq` don't advance committed state). */
+  maxSeq: number;
+  /** Acknowledged handoff: the MAX share value granted to this node since it last
+   *  caught up — the reserve floor that defends a late-landing higher grant. Reset
+   *  to `share` when the peer's `appliedGen` reaches `committedGen`. */
+  unackedHigh: number;
 }
 
 export class TestConcurrencyCoordinator implements ConcurrencyCoordinator {
   #healthy = true;
   readonly #aggregate: "min" | "median";
   readonly #clock: Clock;
+  readonly #acknowledgedHandoff: boolean;
   /** key -> (nodeId -> last report + granted share). */
   readonly #state = new Map<string, Map<string, NodeRecord>>();
 
   constructor(options: TestConcurrencyCoordinatorOptions = {}) {
     this.#aggregate = options.aggregate ?? "median";
     this.#clock = options.clock ?? systemClock;
+    this.#acknowledgedHandoff = options.acknowledgedHandoff ?? false;
   }
 
   /** Simulate a coordinator partition. `heartbeat()` throws until `setHealthy(true)`. */
@@ -116,6 +144,7 @@ export class TestConcurrencyCoordinator implements ConcurrencyCoordinator {
       );
     }
 
+    const handoff = this.#acknowledgedHandoff;
     const now = this.#clock.now();
     let perKey = this.#state.get(report.key);
     if (perKey === undefined) {
@@ -123,13 +152,25 @@ export class TestConcurrencyCoordinator implements ConcurrencyCoordinator {
       this.#state.set(report.key, perKey);
     }
 
-    // 1. upsert self, carrying forward any share we already granted it (0 if new).
+    // 1. upsert self, carrying forward prior grant state (0 if new). In handoff
+    //    mode, a REORDERED/stale heartbeat (seq ≤ maxSeq) must not regress committed
+    //    state nor pull reported inflight backward (an out-of-order, possibly lower,
+    //    sample would under-reserve), so state advance is gated on `fresh`.
     const prior = perKey.get(report.nodeId);
+    const priorShare = prior?.share ?? 0;
+    const priorGen = prior?.committedGen ?? 0;
+    const priorMaxSeq = prior?.maxSeq ?? 0;
+    const priorUnackedHigh = prior?.unackedHigh ?? 0;
+    const seq = report.seq ?? -1; // absent ⇒ sentinel; treated as always-fresh below
+    const fresh = !handoff || seq < 0 || seq > priorMaxSeq;
     perKey.set(report.nodeId, {
       lLocal: report.lLocal,
-      inflight: report.inflight,
+      inflight: fresh ? report.inflight : (prior?.inflight ?? report.inflight),
       expiresAt: report.expiresAt,
-      share: prior?.share ?? 0,
+      share: priorShare,
+      committedGen: priorGen,
+      maxSeq: handoff ? Math.max(priorMaxSeq, seq) : 0,
+      unackedHigh: priorUnackedHigh,
     });
 
     // 2. evict expired (expiresAt < now). Self always survives (it just renewed);
@@ -150,29 +191,49 @@ export class TestConcurrencyCoordinator implements ConcurrencyCoordinator {
     const rank = sorted.indexOf(report.nodeId);
     const target = base + (rank < rem ? 1 : 0);
 
-    // 5. CAP the grant at the budget no OTHER live node is currently HOLDING —
-    //    reserve each peer's max(share, inflight), not just its share (D-DAC-18).
-    //    A peer's in-flight is non-revocable: until it physically drains, that
-    //    capacity is occupied and MUST NOT be re-granted here. Reserving only
-    //    `share` lets a joiner ramp into capacity an incumbent still occupies
-    //    (the Σ inflight rebalance overshoot — up to 1.5× on a 1→2 scale-up);
-    //    reserving max(share, inflight) eliminates that SYNCHRONOUS overshoot —
-    //    the joiner ramps only as fast as the incumbent drains. (Hard in the
-    //    synchronous model; in the async system a bounded ~1.5× residual remains
-    //    from grant/report lag — see DESIGN §9.3 / D-DAC-18.) Steady state
-    //    (inflight == share) is identical to the share-only cap, so
-    //    `Σ share ≤ lGlobal` (D-DAC-17) is preserved and convergence is unchanged.
+    // 5. CAP the grant at the budget no OTHER live node is currently HOLDING.
+    //    Default (D-DAC-18): max(share, inflight) — reserve a peer's committed share
+    //    and its non-revocable in-flight, eliminating the SYNCHRONOUS rebalance
+    //    overshoot but leaving a bounded ~1.5× async residual (grant/report lag).
+    //    Acknowledged handoff (D-DAC-19): max(unackedHigh, inflight) — reserve the
+    //    MAX UN-ACKED grant (the largest share the peer could still apply, incl. a
+    //    higher grant the coordinator issued that the peer has not confirmed
+    //    superseding) unioned with its reported occupancy. This makes
+    //    `Σ inflight ≤ lGlobal` a HARD instantaneous bound (TLA⁺ GaleHeartbeatHandoff
+    //    + BFS twin TK-1330) at the cost of ramp latency. Steady state collapses both
+    //    to max(share, inflight), so `Σ share ≤ lGlobal` (D-DAC-17) and convergence hold.
     let otherReserved = 0;
     for (const id of liveIds) {
       if (id === report.nodeId) continue;
       const rec = perKey.get(id)!;
-      otherReserved += Math.max(rec.share, rec.inflight);
+      otherReserved += handoff
+        ? Math.max(rec.unackedHigh, rec.inflight)
+        : Math.max(rec.share, rec.inflight);
     }
     const share = Math.max(0, Math.min(target, lGlobal - otherReserved));
 
     // 6. record the grant so subsequent heartbeats by other nodes see it committed.
-    perKey.get(report.nodeId)!.share = share;
-
+    const self = perKey.get(report.nodeId)!;
+    if (handoff) {
+      if (fresh) {
+        self.share = share;
+        // generation bumps ONLY when the granted VALUE changes — so a stable value
+        // lets the peer's echoed appliedGen catch up (no per-heartbeat ratchet that
+        // would pin the reserve floor high forever).
+        if (share !== priorShare) self.committedGen = priorGen + 1;
+        // the new grant joins the un-acked set — reserve at least it…
+        self.unackedHigh = Math.max(priorUnackedHigh, share);
+        // …then CATCH-UP RESET: once the peer confirms enforcing the current
+        // generation, drop the floor to the current share (no superseded higher
+        // grant can still be in flight). Absent appliedGen ⇒ never resets (the SAFE,
+        // over-reserving direction — a not-yet-upgraded guard).
+        const appliedGen = report.appliedGen ?? -1;
+        if (appliedGen >= self.committedGen) self.unackedHigh = share;
+      }
+      // a stale heartbeat returns the current committed grant without advancing state.
+      return { share: self.share, lGlobal, nodes: n, gen: self.committedGen };
+    }
+    self.share = share;
     return { share, lGlobal, nodes: n };
   }
 

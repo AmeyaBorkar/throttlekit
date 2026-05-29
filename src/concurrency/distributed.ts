@@ -195,6 +195,13 @@ export function distributedAdaptiveConcurrency(
   // admits against its cached grant while a reduction is in flight; DESIGN §9.3.)
   let heartbeatSeq = 0;
   let appliedSeq = 0;
+  // Acknowledged handoff (D-DAC-19, opt-in at the coordinator). The grant
+  // GENERATION the guard is currently enforcing (bumped by the coordinator only
+  // when the granted share VALUE changes). Echoed in each report so a handoff
+  // coordinator knows when this node has applied the current value and can stop
+  // reserving a superseded higher grant. 0 until the first grant with a `gen`
+  // lands; harmless (ignored) under a non-handoff coordinator.
+  let appliedGen = 0;
 
   let closed = false;
   let timer: { cancel(): void } | undefined;
@@ -230,14 +237,26 @@ export function distributedAdaptiveConcurrency(
         key,
         nodeId,
         lLocal: local.limit,
+        // (inflight, appliedGen) are read here in ONE synchronous object literal —
+        // no await between them — so a handoff coordinator always sees a CONSISTENT
+        // snapshot (the in-flight observed UNDER the reported applied generation). A
+        // torn snapshot would be unsound (D-DAC-19); JS's single-threaded evaluation
+        // gives atomicity for free here.
         inflight: local.inflight,
         expiresAt: clock.now() + leaseTtlMs,
+        seq: mySeq,
+        appliedGen,
       });
       if (mySeq < appliedSeq) return; // a fresher heartbeat already landed
       appliedSeq = mySeq;
       share = grant.share;
       lGlobal = grant.lGlobal;
       nodes = grant.nodes;
+      // Record the generation we are now enforcing (acknowledged handoff). Only the
+      // freshest-issued grant reaches here (the monotonic guard above), so appliedGen
+      // tracks the freshest applied grant; `undefined` (non-handoff coordinator) leaves
+      // it unchanged.
+      if (grant.gen !== undefined) appliedGen = grant.gen;
     } catch {
       // Coordinator outage (§8.2). Mirrors federation's onCoordinatorOutage.
       // Honor monotonicity here too: a stale outage response must not clobber a

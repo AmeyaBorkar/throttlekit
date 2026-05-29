@@ -47,11 +47,20 @@ interface Beat {
   nodeId: string;
   lLocal: number;
   inflight: number;
+  /** Acknowledged handoff (D-DAC-19): heartbeat sequence (freshness gate). */
+  seq?: number;
+  /** Acknowledged handoff: the grant generation the guard currently enforces. */
+  appliedGen?: number;
 }
 
-/** Flatten a grant to the three conformance-relevant fields. */
-function grantOf(g: ConcurrencyGrant): Pick<ConcurrencyGrant, "share" | "lGlobal" | "nodes"> {
-  return { share: g.share, lGlobal: g.lGlobal, nodes: g.nodes };
+/** Flatten a grant to the conformance-relevant fields (+ `gen` under handoff). */
+function grantOf(
+  g: ConcurrencyGrant,
+  handoff: boolean,
+): { share: number; lGlobal: number; nodes: number; gen?: number } {
+  return handoff
+    ? { share: g.share, lGlobal: g.lGlobal, nodes: g.nodes, gen: g.gen ?? 0 }
+    : { share: g.share, lGlobal: g.lGlobal, nodes: g.nodes };
 }
 
 d("coordinator dual-path conformance (TK-1316)", () => {
@@ -80,7 +89,7 @@ d("coordinator dual-path conformance (TK-1316)", () => {
      * the `{share, lGlobal, nodes}` grants match step for step. A unique `key`
      * per case keeps Redis state isolated across cases.
      */
-    async function expectConformant(label: string, beats: Beat[]): Promise<void> {
+    async function expectConformant(label: string, beats: Beat[], handoff = false): Promise<void> {
       const key = `${aggregate}-${label}`;
       // expiresAt far in the future for BOTH the Test clock and the server's
       // wall clock, so no eviction fires on either path.
@@ -89,11 +98,13 @@ d("coordinator dual-path conformance (TK-1316)", () => {
       const testCoord = new TestConcurrencyCoordinator({
         aggregate,
         clock: new ManualClock(0),
+        acknowledgedHandoff: handoff,
       });
       const redisCoord = new RedisConcurrencyCoordinator({
         client: fromNodeRedis(client),
         aggregate,
         prefix: key,
+        acknowledgedHandoff: handoff,
       });
 
       for (let i = 0; i < beats.length; i++) {
@@ -104,11 +115,13 @@ d("coordinator dual-path conformance (TK-1316)", () => {
           lLocal: beat.lLocal,
           inflight: beat.inflight,
           expiresAt,
+          ...(beat.seq !== undefined ? { seq: beat.seq } : {}),
+          ...(beat.appliedGen !== undefined ? { appliedGen: beat.appliedGen } : {}),
         };
         const testGrant = await testCoord.heartbeat(report);
         const redisGrant = await redisCoord.heartbeat(report);
-        expect(grantOf(redisGrant), `${label} step ${i} (node ${beat.nodeId})`).toEqual(
-          grantOf(testGrant),
+        expect(grantOf(redisGrant, handoff), `${label} step ${i} (node ${beat.nodeId})`).toEqual(
+          grantOf(testGrant, handoff),
         );
       }
     }
@@ -222,6 +235,73 @@ d("coordinator dual-path conformance (TK-1316)", () => {
           });
         }
         await expectConformant("mixed-30", beats);
+      });
+
+      describe("acknowledged handoff (D-DAC-19)", () => {
+        it("un-acked high grant is reserved until the peer acks, then released (the hard-bound divergence)", async () => {
+          // L=6, two nodes. The DEFAULT cap would grant n2=3 at step 4 (n1's committed
+          // share is 3) — the 1.5× residual. Acknowledged handoff reserves n1's UN-ACKED
+          // high grant (6) until n1 echoes appliedGen ≥ the lowering's gen, so n2 is held
+          // at 0 until n1 confirms, then granted 3. Test ≡ Redis on {share,lGlobal,nodes,
+          // gen} at every step proves the Lua gen/unackedHigh logic matches the reference.
+          await expectConformant(
+            "handoff-unacked-hold",
+            [
+              { nodeId: "n1", lLocal: 6, inflight: 0, seq: 1, appliedGen: 0 }, // solo → share 6, gen 1
+              { nodeId: "n2", lLocal: 6, inflight: 0, seq: 1, appliedGen: 0 }, // joins → 0 (n1 un-acked high 6)
+              { nodeId: "n1", lLocal: 6, inflight: 0, seq: 2, appliedGen: 1 }, // applied 6; lowered → 3, gen 2, floor stays 6
+              { nodeId: "n2", lLocal: 6, inflight: 0, seq: 2, appliedGen: 0 }, // STILL 0 — n1 hasn't acked the drop
+              { nodeId: "n1", lLocal: 6, inflight: 0, seq: 3, appliedGen: 2 }, // acks gen 2 → floor resets to 3
+              { nodeId: "n2", lLocal: 6, inflight: 0, seq: 3, appliedGen: 0 }, // NOW granted 3
+            ],
+            true,
+          );
+        });
+
+        it("non-revocable in-flight unions with the un-acked grant (max(unackedHigh, inflight))", async () => {
+          // After n1's reserve floor resets to its current share (4), a reported in-flight
+          // DEBT (6 > 4) dominates the cap — the occupancy term of the union — so n2 is
+          // granted min(target 4, 8−6) = 2. Exercises the inflight term in handoff mode.
+          await expectConformant(
+            "handoff-inflight-union",
+            [
+              { nodeId: "n1", lLocal: 8, inflight: 0, seq: 1, appliedGen: 0 }, // solo → 8, gen 1
+              { nodeId: "n2", lLocal: 8, inflight: 0, seq: 1, appliedGen: 0 }, // joins → 0
+              { nodeId: "n1", lLocal: 8, inflight: 0, seq: 2, appliedGen: 1 }, // lowered → 4, gen 2, floor 8
+              { nodeId: "n1", lLocal: 8, inflight: 6, seq: 3, appliedGen: 2 }, // acks → floor 4, but holds 6 in flight
+              { nodeId: "n2", lLocal: 8, inflight: 0, seq: 2, appliedGen: 0 }, // reserve max(4,6)=6 → share 2
+            ],
+            true,
+          );
+        });
+
+        it("generation bumps only on a value change (a stable value lets the peer catch up)", async () => {
+          // Repeated identical grants keep gen stable (no per-heartbeat ratchet), so the
+          // peer's appliedGen can reach committedGen. gen advances only on a value change.
+          await expectConformant(
+            "handoff-gen-stable",
+            [
+              { nodeId: "n1", lLocal: 5, inflight: 0, seq: 1, appliedGen: 0 }, // → 5, gen 1
+              { nodeId: "n1", lLocal: 5, inflight: 0, seq: 2, appliedGen: 1 }, // 5 again → gen 1 (unchanged)
+              { nodeId: "n1", lLocal: 5, inflight: 0, seq: 3, appliedGen: 1 }, // 5 again → gen 1
+            ],
+            true,
+          );
+        });
+
+        it("a reordered/stale heartbeat (seq ≤ maxSeq) does not regress committed state", async () => {
+          // n1 advances to seq 3; a late-arriving seq-2 heartbeat must be ignored for
+          // state advance (return the current committed grant), so both paths agree.
+          await expectConformant(
+            "handoff-stale-seq",
+            [
+              { nodeId: "n1", lLocal: 6, inflight: 0, seq: 1, appliedGen: 0 },
+              { nodeId: "n1", lLocal: 6, inflight: 0, seq: 3, appliedGen: 1 },
+              { nodeId: "n1", lLocal: 6, inflight: 0, seq: 2, appliedGen: 1 }, // stale: ignored
+            ],
+            true,
+          );
+        });
       });
     });
   }

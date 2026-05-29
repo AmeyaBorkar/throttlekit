@@ -763,6 +763,125 @@ describe("distributed adaptive concurrency — async reply-lag residual is BOUND
   });
 });
 
+describe("distributed adaptive concurrency — acknowledged handoff makes Σ inflight ≤ L_global HARD (deterministic, TK-1330)", () => {
+  // The FLIP of the residual test above. SAME deferred-reply harness, SAME 1.5×
+  // interleaving — but the coordinator runs `acknowledgedHandoff: true` (D-DAC-19).
+  // Now it reserves the incumbent at its MAX UN-ACKED grant (6) until the incumbent
+  // ECHOES (via appliedGen) that it applied the LOWER share, so the joiner is HELD at
+  // 0 through the exact window that overshot to 1.5×, and Σ inflight never exceeds
+  // L_global. Proven hard + tight by GaleHeartbeatHandoff (TLC) + the BFS twin
+  // (TK-1330); this drives the REAL guard + coordinator through the reviewer-found
+  // counterexample and asserts the bound end-to-end — the overshoot becomes a ramp
+  // DELAY (the joiner ramps once the incumbent acks AND drains), not a violation.
+  it("the joiner is held until the incumbent acks the lower share — no overshoot, then ramps", async () => {
+    const clock = new ManualClock(0);
+    const inner = new TestConcurrencyCoordinator({
+      aggregate: "median",
+      clock,
+      acknowledgedHandoff: true,
+    });
+    // Deferred-reply coordinator: COMMIT synchronously, PARK the reply; land per-node.
+    const parked: Array<{ nodeId: string; resolve: () => void }> = [];
+    const coord: ConcurrencyCoordinator = {
+      async heartbeat(r: ConcurrencyReport): Promise<ConcurrencyGrant> {
+        const g = await inner.heartbeat(r);
+        return new Promise<ConcurrencyGrant>((resolve) =>
+          parked.push({ nodeId: r.nodeId, resolve: () => resolve(g) }),
+        );
+      },
+      leave: (args) => inner.leave(args),
+      isHealthy: () => inner.isHealthy(),
+    };
+    const land = (nodeId: string): void => {
+      for (let i = parked.length - 1; i >= 0; i--) {
+        if (parked[i]!.nodeId === nodeId) {
+          parked[i]!.resolve();
+          parked.splice(i, 1);
+        }
+      }
+    };
+    const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+    const local = { minLimit: 6, maxLimit: 6, initialLimit: 6, clock };
+    const mk = (nodeId: string) =>
+      distributedAdaptiveConcurrency({
+        coordinator: coord,
+        nodeId,
+        key: KEY,
+        local,
+        onCoordinatorOutage: "fail-closed",
+        clock,
+        scheduler: captureScheduler().scheduler,
+      });
+    const a = mk("a");
+    const b = mk("b");
+    const heldA: Lease[] = [];
+    const hb = async (
+      g: { heartbeat(): Promise<void> },
+      id: string,
+      landIt: boolean,
+    ): Promise<void> => {
+      void g.heartbeat();
+      await flush();
+      if (landIt) {
+        land(id);
+        await flush();
+      }
+    };
+    const sumLive = (): number => {
+      const { shares } = inner.peek(KEY);
+      return ("a" in shares ? a.inflight : 0) + ("b" in shares ? b.inflight : 0);
+    };
+
+    await hb(a, "a", true); // a solo ⇒ share 6
+    for (let i = 0; i < 8; i++) {
+      const l = a.acquire();
+      if (l.ok) heldA.push(l);
+    }
+    while (heldA.length > 2) heldA.pop()!.release(); // drain to inflight 2
+    await hb(a, "a", true); // a re-HB (reports inflight 2 + acks its grant) ⇒ share 6
+    await hb(b, "b", true); // b joins ⇒ share 0 (a's un-acked high 6 reserved)
+    await hb(a, "a", false); // a re-HB ⇒ committed 3, REPLY PARKED (applied + appliedGen stay stale-high)
+
+    expect(inner.peek(KEY).shares.a, "coordinator committed the reduction").toBe(3);
+    expect(a.stats().share, "the guard still applies the stale-high grant — the gap").toBe(6);
+
+    await hb(b, "b", true); // b re-HB ⇒ HELD AT 0 (a has not acked the drop)
+    expect(
+      b.stats().share,
+      "the joiner is HELD at 0 until the incumbent acks — the flip vs the 1.5× residual",
+    ).toBe(0);
+    for (let i = 0; i < 8; i++) b.acquire(); // b can admit nothing (share 0)
+    for (let i = 0; i < 8; i++) {
+      const l = a.acquire(); // a re-acquires vs its stale applied share 6
+      if (l.ok) heldA.push(l);
+    }
+
+    const lG = inner.peek(KEY).lGlobal;
+    expect(
+      sumLive(),
+      "Σ inflight never exceeds L_global — the HARD async bound (was 1.5× without handoff)",
+    ).toBeLessThanOrEqual(lG);
+
+    // RAMP DELAY, not a deadlock: once a's reduction lands, a DRAINS to ≤ its new
+    // share, and a re-reports (acking the gen + low in-flight), the freed budget is
+    // handed to b — and Σ stays ≤ L_global throughout.
+    land("a");
+    await flush();
+    expect(a.stats().share, "applied share catches up once the reply lands").toBe(3);
+    while (heldA.length > 3) heldA.pop()!.release(); // a drains to ≤ 3
+    await hb(a, "a", true); // a re-HB: acks gen + reports inflight ≤ 3 ⇒ reserve floor resets
+    await hb(b, "b", true); // b re-HB ⇒ now granted the freed budget
+    expect(
+      b.stats().share,
+      "after the incumbent acks AND drains, the joiner ramps (liveness — a delay, not a deadlock)",
+    ).toBeGreaterThan(0);
+    expect(sumLive(), "still ≤ L_global throughout the ramp").toBeLessThanOrEqual(lG);
+
+    await a.close();
+    await b.close();
+  });
+});
+
 describe("distributed adaptive concurrency — shrink-drain (varying lGlobal, property, TK-1316)", () => {
   // Coverage counter (finding #3): how many times the per-node debt branch
   // (`inflight > share`) actually fired across EVERY property run in this
