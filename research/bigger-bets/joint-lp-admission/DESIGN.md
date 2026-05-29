@@ -454,9 +454,20 @@ joint-LP *is* worse at ρ=+1) so we never silently "fix" the honest result.
 1. ✅ **DONE 0.11.3 — Online primal-dual dual update** (Devanur-Hayes sample-then-price):
    `jointLp.adaptive = { sampleWindow }`. Shipped as the GUARDED self-validating variant
    (§6, D-JLP-13/14) — not the naïve form, which the gate refuted.
-2. **3-axis joint LP** (rate + cost + a *concurrency* shadow price). The current
-   LP is 2-budget; concurrency is instantaneous, not windowed, so it doesn't fit
-   the same fluid relaxation cleanly. Research.
+2. ⚖️ **GATE DONE 0.11.3 — GO (narrow but real) — 3-axis joint LP** (rate + cost + a
+   *concurrency* shadow price). The "concurrency is instantaneous, doesn't fit the fluid
+   relaxation" worry is RESOLVED by **Little's law**: an occupancy cap `L` is a 3rd fluid
+   budget `Σ wᵢ hᵢ xᵢ ≤ L·T` with per-request consumption = **hold time** `hᵢ`; the bid test
+   gains a term `value ≥ p_R + p_C·cost + p_K·hold` (gate `three-axis-gate.ts`; the 3-budget
+   dual solves cleanly by 3D vertex enumeration). **WIN:** cuts regret **53%→2% (ε≈51pp)** when
+   concurrency binds and a strictly-dominated hold-time hog is INDISTINGUISHABLE from good
+   traffic on (rate,cost) — 2-axis is structurally blind to it. **NO HARM** when concurrency is
+   ample (`p_K=0` ⇒ 3-axis ≡ 2-axis ≡ marginal). **STRUCTURAL LIMIT (honest):** a bid-price
+   threshold cannot RATION a *marginal* hog (admitted at `value = p_K·hold`; the greedy limiter
+   rations instead) — it strictly helps only against a strictly-dominated hog. **Implementation
+   (deferred pending disposition):** a 3-budget solver + per-type `hold` in the workload + a
+   per-request `hold` estimate at admit time + the `p_K·hold` bid term; expands the public
+   per-request API (experimental-frontier under STABILITY.md).
 3. **Per-tenant duals** (pair with Pillar 4 WFE): different bid prices per tenant
    class. Composition study.
 
