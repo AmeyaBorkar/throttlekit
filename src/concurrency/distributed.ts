@@ -98,6 +98,41 @@ export interface DistributedAdaptiveConcurrencyOptions {
    * Default `max(1, round(heartbeatMs / 10))`, clamped to `≤ heartbeatMs`.
    */
   minHeartbeatMs?: number;
+  /**
+   * SELF-FENCING — close the lease-expiry / partition overshoot (D-DAC-21). Default
+   * `true` under `fail-closed`, `false` under `local-only` (which opts into serving
+   * through an outage). A partitioned node cannot heartbeat, but in 0.10.x kept
+   * ADMITTING against its last-known share until a beat *threw* — and a partition
+   * usually HANGS rather than throwing, so the node over-admitted for the whole
+   * partition while the coordinator reassigned its budget (Σ inflight > L_global).
+   * Self-fencing enforces the lease on the node's OWN clock: it stops admitting at
+   * `lastSuccessfulBeatExpiresAt − fenceSafetyMargin`, strictly BEFORE the
+   * coordinator's reclaim, so peers never ramp into budget the node still holds.
+   * A healthy node (beats keep landing) NEVER fences. Assumption: bounded node↔
+   * coordinator clock skew ≤ {@link fenceSafetyMargin} (the standard lease
+   * assumption; FLP/CAP make this unavoidable without backend fence tokens). See
+   * `HARD-ASYNC-BOUND.md`, the timed gate `distributed-self-fence-model.test.ts`.
+   */
+  selfFence?: boolean;
+  /**
+   * How long BEFORE the reported lease expiry the node self-fences, in ms — the
+   * slack that absorbs node↔coordinator clock skew (it MUST be ≥ your max skew, or
+   * the node can still be admitting when the coordinator reclaims). Only used when
+   * `selfFence` is on. Default `max(1, round((leaseTtlMs − heartbeatMs) / 2))` — the
+   * midpoint of the grace period between one missed beat and lease expiry, so a
+   * single slow beat never fences a healthy node.
+   */
+  fenceSafetyMargin?: number;
+  /**
+   * Called ONCE when the node enters the self-fenced state (it has lost contact and
+   * its lease is about to be reclaimed). Use it to ABORT in-flight work (e.g.
+   * `AbortController.abort()`): self-fencing stops NEW admits, and aborting drains
+   * the already-accepted occupancy before the reclaim, closing the overshoot fully
+   * under the clock-skew assumption. Non-cancellable in-flight instead needs the
+   * margin to cover its max duration (see the gate). Fires again on a later
+   * fence episode if the node recovers and re-partitions.
+   */
+  onFenced?: () => void;
   /** Injectable clock. Default systemClock. */
   clock?: Clock;
   /** Injectable scheduler. Default a setInterval-based timer (unref'd). */
@@ -121,6 +156,9 @@ export interface DistributedConcurrencyGuard extends ConcurrencyGuard {
     share: number;
     lGlobal: number;
     nodes: number;
+    /** Whether the node is currently SELF-FENCED (D-DAC-21): it has lost contact and
+     *  passed its local lease deadline, so it admits nothing until a beat lands again. */
+    fenced: boolean;
   };
 }
 
@@ -239,6 +277,19 @@ export function distributedAdaptiveConcurrency(
     requireInteger("distributedAdaptiveConcurrency.minHeartbeatMs", minHeartbeatMs);
   }
 
+  // Self-fencing (D-DAC-21): default ON under fail-closed (the safety mode), OFF under
+  // local-only (which deliberately serves through an outage). The margin defaults to the
+  // midpoint of the grace period between one missed beat and lease expiry, so a healthy
+  // node (or one slow beat) never fences; it MUST be ≥ the deployment's max clock skew.
+  const selfFence = options.selfFence ?? onCoordinatorOutage === "fail-closed";
+  const fenceSafetyMargin =
+    options.fenceSafetyMargin ?? Math.max(1, Math.round((leaseTtlMs - heartbeatMs) / 2));
+  const onFenced = options.onFenced;
+  if (selfFence) {
+    requirePositive("distributedAdaptiveConcurrency.fenceSafetyMargin", fenceSafetyMargin);
+    requireInteger("distributedAdaptiveConcurrency.fenceSafetyMargin", fenceSafetyMargin);
+  }
+
   // The private in-process limiter: owns RTT, L_local, inflight, release idempotency.
   const local = adaptiveConcurrency(options.local ?? {});
 
@@ -277,11 +328,40 @@ export function distributedAdaptiveConcurrency(
   let lastBeatStartAt = Number.NEGATIVE_INFINITY;
   let eagerTimer: { cancel(): void } | undefined;
 
+  // Self-fencing (D-DAC-21). `leaseExpiresAt` = the expiresAt of our last SUCCESSFUL beat
+  // (the value the coordinator reclaims against); we self-fence `fenceSafetyMargin` before
+  // it on our OWN clock. `everLeased` gates the fence until we've actually held a lease (cold
+  // start is already share=0). `fencedFired` makes onFenced fire once per fence episode.
+  let leaseExpiresAt = Number.NEGATIVE_INFINITY;
+  let everLeased = false;
+  let fencedFired = false;
+
   let closed = false;
   let timer: { cancel(): void } | undefined;
 
-  /** The effective ceiling: provably ≤ share (safe) and gives sub-heartbeat local reaction. */
+  /** True once a partitioned/silent node has passed its self-fence deadline — it must stop
+   *  admitting on its OWN clock before the coordinator reclaims its budget (D-DAC-21). A
+   *  healthy node keeps advancing `leaseExpiresAt` on each successful beat, so this never trips. */
+  function isFenced(): boolean {
+    return selfFence && everLeased && clock.now() >= leaseExpiresAt - fenceSafetyMargin;
+  }
+
+  /** Fire `onFenced` exactly once on ENTERING the fenced state; reset on recovery so a later
+   *  partition fires it again. Cheap; called from acquire() and the start of each beat. */
+  function checkFence(): void {
+    const fenced = isFenced();
+    if (fenced && !fencedFired) {
+      fencedFired = true;
+      onFenced?.();
+    } else if (!fenced && fencedFired) {
+      fencedFired = false;
+    }
+  }
+
+  /** The effective ceiling: 0 while self-fenced (D-DAC-21 — shed before the coordinator
+   *  reclaims), else min(share, local.limit) — provably ≤ share, with sub-heartbeat reaction. */
   function effectiveLimit(): number {
+    if (isFenced()) return 0;
     return Math.min(share, local.limit);
   }
 
@@ -304,6 +384,8 @@ export function distributedAdaptiveConcurrency(
   }
 
   function acquire(): Lease {
+    // Self-fence check (D-DAC-21): fire onFenced on the transition; effectiveLimit→0 sheds.
+    if (selfFence) checkFence();
     // Gate on min(share, local.limit). Both terms are ≤ local.limit, so whenever
     // this admits, local.inflight < local.limit holds and local.acquire() is
     // guaranteed to return ok:true (§4.2). On a closed gate, hand back a rejected
@@ -340,11 +422,18 @@ export function distributedAdaptiveConcurrency(
       eagerTimer.cancel();
       eagerTimer = undefined;
     }
+    // Self-fence check (D-DAC-21): the periodic timer keeps firing during a partition
+    // (the beat below hangs/throws), so this fires onFenced within ~heartbeatMs of the
+    // deadline even with no request traffic.
+    if (selfFence) checkFence();
     lastBeatStartAt = clock.now();
     // Stamp this cycle so a reordered, stale reply can't clobber a fresher grant
     // (D-DAC-18 monotonic application). `mySeq` strictly increases per issue;
     // we drop any reply whose issue is older than the freshest already applied.
     const mySeq = ++heartbeatSeq;
+    // The lease expiry we are about to report — on success it becomes our self-fence
+    // reference (the coordinator reclaims against this exact value).
+    const sentExpiresAt = clock.now() + leaseTtlMs;
     // (sentInflight, sentAppliedGen) are sampled together, synchronously, BEFORE the
     // await — so a handoff coordinator always sees a CONSISTENT snapshot (the in-flight
     // observed UNDER the reported applied generation). A torn snapshot would be unsound
@@ -357,10 +446,14 @@ export function distributedAdaptiveConcurrency(
         nodeId,
         lLocal: local.limit,
         inflight: sentInflight,
-        expiresAt: clock.now() + leaseTtlMs,
+        expiresAt: sentExpiresAt,
         seq: mySeq,
         appliedGen: sentAppliedGen,
       });
+      // The beat SUCCEEDED — the lease is renewed. Advance the self-fence reference to the
+      // expiry we just reported (D-DAC-21); a healthy node thus never reaches its deadline.
+      leaseExpiresAt = sentExpiresAt;
+      everLeased = true;
       // The coordinator now knows we'd applied up to `sentAppliedGen`, observed with
       // `sentInflight` (eager-handoff ack/push bookkeeping, D-DAC-20). `reportedGen` is
       // kept monotone so a late stale reply can't spuriously reopen an "un-acked" gap.
@@ -442,6 +535,7 @@ export function distributedAdaptiveConcurrency(
         share,
         lGlobal,
         nodes,
+        fenced: isFenced(),
       };
     },
   };
