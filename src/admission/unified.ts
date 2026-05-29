@@ -54,6 +54,35 @@ export interface UnifiedAdmissionOptions {
   jointLp?: {
     duals?: { rate: number; cost: number };
     workload?: FluidLpInput;
+    /**
+     * Opt-in **online dual refinement** (D-JLP-8; Devanur–Hayes "sample-then-price").
+     * REQUIRES the `workload` form (not bare `duals`): the model is the only input that
+     * carries both the construction **prior** AND the per-arrival budget normalization
+     * (`workload.rateBudget` / `workload.costBudget`) that the online re-solve and the
+     * on-sample self-test both need.
+     *
+     * During the first `sampleWindow` policy-evaluated requests the filter prices with
+     * the prior while tallying the observed `(cost, value)` type mixture. At the window
+     * boundary it re-solves the fluid LP from what it actually saw and adopts the learned
+     * bid prices **only if they strictly beat the prior on the buffered sample** (replayed
+     * under the window-scaled budget `rateBudget·W` / `costBudget·W`), else keeps the
+     * prior — then freezes for the lifetime of this admitter.
+     *
+     * Self-validating (the load-bearing property): it is **never worse than the static
+     * prior on the observed sample**, yet **escapes a misspecified prior** — a
+     * catastrophically wrong prior that would admit nothing is rescued. Until the window
+     * fills, behavior is byte-identical to static joint-LP with `workload`.
+     *
+     * **Scope of the guarantee.** Non-inferiority holds on the *observed sample* only; it does
+     * NOT imply full-horizon dominance. Under non-stationary / autocorrelated arrivals the
+     * window can be unrepresentative, so an adopted dual may do *slightly* worse over the full
+     * stream (the autocorrelation cousin of the ρ=+1 foil — bounded and small in practice, and
+     * still far better than no policy). With a `concurrency` axis configured, "policy-evaluated"
+     * counts requests that PASSED concurrency (the bid filter sits after it), so the window
+     * reflects the post-concurrency mixture. See
+     * `research/bigger-bets/joint-lp-admission/DESIGN.md` §6 + the gate (`adaptive-gate.ts`).
+     */
+    adaptive?: { sampleWindow: number };
   };
 }
 
@@ -137,6 +166,67 @@ function denyByPolicy(d: Decision): Decision {
 }
 
 /**
+ * Cap on distinct `(cost, value)` archetypes the online warm-up will model
+ * (D-JLP-8). The intended workloads have a handful of request classes (e.g. an
+ * LLM gateway's small/large completions, or a few model tiers); this bound keeps
+ * the one-shot re-solve cheap and bounds the type-model at O(min(window, cap))
+ * entries (the replay buffer is separately bounded at O(window)).
+ * If a workload presents more distinct pairs, later-seen NEW pairs are not added
+ * to the type model (existing pairs keep counting) — and that approximation is
+ * SAFE: the learned duals are adopted only if they beat the prior on the *true*
+ * buffered sample, so a degraded model simply keeps the validated prior.
+ */
+const MAX_OBSERVED_TYPES = 64;
+
+/** Warm-up state for the online (sample-then-price) dual refinement (D-JLP-8). */
+interface AdaptiveState {
+  /** `sampleWindow`: number of policy-evaluated requests to observe before freezing. */
+  window: number;
+  /** Per-arrival rate budget (`workload.rateBudget ÷ Σ weight`) — the re-solve + replay scale. */
+  perArrivalRate: number;
+  /** Per-arrival cost budget (`workload.costBudget ÷ Σ weight`). */
+  perArrivalCost: number;
+  /** The construction-time prior duals; kept to fall back to (never worse than this). */
+  prior: { rate: number; cost: number };
+  /** The LIVE bid prices: the prior during warm-up, the chosen duals after freeze. */
+  active: { rate: number; cost: number };
+  /** Count of policy-evaluated requests seen so far (the window progress). */
+  seen: number;
+  /** True once the window filled and the duals were chosen (frozen for life). */
+  frozen: boolean;
+  /** The buffered arrival stream (≤ window) — replayed verbatim by the on-sample self-test. */
+  buf: Array<{ cost: number; value: number }>;
+  /** Observed type counts keyed by `${cost}|${value}` (≤ {@link MAX_OBSERVED_TYPES}). */
+  buckets: Map<string, { cost: number; value: number; count: number }>;
+}
+
+/**
+ * Greedy revenue of a bid-price policy over a buffered sample under a fixed
+ * `(rate, cost)` budget — the on-sample self-test that gates dual adoption
+ * (D-JLP-8). Identical semantics to the live filter: a request is "admitted" iff
+ * the rate slot and cost budget allow AND `value ≥ duals.rate + duals.cost·cost`,
+ * consumed in arrival order. Pure; no side effects.
+ */
+function replaySampleRevenue(
+  buf: ReadonlyArray<{ cost: number; value: number }>,
+  duals: { rate: number; cost: number },
+  rateBudget: number,
+  costBudget: number,
+): number {
+  let rateRem = rateBudget;
+  let costRem = costBudget;
+  let rev = 0;
+  for (const a of buf) {
+    if (rateRem >= 1 && costRem >= a.cost && a.value >= duals.rate + duals.cost * a.cost) {
+      rateRem -= 1;
+      costRem -= a.cost;
+      rev += a.value;
+    }
+  }
+  return rev;
+}
+
+/**
  * Compose three orthogonal admission axes (rate / concurrency / cost) into one
  * {@link UnifiedAdmission} via the algebra in {@link combineDecisions}. See
  * `research/bigger-bets/unified/DESIGN.md` §4.2 for the locked API and §4.2.2
@@ -202,6 +292,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
   // gate is inert (the `"marginal"` default path is byte-for-byte unchanged).
   const policy = options.policy ?? "marginal";
   let duals: { rate: number; cost: number } | undefined;
+  let adaptiveState: AdaptiveState | undefined;
   if (policy === "joint-lp") {
     // The bid-price test is over the cost budget (D-JLP-11). The cost axis is the
     // top-level `cost` Limiter (sequential) OR `fused.cost` (lua-fused) — joint-LP
@@ -231,6 +322,43 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
           `unifiedAdmission: jointLp.duals.${field} must be a finite number ≥ 0 (got ${String(value)})`,
         );
       }
+    }
+
+    // Online dual refinement (D-JLP-8) — opt-in warm-up state. Requires the `workload`
+    // form: it alone carries the per-arrival budgets the re-solve + on-sample self-test
+    // need (you cannot recover them from bare `duals`). `duals` above is the PRIOR.
+    const adaptiveOpt = jl?.adaptive;
+    if (adaptiveOpt !== undefined) {
+      if (!hasWorkload) {
+        throw new ThrottleKitError(
+          "unifiedAdmission: jointLp.adaptive requires the jointLp.workload form (the model supplies the prior AND the per-arrival budgets the online re-solve needs); it is not compatible with bare jointLp.duals",
+        );
+      }
+      const window = adaptiveOpt.sampleWindow;
+      if (!Number.isInteger(window) || window < 1) {
+        throw new ThrottleKitError(
+          `unifiedAdmission: jointLp.adaptive.sampleWindow must be a positive integer (got ${String(window)})`,
+        );
+      }
+      // Per-arrival budget normalization. `solveFluidLp` treats `weight` as a per-type usage
+      // scale (counts OR probabilities) and is scale-invariant for the duals, so the static
+      // path accepts any normalization. The on-sample replay, however, scales the budget by the
+      // number of buffered arrivals — so it needs the per-ARRIVAL budget = `budget ÷ Σ weight`.
+      // Deriving it here makes `adaptive` accept the SAME `workload` shape as the static path
+      // (counts+totals or probabilities+per-arrival both scale the replay correctly).
+      const totalWeight = jl!.workload!.types.reduce((s, t) => s + t.weight, 0);
+      const norm = (budget: number): number => (totalWeight > 0 ? budget / totalWeight : budget);
+      adaptiveState = {
+        window,
+        perArrivalRate: norm(jl!.workload!.rateBudget),
+        perArrivalCost: norm(jl!.workload!.costBudget),
+        prior: duals,
+        active: duals,
+        seen: 0,
+        frozen: false,
+        buf: [],
+        buckets: new Map(),
+      };
     }
   } else if (options.policy !== "marginal" && options.policy !== undefined) {
     throw new RangeError(
@@ -310,15 +438,72 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
   }
 
   /**
+   * One online warm-up step (D-JLP-8). Tally an observed `(cost, value)` arrival
+   * and, once the sample window fills, re-solve the fluid LP from observations and
+   * adopt the learned duals into `st.active` iff they STRICTLY beat the prior on the
+   * buffered sample (replayed under the window-scaled budget) — else keep the prior.
+   * Mutates `st` only (never the outer `duals`); called only while `!st.frozen`.
+   */
+  function refineWarmup(st: AdaptiveState, value: number, requestCost: number): void {
+    st.seen += 1;
+    if (st.buf.length < st.window) st.buf.push({ cost: requestCost, value });
+    const bucketKey = `${requestCost}|${value}`;
+    const bucket = st.buckets.get(bucketKey);
+    if (bucket !== undefined) bucket.count += 1;
+    else if (st.buckets.size < MAX_OBSERVED_TYPES)
+      st.buckets.set(bucketKey, { cost: requestCost, value, count: 1 });
+
+    if (st.seen < st.window) return;
+
+    // Window full — re-solve from the observed mixture and run the self-test gate.
+    let chosen = st.prior;
+    try {
+      const types = [...st.buckets.values()].map((b) => ({
+        cost: b.cost,
+        value: b.value,
+        weight: b.count / st.seen,
+      }));
+      const learned = solveFluidLp({
+        types,
+        rateBudget: st.perArrivalRate,
+        costBudget: st.perArrivalCost,
+      }).duals;
+      const scaledR = st.perArrivalRate * st.buf.length;
+      const scaledC = st.perArrivalCost * st.buf.length;
+      // Adopt ONLY IF strictly better on the observed sample (a tie keeps the prior).
+      if (
+        replaySampleRevenue(st.buf, learned, scaledR, scaledC) >
+        replaySampleRevenue(st.buf, st.prior, scaledR, scaledC)
+      ) {
+        chosen = learned;
+      }
+    } catch {
+      // A degenerate observed sample (e.g. a non-finite / negative user-supplied cost
+      // or value reaching the re-solve) could throw. Keep the validated prior — the
+      // never-worse-than-static guarantee must hold for ANY input.
+      chosen = st.prior;
+    }
+    st.active = chosen;
+    st.frozen = true;
+    st.buf = []; // free the sample buffer + type counts; no longer needed
+    st.buckets.clear();
+  }
+
+  /**
    * The joint-LP bid-price filter (D-JLP-6). Inert unless `policy: "joint-lp"` is
    * configured (`duals` defined). Pure JS (only `value`, `requestCost`, and the
-   * static `duals`), so it is backend-agnostic AND must run **BEFORE the rate/cost
+   * `duals`), so it is backend-agnostic AND must run **BEFORE the rate/cost
    * limiters debit** — the rate/cost `check()` consumes budget on success with no
    * rollback, so filtering *after* them would let a rejected low-value request
    * still drain the budget the policy exists to preserve. Returns a policy-denial
    * {@link UnifiedAdmission} (releasing any held concurrency slot — an
    * upstream-style deny, not an overload drop) when value doesn't clear
    * `p_R + p_C·cost`, or `undefined` to let the admit proceed to rate/cost.
+   *
+   * When online refinement (D-JLP-8) is enabled, this also drives the warm-up: each
+   * call observes the arrival and, at the window boundary, may swap the live bid
+   * prices from the prior to the learned duals — so the bid test below uses the
+   * latest `active` prices (the W-th request itself is priced post-freeze).
    *
    * On a policy deny the per-axis decisions are left unset (the axes were never
    * consulted — that is exactly what preserves their budget); `policyDenied: true`
@@ -330,7 +515,12 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
     leaseRelease: ((opts?: { dropped?: boolean }) => void) | undefined,
   ): UnifiedAdmission | undefined {
     if (duals === undefined) return undefined;
-    const bid = duals.rate + duals.cost * requestCost;
+    let active = duals;
+    if (adaptiveState !== undefined) {
+      if (!adaptiveState.frozen) refineWarmup(adaptiveState, value, requestCost);
+      active = adaptiveState.active;
+    }
+    const bid = active.rate + active.cost * requestCost;
     if (value >= bid) return undefined;
     leaseRelease?.({ dropped: false });
     return { decision: denyByPolicy(combineSnapshot()), release: NOOP_RELEASE, policyDenied: true };

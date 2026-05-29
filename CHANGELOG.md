@@ -6,7 +6,23 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Online (sample-then-price) dual refinement for the joint-LP policy — opt-in
+  `jointLp.adaptive = { sampleWindow }` (TK-1401, D-JLP-8/13/14).** Requires the
+  `jointLp.workload` form. Default and static joint-LP are byte-for-byte unchanged. The bid
+  filter prices the first `sampleWindow` requests with the construction prior while observing
+  the live `(cost, value)` mixture, then re-solves the fluid LP from what it actually saw and
+  adopts the learned bid prices **only if they strictly beat the prior on the observed
+  sample** (replayed under the window-scaled budget), else keeps the prior — then freezes.
+  This **self-validating** rule is the load-bearing idea: a correct prior is kept (noise can't
+  dislodge it), while a *catastrophically misspecified* prior — one whose duals reject
+  everything — is escaped (gate-measured rescue from **100% → ~20–30%** regret), and the naïve
+  "freeze-always" variant, which hurts a correct prior (**9.9–21.1%** vs static's **0.7–1.2%**),
+  is rejected. **Honest scope:** the guarantee is non-inferiority *on the observed sample*, not
+  full-horizon — under autocorrelated arrivals an adopted dual can be slightly worse over the
+  full stream (the ρ=+1 foil's cousin; bounded, +~0.8pp measured, and regression-guarded). With
+  a `concurrency` axis the window counts the concurrency-passed population.
 
 ## [0.11.2] — 2026-05-30
 

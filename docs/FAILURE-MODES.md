@@ -181,9 +181,21 @@ autocorrelated, near-absorbing** workload (long runs of a single request type) t
 failure under non-stationarity (Talluri–van Ryzin 1998; at ρ = +1 in the TK-1007
 sweep joint-LP's regret is worse). **Default `"marginal"` is the safe choice;**
 enable joint-LP when the cost axis binds and request types differ in value-density,
-and re-measure ε on your own trace if arrivals are strongly autocorrelated. The
-duals are static (solved once at construction) — there is no runtime adaptation in
-0.11.1 (online sample-then-price is documented future work).
+and re-measure ε on your own trace if arrivals are strongly autocorrelated.
+
+**Online dual refinement — `jointLp.adaptive` (opt-in, Unreleased).** When the
+construction prior is uncertain, `jointLp.adaptive = { sampleWindow: W }` (requires
+the `workload` form) prices the first `W` requests with the prior, then re-solves the
+LP from the observed mixture and adopts the learned duals **only if they beat the prior
+on the observed sample**, else keeps the prior. This **rescues a misspecified prior**
+(a prior whose duals reject everything is escaped, 100% → ~20–30% regret) and **cannot
+hurt a correct one on its own sample** (it keeps it). The operational hazard is the same
+non-stationarity caveat, sharpened: the guarantee is **on-sample, not full-horizon** —
+under autocorrelated arrivals the `W`-window can be unrepresentative, so an adopted dual
+can be *slightly* worse over the full stream (bounded, the ρ=+1 foil's cousin). Mitigation:
+prefer a larger `W` on bursty/correlated traffic; the prior is always the floor, so a good
+prior + adaptive is never much worse than the prior alone. With a `concurrency` axis the
+window counts the **concurrency-passed** population.
 
 See `research/bigger-bets/unified/DESIGN.md` for the full design,
 `examples/unified.ts` and `examples/joint-lp-admission.ts` for LLM-gateway-style

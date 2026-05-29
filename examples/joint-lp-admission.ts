@@ -96,3 +96,63 @@ console.log(
   `  → joint-LP filters the low-value large calls, preserving budget for the
     high-value small ones: ${joint.revenue} vs ${marginal.revenue} revenue (${pct}% more).`,
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3) Online refinement — `jointLp.adaptive` RESCUES a misspecified prior.
+//
+// The bid prices above are only as good as the workload model. Suppose at config time
+// we MISBELIEVED large completions were worth 200 (they are really worth 50). That
+// prior's duals reject BOTH types — the gateway would admit nothing. `jointLp.adaptive`
+// prices the warm-up with that wrong prior, observes the real (cost,value) mixture,
+// re-solves, and adopts the learned prices ONLY IF they beat the prior on the observed
+// sample — which a reject-everything prior trivially loses, so it escapes the trap. (A
+// CORRECT prior, by contrast, can't be beaten on its own sample, so it is kept untouched.)
+const WRONG_PRIOR = {
+  types: [
+    { cost: 100, value: 1, weight: 500 },
+    { cost: 10_000, value: 200, weight: 500 }, // WRONG belief: large is really worth 50
+  ],
+  rateBudget: 2_000,
+  costBudget: COST_BUDGET,
+};
+
+function adaptiveGateway(adaptive: boolean) {
+  const clock = new ManualClock(0);
+  return unifiedAdmission({
+    cost: rateLimit({ strategy: tokenBucket({ capacity: COST_BUDGET, refillPerSec: 1 }), clock }),
+    policy: "joint-lp",
+    jointLp: { workload: WRONG_PRIOR, ...(adaptive ? { adaptive: { sampleWindow: 100 } } : {}) },
+  });
+}
+
+// The TRUE stream: large completions are actually worth 50 (the prior was wrong).
+const trueStream = Array.from({ length: 600 }, (_, i) =>
+  i % 2 === 0 ? { cost: 100, value: 1 } : { cost: 10_000, value: 50 },
+);
+
+function runAdaptive(adaptive: boolean): { revenue: number; admitted: number } {
+  const admit = adaptiveGateway(adaptive);
+  let revenue = 0;
+  let admitted = 0;
+  for (const a of trueStream) {
+    if (admit.admitSync({ cost: a.cost, value: a.value }).decision.allowed) {
+      revenue += a.value;
+      admitted += 1;
+    }
+  }
+  return { revenue, admitted };
+}
+
+const staticWrong = runAdaptive(false);
+const adapted = runAdaptive(true);
+console.log("\nMisspecified prior (believed large=200, truly 50) on the true stream:");
+console.log(
+  `  static prior              : admitted ${staticWrong.admitted}, revenue ${staticWrong.revenue}  (rejects ~everything)`,
+);
+console.log(
+  `  + jointLp.adaptive (W=100): admitted ${adapted.admitted}, revenue ${adapted.revenue}  (re-priced from observations)`,
+);
+console.log(
+  "  → the guard adopted the learned duals because they beat the prior on the observed\n" +
+    "    sample. The guarantee is on-sample, not full-horizon — see DESIGN.md §6 + §7.",
+);

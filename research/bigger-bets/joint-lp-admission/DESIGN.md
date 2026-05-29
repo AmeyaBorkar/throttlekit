@@ -268,21 +268,56 @@ unchanged — under a policy denial every per-axis Decision is `allowed:true`, a
 
 ---
 
-## 6. Online dual update (Devanur-Hayes) — scoped, default OFF (D-JLP-8)
+## 6. Online dual update (Devanur-Hayes) — **SHIPPED 0.11.3, opt-in (D-JLP-8, D-JLP-13/14)**
 
-The roadmap title (TK-1320) names "static duals + online primal-dual". v1 ships
-**static duals as the primary, fully-supported path** (solved once from the
-`workload` model, or supplied directly). The online sample-then-price variant —
-observe the first `W` arrivals to estimate type frequencies, re-solve the LP,
-then freeze the duals — is **deferred** to a clearly-bounded follow-up
-(`jointLp.adaptive?: { sampleWindow: number }`), because:
+0.11.1 shipped **static duals** as the primary path (ε = 25.33%, measured on static
+fluid-LP duals). 0.11.3 adds the **online sample-then-price** variant as an opt-in
+refinement: `jointLp.adaptive = { sampleWindow: W }` (requires the `workload` form).
 
-1. The empirical SHIP verdict (ε = 25.33%) was measured on **static** fluid-LP
-   duals; that's what's validated.
-2. Online estimation adds a stateful warm-up path + its own property tests.
+### 6.1 The naïve design FAILS — the gate killed it
+The textbook sample-then-price (observe `W` arrivals UNPRICED, re-solve, freeze)
+loses badly when the prior was *correct*: the gate (`adaptive-gate.ts`) measured the
+"freeze-always" variant at **9.9–21.1%** regret in WORLD A (correct prior) vs static's
+**0.7–1.2%** — it adopts a noisy finite-sample estimate over an already-optimal prior.
+Running the warm-up *unpriced* also squanders a binding budget before the duals exist.
 
-Recorded as future work in §12. Do **not** implement it in TK-1320 unless the
-static path is complete and `npm run check` is green with budget to spare.
+### 6.2 The shipped design — **GUARDED (self-validating) sample-then-price** (D-JLP-13)
+1. **Price the warm-up with the prior.** During the first `W` policy-evaluated requests
+   the bid filter uses the construction prior's duals (`solveFluidLp(workload).duals`) —
+   so a binding budget is never run unpriced, and behavior is byte-identical to static
+   joint-LP until the window fills.
+2. **Tally + buffer.** Observe the `(cost, value)` mixture (counts, capped at 64 distinct
+   archetypes) and buffer the arrivals.
+3. **Re-solve at the boundary.** At the `W`-th request re-solve the fluid LP from the
+   observed weights (`count/seen`) to get the LEARNED duals.
+4. **Adopt only if it beats the prior ON THE OBSERVED SAMPLE.** Replay the buffer greedily
+   under the window-scaled budget (`rateBudget·W`, `costBudget·W`) with both dual sets;
+   adopt the learned duals iff `revenue(learned) > revenue(prior)` strictly, else keep the
+   prior. Then freeze for the lifetime of the admitter.
+
+This is **self-validating**: a correct prior cannot be strictly beaten on its own sample,
+so noise can't dislodge it (matches static(oracle) in WORLD A); a *catastrophically* wrong
+prior — one whose duals reject everything (WORLD C: believed-large=200, true=50 ⇒ 100%
+regret, admits nothing) — is escaped, rescued to **~20–30%**. The gate verdict:
+
+| world | static(prior) | freeze-always | **GUARDED** | static(oracle) |
+|-------|---------------|---------------|-------------|----------------|
+| A correct prior (ρ∈[−0.5,0.5]) | 0.7–1.2% | 9.9–21.1% | **0.7–1.2%** | 0.7–1.2% |
+| C catastrophic prior (ρ∈[−0.5,0.5]) | **100%** | 19.9–30.1% | **19.9–30.1%** | 0.7–1.2% |
+| ρ=+1 foil (A) | 65% | 32.5% | **32.5%** | 65% |
+
+### 6.3 Honest scope of the guarantee (D-JLP-14)
+The guarantee is **non-inferiority on the observed sample**, proved structurally (adoption
+is gated on a strict `>` over a buffer replayed with the identical-to-live admit predicate,
+with a prior fallback that also catches every NaN/throw). It does **NOT** imply full-horizon
+dominance: under autocorrelated / non-stationary arrivals the `W`-window can be
+unrepresentative, so an adopted dual can be *slightly* worse over the full stream (measured
++0.8pp at ρ=0.5, believed-large=2/true=80; bounded and still far better than marginal-AND).
+This is the **autocorrelation cousin of the ρ=+1 foil (§7)** and is regression-guarded in
+`test/admission/joint-lp-adaptive.test.ts` exactly as the foil is — never silently "fixed".
+Two further honest notes: with a `concurrency` axis the window counts the **concurrency-passed**
+population (the bid filter sits after it); and the requires-`workload` constraint is load-bearing
+(the bare `duals` form carries no per-arrival budget to re-solve or replay against).
 
 ---
 
@@ -382,9 +417,25 @@ joint-LP *is* worse at ρ=+1) so we never silently "fix" the honest result.
   backends.** Works under `"lua-fused"` unchanged. See §5.5.
 - **D-JLP-7 — Port `solveFluidLP` from `sim.ts:149-232` verbatim; do not
   redesign the math.** The vertex-enumeration LP is already validated by TK-1007.
-- **D-JLP-8 — Online primal-dual is deferred, default OFF.** v1 = static duals
-  (what ε=25.33% validated). Online sample-then-price is bounded future work
-  (§6, §12).
+- **D-JLP-8 — Online primal-dual: SHIPPED 0.11.3 as opt-in `jointLp.adaptive`.** 0.11.1
+  shipped static duals (ε=25.33% validated); 0.11.3 adds the GUARDED sample-then-price
+  refinement. See §6, D-JLP-13/14.
+- **D-JLP-13 — The online design is GUARDED (self-validating), not naïve sample-then-price.**
+  Price the warm-up with the prior; adopt the re-solved duals only if they STRICTLY beat the
+  prior on the observed sample (buffer replayed under the window-scaled budget), else keep the
+  prior, then freeze. The naïve "freeze-always" variant FAILS in WORLD A (correct prior:
+  9.9–21.1% regret vs static's 0.7–1.2%) — the gate killed it. Requires the `workload` form (it
+  carries both the prior and the per-arrival budgets the re-solve/replay need; bare `duals`
+  cannot). Verified end-to-end in `test/admission/joint-lp-adaptive.test.ts` (WORLD A/B/C
+  reproduced on the shipped state machine; both the no-op and always-adopt mutants are caught).
+- **D-JLP-14 — The guarantee is on-sample non-inferiority, NOT full-horizon dominance.** Proved
+  structurally (strict-`>` adoption + a prior fallback that also covers every NaN/throw, so the
+  chosen duals never beat the prior on-sample). Under autocorrelation the W-window can be
+  unrepresentative ⇒ an adopted dual can be *slightly* worse over the full stream (+0.8pp
+  measured at ρ=0.5) — the autocorrelation cousin of the ρ=+1 foil; regression-guarded so it is
+  never silently claimed away. With a concurrency axis the window counts the concurrency-passed
+  population. Headline wording everywhere is scoped to "never worse than the prior on the
+  observed sample".
 - **D-JLP-9 — The ρ=+1 foil is documented everywhere and regression-tested.**
   Never silently "fixed". See §7, §9.2.
 - **D-JLP-10 — `value` defaults to 1 on `UnifiedAdmitOptions`.** A workload that
@@ -400,10 +451,9 @@ joint-LP *is* worse at ρ=+1) so we never silently "fix" the honest result.
 
 ## 12. Open questions / future work
 
-1. **Online primal-dual dual update** (Devanur-Hayes sample-then-price):
-   `jointLp.adaptive = { sampleWindow }`. Estimate type frequencies from the
-   first `W` arrivals, re-solve, freeze. Needs a warm-up state machine + its own
-   property suite. Candidate: 0.10.2.
+1. ✅ **DONE 0.11.3 — Online primal-dual dual update** (Devanur-Hayes sample-then-price):
+   `jointLp.adaptive = { sampleWindow }`. Shipped as the GUARDED self-validating variant
+   (§6, D-JLP-13/14) — not the naïve form, which the gate refuted.
 2. **3-axis joint LP** (rate + cost + a *concurrency* shadow price). The current
    LP is 2-budget; concurrency is instantaneous, not windowed, so it doesn't fit
    the same fluid relaxation cleanly. Research.
