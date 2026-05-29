@@ -245,25 +245,34 @@ full failure-mode rationale and the `dropped`-decision matrix.
 inferred global ceiling `L_global`, parcelled into per-node shares by a
 `ConcurrencyCoordinator` (Test / Redis). The coordinator's hard guarantee is
 **GlobalCap** — `Σ granted shares ≤ L_global` under any heartbeat interleaving
-(the budget cap, D-DAC-17); `Σ inflight ≤ L_global` then holds in steady state and
-converges back after a rebalance. The guard gates on `min(share, local.limit)`;
-`onCoordinatorOutage` (default `fail-closed`) decides what a coordinator outage
-means.
+(the budget cap, D-DAC-17). The **occupancy cap** (reserving each peer's
+`max(share, inflight)`) plus monotonic grant application additionally **eliminate
+the synchronous / protocol-level rebalance overshoot** in `Σ inflight` — in steady
+state `Σ inflight → L_global`, and `InflightCap : Σ inflight ≤ L_global` holds on
+every reachable state of the synchronous model (D-DAC-18). They do **not** make
+`Σ inflight ≤ L_global` a hard *instantaneous* invariant of the async system: a
+bounded (~1.5–2×), self-draining residual remains from grant-reply + reporting lag,
+and converges back as in-flight drains. The guard gates on `min(share,
+local.limit)`; `onCoordinatorOutage` (default `fail-closed`) decides what a
+coordinator outage means.
 
 | Condition | `fail-closed` (default) | `local-only` | Recovery |
 |---|---|---|---|
 | Coordinator unreachable | `share→0`, node sheds all (503) | `share→local.limit`, per-node self-limit; fleet may overshoot backend | Next successful heartbeat restores share |
 | Node crashes holding share | Its lease TTL (`2·heartbeatMs`) expires → coordinator reclaims; survivors' shares grow next heartbeat | same | Automatic within `leaseTtlMs` |
-| `L_global` shrinks (backend degraded) | Over-allocated nodes admit nothing new; in-flight drains; `Σ inflight → L_global` | same | Convergence within max request duration (§9.3) |
-| Node JOINS (membership growth, `L_global` constant) | Budget cap gives the joiner `min(target, L_global − Σ incumbents) = 0` until incumbents re-heartbeat DOWN to their fair shares; `Σ granted shares ≤ L_global` preserved at every instant (no over-commitment), robust even if the joiner re-heartbeats first | same | Joiner earns its `≈ L/N` share over the next ≈ N heartbeats |
+| `L_global` shrinks (backend degraded) / rebalance | Over-allocated nodes admit nothing new; in-flight drains; `Σ inflight → L_global`. The occupancy cap (D-DAC-18) eliminates the **synchronous** rebalance overshoot (a joiner is granted 0 until peers drain); the async system keeps a bounded (~1.5–2×) self-draining `Σ inflight` residual from grant/report lag — never a runaway | same | Convergence as in-flight drains, within max request duration (§9.3) |
+| Node JOINS (membership growth, `L_global` constant) | Budget cap gives the joiner `min(target, L_global − Σ_incumbent max(share, inflight)) = 0` until incumbents re-heartbeat DOWN to their fair shares AND drain; `Σ granted shares ≤ L_global` preserved at every instant (no over-commitment), robust even if the joiner re-heartbeats first. `Σ inflight` holds synchronously; the async path keeps the same bounded, self-draining residual (above) | same | Joiner earns its `≈ L/N` share over the next ≈ N heartbeats |
 | Stale share (between heartbeats) | Node may admit up to a now-too-large share for ≤ `heartbeatMs`; bounded by `min(share, local.limit)` fast-shrink | same | Smaller `heartbeatMs` trades coordinator load for reaction speed |
 | `nodeId` collision (operator error) | Two processes overwrite one HASH field → undercount → **under**-admission (safe direction) | same | Operational: enforce unique `nodeId` (doc warning) |
 | Clock skew between node and coordinator | Redis uses node-supplied `expiresAt` vs coordinator `now`; large skew → premature evict (safe) or late evict (bounded by skew) | same | Keep nodes NTP-synced; doc note |
 
 The `§`-prefixed references point at
 `research/bigger-bets/distributed-adaptive-concurrency/DESIGN.md`. The
-safety invariant `GlobalCap` (`Σ_active share ≤ L_global`) is machine-checked by the
-`GaleHeartbeatLeasing` BFS twin (`test/concurrency/distributed-leasing-model.test.ts`)
-and the property suite with simulated cross-node latency
-(`test/concurrency/distributed-invariant.test.ts`). See §§9,12 for the
+safety invariant `GlobalCap` (`Σ_active share ≤ L_global`) and the synchronous-model
+`InflightCap` (`Σ_active inflight ≤ L_global`) are machine-checked by the
+`GaleHeartbeatLeasing` BFS twin (`test/concurrency/distributed-leasing-model.test.ts`,
+every reachable state). The property suite with simulated cross-node latency
+(`test/concurrency/distributed-invariant.test.ts`) asserts `GlobalCap` end-to-end and
+pins the bounded, self-draining async `Σ inflight` residual as a deterministic
+regression (so no false hard end-to-end claim creeps back). See §§9,12 for the
 full failure-mode rationale.

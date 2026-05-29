@@ -13,17 +13,28 @@
  * a wall-clock window. See DESIGN §3 + §9; the reference algorithm is §10.1,
  * implemented here literally.
  *
- * **Why the cap (D-DAC-17).** Stateless equal-split (`⌊L/N⌋` computed
+ * **Why the cap (D-DAC-17 + D-DAC-18).** Stateless equal-split (`⌊L/N⌋` computed
  * independently per node) is UNSAFE under staggered heartbeats: a freshly-joined
  * node would compute its small share while an incumbent still holds its larger
  * pre-join share, so `Σ share` transiently exceeds `L_global` with `L_global`
- * constant. We therefore track each node's currently-granted `share` and cap
- * every grant at the remaining budget `L_global − Σ(other live shares)`. That
- * makes `Σ share ≤ L_global` a hard invariant under ANY heartbeat interleaving
- * when `L_global` is constant; the equal-split target is the value the fleet
- * *converges* to as nodes re-heartbeat. The only residual over-grant is a true
- * `L_global` shrink (backend degraded), bounded by one heartbeat and covered by
- * the guard's `min(share, local.limit)` fast-shrink (D-DAC-6). See DESIGN §6.
+ * constant. We therefore track each node's currently-granted `share` AND its
+ * last-reported `inflight`, and cap every grant at the budget no other live node
+ * is currently *holding*: `L_global − Σ_other max(share, inflight)`.
+ *   - The `share` term makes `Σ share ≤ L_global` a hard invariant under ANY
+ *     interleaving at constant `L_global` (D-DAC-17 — over-*commitment* safety).
+ *   - The `inflight` term ELIMINATES the *synchronous* rebalance overshoot
+ *     (D-DAC-18): a peer's in-flight is non-revocable, so until it physically
+ *     drains that capacity is occupied and is NOT re-granted to a joiner —
+ *     converting the protocol-level overshoot (joiner ramps while an incumbent
+ *     drains, up to 1.5×) into a ramp *delay*. `Σ inflight ≤ L_global` is thereby
+ *     a hard invariant of the SYNCHRONOUS model (spec + BFS twin) and holds
+ *     end-to-end in the common low-latency case. It is NOT a hard *instantaneous*
+ *     bound under async grant/report lag: a bounded (~1.5–2×), self-draining
+ *     residual remains because a guard admits against its CACHED grant while a
+ *     reduction is still in flight, and the cap reserves a peer's LAST-REPORTED
+ *     inflight (a hard instantaneous bound would need acknowledged handoff —
+ *     deferred). Steady state (`inflight == share`) collapses `max` to `share`, so
+ *     D-DAC-17, the equal-split target, and convergence are unchanged. See DESIGN §6.
  *
  * No timers; no I/O. Deterministic under an injected clock.
  */
@@ -139,13 +150,25 @@ export class TestConcurrencyCoordinator implements ConcurrencyCoordinator {
     const rank = sorted.indexOf(report.nodeId);
     const target = base + (rank < rem ? 1 : 0);
 
-    // 5. CAP the grant at the budget not currently committed to OTHER live nodes,
-    //    so Σ share ≤ lGlobal holds under any heartbeat interleaving (D-DAC-17).
-    let otherShares = 0;
+    // 5. CAP the grant at the budget no OTHER live node is currently HOLDING —
+    //    reserve each peer's max(share, inflight), not just its share (D-DAC-18).
+    //    A peer's in-flight is non-revocable: until it physically drains, that
+    //    capacity is occupied and MUST NOT be re-granted here. Reserving only
+    //    `share` lets a joiner ramp into capacity an incumbent still occupies
+    //    (the Σ inflight rebalance overshoot — up to 1.5× on a 1→2 scale-up);
+    //    reserving max(share, inflight) eliminates that SYNCHRONOUS overshoot —
+    //    the joiner ramps only as fast as the incumbent drains. (Hard in the
+    //    synchronous model; in the async system a bounded ~1.5× residual remains
+    //    from grant/report lag — see DESIGN §9.3 / D-DAC-18.) Steady state
+    //    (inflight == share) is identical to the share-only cap, so
+    //    `Σ share ≤ lGlobal` (D-DAC-17) is preserved and convergence is unchanged.
+    let otherReserved = 0;
     for (const id of liveIds) {
-      if (id !== report.nodeId) otherShares += perKey.get(id)!.share;
+      if (id === report.nodeId) continue;
+      const rec = perKey.get(id)!;
+      otherReserved += Math.max(rec.share, rec.inflight);
     }
-    const share = Math.max(0, Math.min(target, lGlobal - otherShares));
+    const share = Math.max(0, Math.min(target, lGlobal - otherReserved));
 
     // 6. record the grant so subsequent heartbeats by other nodes see it committed.
     perKey.get(report.nodeId)!.share = share;

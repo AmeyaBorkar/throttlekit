@@ -184,6 +184,18 @@ export function distributedAdaptiveConcurrency(
   let lGlobal = 0;
   let nodes = 0;
 
+  // Monotonic grant application (D-DAC-18). Each heartbeat cycle is stamped with
+  // a strictly-increasing issue sequence; we apply only the freshest issued
+  // cycle and DROP any older reply that lands after it. The coordinator mutates
+  // fleet state atomically at call time, so a later-issued heartbeat always
+  // reflects equal-or-newer coordinator state — applying a reordered, stale grant
+  // could reinstate a larger pre-rebalance share and worsen the bounded async
+  // in-flight overshoot. (This removes ONE source of staleness; it does not on its
+  // own make `Σ inflight ≤ L_global` a hard instantaneous bound — a guard still
+  // admits against its cached grant while a reduction is in flight; DESIGN §9.3.)
+  let heartbeatSeq = 0;
+  let appliedSeq = 0;
+
   let closed = false;
   let timer: { cancel(): void } | undefined;
 
@@ -209,6 +221,10 @@ export function distributedAdaptiveConcurrency(
    * (fail-closed ⇒ share = 0; local-only ⇒ share = local.limit). Never throws.
    */
   async function runHeartbeat(): Promise<void> {
+    // Stamp this cycle so a reordered, stale reply can't clobber a fresher grant
+    // (D-DAC-18 monotonic application). `mySeq` strictly increases per issue;
+    // we drop any reply whose issue is older than the freshest already applied.
+    const mySeq = ++heartbeatSeq;
     try {
       const grant = await coordinator.heartbeat({
         key,
@@ -217,11 +233,17 @@ export function distributedAdaptiveConcurrency(
         inflight: local.inflight,
         expiresAt: clock.now() + leaseTtlMs,
       });
+      if (mySeq < appliedSeq) return; // a fresher heartbeat already landed
+      appliedSeq = mySeq;
       share = grant.share;
       lGlobal = grant.lGlobal;
       nodes = grant.nodes;
     } catch {
       // Coordinator outage (§8.2). Mirrors federation's onCoordinatorOutage.
+      // Honor monotonicity here too: a stale outage response must not clobber a
+      // fresher grant that already landed.
+      if (mySeq < appliedSeq) return;
+      appliedSeq = mySeq;
       share = onCoordinatorOutage === "fail-closed" ? 0 : local.limit;
     }
   }

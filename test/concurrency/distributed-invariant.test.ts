@@ -274,6 +274,8 @@ interface Scenario {
   limits: number[];
   aggregate: "min" | "median";
   ops: Op[];
+  /** Outage mode for every guard in the fleet. Default `"local-only"`. */
+  outage?: "fail-closed" | "local-only";
 }
 
 /**
@@ -412,7 +414,7 @@ function buildFleet(
       // Pin the private limit so lLocal is a controllable constant.
       local: { minLimit: lLocal, maxLimit: lLocal, initialLimit: lLocal, clock },
       heartbeatMs,
-      onCoordinatorOutage: "local-only",
+      onCoordinatorOutage: scenario.outage ?? "local-only",
       clock,
       scheduler,
     });
@@ -569,6 +571,196 @@ describe("distributed adaptive concurrency — GlobalCap (constant lGlobal, prop
       });
     }
   }
+});
+
+describe("distributed adaptive concurrency — occupancy cap eliminates the SYNCHRONOUS overshoot (deterministic, TK-1318)", () => {
+  // D-DAC-18, the part that is genuinely HARD. With grants applied synchronously
+  // (each heartbeat's grant lands before the next admit — NO committed-vs-applied
+  // gap), the occupancy cap holds `Σ inflight ≤ lGlobal` at every step through a
+  // 1→2 rebalance, because a joiner is reserved its peer's max(share, inflight) and
+  // so stays at share 0 until the incumbent physically DRAINS. This is precisely
+  // the protocol-level overshoot the share-only cap could NOT hold (it would grant
+  // the joiner L/2 while the incumbent still held L in flight ⇒ 1.5×). Proven
+  // exhaustively in the synchronous spec + BFS twin; this is the readable witness.
+  for (const aggregate of ["min", "median"] as const) {
+    it(`B is held at share 0 until the incumbent DRAINS, so Σ inflight ≤ lGlobal throughout [agg=${aggregate}]`, async () => {
+      const clock = new ManualClock(0);
+      const coord = new TestConcurrencyCoordinator({ aggregate, clock });
+      const local = { minLimit: 6, maxLimit: 6, initialLimit: 6, clock };
+      const mk = (nodeId: string) =>
+        distributedAdaptiveConcurrency({
+          coordinator: coord,
+          nodeId,
+          key: KEY,
+          local,
+          onCoordinatorOutage: "fail-closed",
+          clock,
+          scheduler: captureScheduler().scheduler,
+        });
+      const a = mk("a");
+      const b = mk("b");
+      const heldA: Lease[] = [];
+      const lG = () => coord.peek(KEY).lGlobal;
+      const sumLive = () => {
+        const { shares } = coord.peek(KEY);
+        return ("a" in shares ? a.inflight : 0) + ("b" in shares ? b.inflight : 0);
+      };
+
+      await a.heartbeat(); // 1. a solo ⇒ share 6
+      for (;;) {
+        const l = a.acquire();
+        if (!l.ok) break;
+        heldA.push(l);
+      }
+      expect(a.inflight).toBe(6);
+      expect(sumLive()).toBeLessThanOrEqual(lG());
+
+      await b.heartbeat(); // 2. b joins ⇒ reserve a's max(share 6, inflight 6)=6 ⇒ share 0
+      expect(b.stats().share).toBe(0);
+      expect(sumLive()).toBeLessThanOrEqual(lG());
+
+      await a.heartbeat(); // 3. a re-HB ⇒ share 3 (debt: inflight 6 > 3)
+      expect(a.stats().share).toBe(3);
+      expect(a.inflight).toBe(6);
+
+      await b.heartbeat(); // 4. b re-HB ⇒ reserve a's max(share 3, inflight 6)=6 ⇒ STILL 0
+      expect(b.stats().share, "occupancy cap holds B at 0 while A's in-flight is undrained").toBe(
+        0,
+      );
+      expect(b.acquire().ok).toBe(false);
+      // THE WIN: the share-only cap would grant B share 3 here ⇒ Σ inflight 6+3=9 (1.5×).
+      expect(
+        sumLive(),
+        "Σ inflight stays ≤ lGlobal — no synchronous overshoot",
+      ).toBeLessThanOrEqual(lG());
+
+      while (heldA.length > 3) heldA.pop()!.release(); // 5. a drains to 3
+      await a.heartbeat();
+      await b.heartbeat(); // 6. b now earns share 3 as a has drained
+      expect(b.stats().share).toBe(3);
+      for (;;) {
+        const l = b.acquire();
+        if (!l.ok) break;
+      }
+      expect(sumLive()).toBeLessThanOrEqual(lG());
+
+      await a.close();
+      await b.close();
+    });
+  }
+});
+
+describe("distributed adaptive concurrency — async reply-lag residual is BOUNDED and DRAINS (deterministic, TK-1318)", () => {
+  // The HONEST scope of D-DAC-18: it eliminates the SYNCHRONOUS overshoot (above)
+  // but does NOT make `Σ inflight ≤ lGlobal` a hard INSTANTANEOUS invariant of the
+  // async system. Two lags the synchronous spec abstracts away leave a bounded,
+  // draining residual:
+  //   (1) committed-vs-applied — the guard admits against its CACHED (applied) grant,
+  //       which lags the coordinator's committed share during reply latency;
+  //   (2) reporting lag — the cap reserves a peer's LAST-REPORTED inflight.
+  // This pins the residual (a reviewer-found counterexample) so the behavior is
+  // documented and nobody re-introduces a false "hard end-to-end" claim. It asserts
+  // the overshoot (a) occurs, (b) is bounded (≤ 2×, never a runaway), and (c) DRAINS
+  // back to ≤ lGlobal once the parked reduction lands (the over-node then admits
+  // nothing new — the excess can only drain). A hard instantaneous bound would need
+  // per-request coordination or acknowledged handoff (DESIGN §9.3 / D-DAC-18).
+  it("a parked share-reduction lets Σ inflight reach ~1.5× transiently, then can only drain", async () => {
+    const clock = new ManualClock(0);
+    const inner = new TestConcurrencyCoordinator({ aggregate: "median", clock });
+    // Deferred-reply coordinator: COMMIT synchronously, PARK the reply; land per-node.
+    const parked: Array<{ nodeId: string; resolve: () => void }> = [];
+    const coord: ConcurrencyCoordinator = {
+      async heartbeat(r: ConcurrencyReport): Promise<ConcurrencyGrant> {
+        const g = await inner.heartbeat(r);
+        return new Promise<ConcurrencyGrant>((resolve) =>
+          parked.push({ nodeId: r.nodeId, resolve: () => resolve(g) }),
+        );
+      },
+      leave: (args) => inner.leave(args),
+      isHealthy: () => inner.isHealthy(),
+    };
+    const land = (nodeId: string): void => {
+      for (let i = parked.length - 1; i >= 0; i--) {
+        if (parked[i]!.nodeId === nodeId) {
+          parked[i]!.resolve();
+          parked.splice(i, 1);
+        }
+      }
+    };
+    const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+    const local = { minLimit: 6, maxLimit: 6, initialLimit: 6, clock };
+    const mk = (nodeId: string) =>
+      distributedAdaptiveConcurrency({
+        coordinator: coord,
+        nodeId,
+        key: KEY,
+        local,
+        onCoordinatorOutage: "fail-closed",
+        clock,
+        scheduler: captureScheduler().scheduler,
+      });
+    const a = mk("a");
+    const b = mk("b");
+    const heldA: Lease[] = [];
+    // fire a heartbeat, WAIT for it to commit+park, optionally deliver the reply.
+    const hb = async (
+      g: { heartbeat(): Promise<void> },
+      id: string,
+      landIt: boolean,
+    ): Promise<void> => {
+      void g.heartbeat();
+      await flush();
+      if (landIt) {
+        land(id);
+        await flush();
+      }
+    };
+    const sumLive = (): number => {
+      const { shares } = inner.peek(KEY);
+      return ("a" in shares ? a.inflight : 0) + ("b" in shares ? b.inflight : 0);
+    };
+
+    await hb(a, "a", true); // a solo ⇒ share 6
+    for (let i = 0; i < 8; i++) {
+      const l = a.acquire();
+      if (l.ok) heldA.push(l);
+    }
+    while (heldA.length > 2) heldA.pop()!.release(); // drain to inflight 2
+    await hb(a, "a", true); // a re-HB solo (reports inflight 2) ⇒ share 6
+    await hb(b, "b", true); // b joins ⇒ share 0
+    await hb(a, "a", false); // a re-HB ⇒ committed 3, REPLY PARKED (applied stays 6)
+
+    expect(inner.peek(KEY).shares.a, "coordinator committed the reduction").toBe(3);
+    expect(a.stats().share, "but the guard still applies the stale-high grant — the gap").toBe(6);
+
+    await hb(b, "b", true); // b re-HB ⇒ granted 3 (reserves a's committed 3 + stale-low report)
+    for (let i = 0; i < 8; i++) b.acquire(); // b fills to 3
+    for (let i = 0; i < 8; i++) {
+      const l = a.acquire(); // a re-acquires vs its stale applied share 6
+      if (l.ok) heldA.push(l);
+    }
+
+    const lG = inner.peek(KEY).lGlobal;
+    const peak = sumLive();
+    // (a) the residual is real; (b) bounded — never a runaway.
+    expect(peak, "the documented async reply-lag residual (≈1.5×)").toBeGreaterThan(lG);
+    expect(peak, "bounded — Σ inflight ≤ 2× the budget, not unbounded").toBeLessThanOrEqual(2 * lG);
+
+    // (c) it can only DRAIN: once a's parked reduction lands, a applies share 3, is
+    // in debt, and admits NOTHING new; releasing its excess in-flight lowers Σ.
+    land("a");
+    await flush();
+    expect(a.stats().share, "applied share catches up once the reply lands").toBe(3);
+    expect(a.acquire().ok, "in debt ⇒ no new admits; the overshoot can only drain").toBe(false);
+    const beforeDrain = sumLive();
+    heldA.pop()!.release();
+    expect(sumLive(), "releasing in-flight strictly lowers Σ (monotone drain)").toBeLessThan(
+      beforeDrain,
+    );
+
+    await a.close();
+    await b.close();
+  });
 });
 
 describe("distributed adaptive concurrency — shrink-drain (varying lGlobal, property, TK-1316)", () => {

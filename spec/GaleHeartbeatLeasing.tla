@@ -20,23 +20,39 @@
 (* transiently exceeds L with L CONSTANT (no shrink). The earlier spec hid    *)
 (* this by re-splitting all shares atomically in one Roll. This module        *)
 (* models the real staggered protocol: one node reallocates at a time, and    *)
-(* the grant is CAPPED at the budget not committed to other live nodes        *)
-(* (DESIGN section 6 / 10 / D-DAC-17). Under that cap GlobalCap holds for     *)
-(* ANY interleaving.                                                          *)
+(* the grant is CAPPED at the budget no other live node is currently HOLDING:  *)
+(* share'[n] = max(0, min(Target, L - Sum over others of max(share, inflight))) *)
+(* (DESIGN section 6 / 10 / D-DAC-17 for the share term, D-DAC-18 for the      *)
+(* inflight term). Under that cap BOTH safety bounds below hold for ANY        *)
+(* interleaving.                                                              *)
 (*                                                                         *)
-(* WHAT IS PROVED (constant L): GlobalCap == Sum(share over active) <= L.     *)
-(* The coordinator never COMMITS more than the global budget, regardless of   *)
-(* heartbeat order, joins, or departures. This is the achievable, hard        *)
-(* safety property -- and the one the bug violated.                          *)
+(* WHAT IS PROVED (constant L) -- two HARD invariants, both maintained by the  *)
+(* one cap:                                                                   *)
+(*   GlobalCap   == Sum(share    over active) <= L  (never over-COMMIT). The   *)
+(*                  share term (D-DAC-17); the bound the original stateless    *)
+(*                  equal-split bug violated.                                 *)
+(*   InflightCap == Sum(inflight over active) <= L  (never over-OCCUPY). The   *)
+(*                  inflight term (D-DAC-18). In-flight is non-revocable, so a  *)
+(*                  joiner must not ramp into capacity an incumbent still       *)
+(*                  occupies; reserving each peer's max(share, inflight) makes  *)
+(*                  the joiner grow only as fast as the incumbent drains. The   *)
+(*                  earlier share-ONLY cap left this as a transient overshoot   *)
+(*                  (up to 1.5x on a 1->2 scale-up), documented as liveness     *)
+(*                  (old DESIGN 9.3 / D-DAC-14); the occupancy cap (D-DAC-18)   *)
+(*                  makes it hard IN THIS (synchronous) MODEL, converting the   *)
+(*                  overshoot to a ramp DELAY (async residual: SCOPE below).    *)
+(*                  min(share, local.limit) at the                              *)
+(*                  guard (D-DAC-6) remains a further in-practice clamp.        *)
 (*                                                                         *)
-(* WHAT IS NOT AN INVARIANT (deliberately): Sum(inflight) <= L. In-flight     *)
-(* requests cannot be revoked, so when shares rebalance (a peer joins and     *)
-(* ramps while an over-provisioned node drains) Sum(inflight) can             *)
-(* transiently exceed L, draining monotonically back. This is a liveness/     *)
-(* convergence property (DESIGN section 9.3 / D-DAC-14), identical to how     *)
-(* single-process adaptiveConcurrency keeps serving in-flight after its       *)
-(* estimate drops, and is further clamped in practice by min(share,           *)
-(* local.limit) (D-DAC-6). It is therefore NOT in the invariant list.        *)
+(* SCOPE -- this is a SYNCHRONOUS model: Reallocate reads and writes share      *)
+(* atomically, with NO distinction between the share the coordinator has        *)
+(* COMMITTED and the share a guard has APPLIED (grant replies are instantaneous  *)
+(* here). InflightCap is therefore the SYNCHRONOUS-PROTOCOL guarantee. The async *)
+(* implementation has grant-reply latency + heartbeat reporting lag, leaving a   *)
+(* bounded (~1.5-2x), self-draining residual where Sum(inflight) can transiently *)
+(* exceed L (a guard admits against its cached grant while a reduction is in     *)
+(* flight); it is NOT a hard INSTANTANEOUS end-to-end bound. A hard async bound  *)
+(* would need acknowledged handoff. See DESIGN 9.3 / D-DAC-18.                  *)
 (*                                                                         *)
 (* TLC needs Java; the committed Java-free twin is                           *)
 (* test/concurrency/distributed-leasing-model.test.ts (TK-1316), which        *)
@@ -56,6 +72,7 @@ VARIABLES
 vars == << active, share, inflight >>
 
 Min2(a, b) == IF a < b THEN a ELSE b
+Max2(a, b) == IF a > b THEN a ELSE b
 Ceil(a, b) == (a + b - 1) \div b
 
 RECURSIVE SumOver(_, _)
@@ -68,6 +85,14 @@ SumOver(f, S) == IF S = {} THEN 0
 \* safe over-approximation -- the SAFETY bound depends only on the CAP below, not
 \* on the exact target.
 Target == Ceil(L, Cardinality(active))
+
+\* What each node is currently HOLDING this instant: the larger of its granted
+\* share and its NON-REVOCABLE in-flight. The cap reserves this for every peer
+\* (D-DAC-18), not just `share` (D-DAC-17), so a (re)grant never hands out
+\* capacity a peer is still occupying -- the joiner ramps only as fast as
+\* incumbents drain. Steady state (inflight <= share) collapses Held to share, so
+\* the D-DAC-17 cap is the special case and no steady-state capacity is lost.
+Held == [m \in Nodes |-> Max2(share[m], inflight[m])]
 
 ASSUME HeartbeatAssumptions ==
     /\ Nodes # {}
@@ -85,13 +110,16 @@ Init ==
     /\ inflight = [n \in Nodes |-> 0]
 
 \* Reallocate(n): node n heartbeats and is (re)granted a share. The grant is
-\* CAPPED at the budget not currently committed to OTHER active nodes, so the
-\* committed sum can never exceed L regardless of the order nodes heartbeat in.
-\* This is the federation lease, event-coupled (D-DAC-17).
+\* CAPPED at the budget no OTHER active node is currently HOLDING (max(share,
+\* inflight) per peer), so NEITHER the committed sum NOR the in-flight sum can
+\* exceed L, regardless of the order nodes heartbeat in. The max(0, ...) clamp
+\* matters now: unlike the share-only sum (<= L by GlobalCap), the Held-sum over
+\* peers can exceed L, so L - others may be negative. This is the federation
+\* lease, event-coupled (D-DAC-17 share term + D-DAC-18 inflight term).
 Reallocate(n) ==
     /\ n \in active
-    /\ LET others == SumOver(share, active \ {n})
-       IN share' = [share EXCEPT ![n] = Min2(Target, L - others)]
+    /\ LET others == SumOver(Held, active \ {n})
+       IN share' = [share EXCEPT ![n] = Max2(0, Min2(Target, L - others))]
     /\ UNCHANGED << active, inflight >>
 
 \* Join(n): a new node enters holding NO budget (share 0) until it reallocates,
@@ -146,8 +174,20 @@ GlobalCap == SumOver(share, active) <= L
 \* capture the trace; not in the committed invariant list.
 GlobalCapTight == SumOver(share, active) <= L - 1
 
-\* Documentation-only (NOT an invariant; deliberately omitted from the .cfg):
-\* in-flight can transiently exceed L during a rebalance because in-flight is
-\* non-revocable. Convergence to <= L is the liveness property of DESIGN 9.3.
-SteadyOvershoot == SumOver(inflight, active) <= L
+\* THE second safety property of the SYNCHRONOUS model (D-DAC-18): in-flight never
+\* exceeds the global budget. Maintained by the inflight term of the cap -- a peer's
+\* non-revocable in-flight is reserved as max(share, inflight), so a joiner cannot
+\* ramp into capacity an incumbent has not yet drained. This ELIMINATES the
+\* synchronous rebalance overshoot the share-only cap left (the old "SteadyOvershoot"
+\* liveness note). It is hard for ANY interleaving at constant L *in this model*; the
+\* async implementation has a bounded, self-draining residual (header SCOPE / DESIGN
+\* 9.3). COMMITTED in the .cfg.
+InflightCap == SumOver(inflight, active) <= L
+
+\* Tightness witness for InflightCap (intentionally FALSE, like GlobalCapTight):
+\* TLC must exhibit a reachable state with Sum(inflight) = L, so L is the LEAST
+\* upper bound -- the occupancy cap loses no steady-state in-flight capacity (at
+\* steady state every node fills its share and Sum(inflight) = Sum(share) = L).
+\* Swap into the .cfg to capture the trace; not in the committed invariant list.
+InflightCapTight == SumOver(inflight, active) <= L - 1
 =================================================================================

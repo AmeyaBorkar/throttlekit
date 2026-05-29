@@ -55,19 +55,26 @@ performance this release — identical API and behavior; see *Performance* below
   Postgres is **deferred** to a follow-up patch, mirroring federation's
   0.8.3 (Redis) → 0.8.4 (Postgres) rollout (D-DAC-16).
 
-- **Budget-capped equal-split allocation (D-DAC-9 / D-DAC-17)** — each grant is
-  the equal-split target (`base = ⌊L/N⌋` plus one to the lowest-ranked `rem` by
-  deterministic lexicographic `nodeId`, no RNG) **capped at the budget not
-  committed to the other live nodes**: `share = max(0, min(target, L_global − Σ
-  other live shares))`. The cap makes **`GlobalCap`: `Σ share ≤ L_global`** a
-  hard invariant under *any* staggered-heartbeat interleaving — a node that joins
-  computes `min(target, L_global − L_global) = 0` and stays at 0 until incumbents
-  re-split down (the cap subsumes any one-shot "provisional join", which is
-  *insufficient* — it fails if the joiner re-heartbeats first). The fleet
-  converges to the exact split within ≈ N heartbeats; idle-node skew is the
-  documented utilization limitation (never a safety bug). `Σ inflight ≤ L_global`
-  is **not** a hard invariant — in-flight is non-revocable, so it drains down
-  after a rebalance (D-DAC-14), clamped by `min(share, local.limit)`.
+- **Occupancy-capped equal-split allocation (D-DAC-9 / D-DAC-17 / D-DAC-18)** — each
+  grant is the equal-split target (`base = ⌊L/N⌋` plus one to the lowest-ranked `rem`
+  by deterministic lexicographic `nodeId`, no RNG) **capped at the budget no other
+  live node is holding**: `share = max(0, min(target, L_global − Σ_other max(share,
+  inflight)))`. The `share` term makes **`GlobalCap`: `Σ share ≤ L_global`** a hard
+  invariant under *any* staggered-heartbeat interleaving — a node that joins computes
+  `min(target, L_global − L_global) = 0` and stays at 0 until incumbents re-split down
+  (the cap subsumes any one-shot "provisional join", which is *insufficient* — it
+  fails if the joiner re-heartbeats first). The `inflight` term (D-DAC-18, reserving
+  each peer's `max(share, inflight)`) plus **monotonic grant application** (drop a
+  reordered, stale grant) **eliminate the synchronous / protocol-level rebalance
+  overshoot** in `Σ inflight` — `InflightCap : Σ inflight ≤ L_global` holds on every
+  reachable state of the **synchronous** model (TLA⁺ + BFS twin). The fleet converges
+  to the exact split within ≈ N heartbeats; idle-node skew is the documented
+  utilization limitation (never a safety bug). **`Σ inflight ≤ L_global` is NOT a hard
+  *instantaneous* invariant of the async system**: a bounded (~1.5–2×), self-draining
+  residual remains from grant-reply + reporting lag (a guard admits against its cached
+  grant; the cap reserves a peer's last-reported in-flight), clamped by `min(share,
+  local.limit)` (D-DAC-14). A hard async bound would need acknowledged handoff
+  (deferred).
 
 - **Median / min aggregation, never sum (D-DAC-10)** —
   `aggregate({lLocal}) → L_global` is `"median"` (**default**, the lower
@@ -93,16 +100,19 @@ performance this release — identical API and behavior; see *Performance* below
   event-release (heartbeat) shares (`windowMs → heartbeat_T`, `globalBudget → L`).
   Models the **staggered, budget-capped** protocol: an `active` set, a
   `Reallocate(n)` action that caps each grant at the budget left by the other
-  active nodes, plus `Join`/`Leave`. The committed safety invariant is
-  **`GlobalCap`: `Σ active share ≤ L`** — which a stateless equal-split would
-  violate under a staggered join; `GlobalCapTight` is intentionally violated
-  (tightness witness — `L` is the least upper bound). The proof fixes `L`
-  *within* a heartbeat (D-DAC-13). `Σ inflight ≤ L` is deliberately **not** an
-  invariant — in-flight is non-revocable and drains after a rebalance: liveness,
-  not safety (D-DAC-14).
+  active nodes, plus `Join`/`Leave`. The committed safety invariants are
+  **`GlobalCap`: `Σ active share ≤ L`** (which a stateless equal-split would violate
+  under a staggered join) and **`InflightCap`: `Σ active inflight ≤ L`**, both
+  intentionally tight (`GlobalCapTight` / `InflightCapTight` are violated — `L` is the
+  least upper bound). The proof fixes `L` *within* a heartbeat (D-DAC-13). **Scope:**
+  the spec is **synchronous** (no committed-vs-applied distinction), so `GlobalCap`
+  lifts to a hard invariant of the system but `InflightCap` is the synchronous-protocol
+  guarantee only — the async system keeps a bounded, self-draining `Σ inflight`
+  residual from grant-reply + reporting lag (D-DAC-14 / the spec's SCOPE note); a hard
+  async bound would need acknowledged handoff (deferred).
 
 - **`research/bigger-bets/distributed-adaptive-concurrency/DESIGN.md`
-  (TK-1314)** — design lock; 17 decision records D-DAC-1..D-DAC-17. Lit
+  (TK-1314)** — design lock; 18 decision records D-DAC-1..D-DAC-18. Lit
   synthesis citing Netflix `concurrency-limits` (Gradient2), Google SRE
   adaptive throttling, Chubby/ZooKeeper lease-based semaphores, and TCP
   congestion control as distributed resource sharing.
@@ -110,12 +120,15 @@ performance this release — identical API and behavior; see *Performance* below
 ### Tested
 
 - **BFS twin** at `test/concurrency/distributed-leasing-model.test.ts`
-  (TK-1316) — the `GaleHeartbeatLeasing` transition system in TS (the `active`
-  set, the budget-capped `Reallocate`, `Join`/`Leave`); exhaustively enumerates
-  all reachable states for `Nodes={n1,n2}, L=4`, asserts `TypeOK` + **`GlobalCap`**
-  on every state, pins the distinct-state count (`64`), witnesses the
-  `GlobalCapTight` violation, and asserts at least one transition is a `Join`
-  (membership growth observably covered). TLC parity is pending a Java env.
+  (TK-1316) — the `GaleHeartbeatLeasing` **synchronous** transition system in TS (the
+  `active` set, the occupancy-capped `Reallocate`, `Join`/`Leave`); exhaustively
+  enumerates all reachable states for `Nodes={n1,n2}, L=4`, asserts `TypeOK` +
+  **`GlobalCap` + `InflightCap`** on every state, pins the distinct-state count
+  (`76`), witnesses the `GlobalCapTight` / `InflightCapTight` violations (both tight at
+  `L`), and asserts at least one transition is a `Join` (membership growth observably
+  covered). Both caps are guarantees of the **synchronous** model the twin enumerates;
+  the async-system `Σ inflight` residual is the property suite's job (below). TLC
+  parity is pending a Java env.
 
 - **Property test** at `test/concurrency/distributed-invariant.test.ts`
   (TK-1316, fast-check) — random fleets (2-6 nodes), random `lLocal` reports,
@@ -124,8 +137,11 @@ performance this release — identical API and behavior; see *Performance* below
   **`GlobalCap`** — `Σ` of coordinator-committed shares `≤ lGlobal` (read via
   `peek()`) at every step, the exact over-commitment the budget cap fixes; a
   shrink-biased sub-scenario provably enters the in-flight drain transient (a
-  coverage assertion fails if it never does). `Σ inflight ≤ lGlobal` is not
-  asserted as a hard invariant (drain-lag, D-DAC-14).
+  coverage assertion fails if it never does). `Σ inflight ≤ lGlobal` is **not**
+  asserted as a hard invariant of the async system; instead a deterministic scenario
+  pins the reviewer-found async reply-lag residual (a parked share-reduction lets
+  `Σ inflight` reach ~1.5× transiently, then only drain — bounded ≤ 2×, never a
+  runaway), so nobody re-introduces a false hard end-to-end claim (D-DAC-14 / D-DAC-18).
 
 - **Dual-path conformance** at
   `test/concurrency/coordinator-conformance.test.ts` (TK-1316, Redis-gated on

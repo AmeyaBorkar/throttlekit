@@ -141,6 +141,29 @@ d("coordinator dual-path conformance (TK-1316)", () => {
         ]);
       });
 
+      it("a peer's in-flight debt dominates the cap (D-DAC-18 max(share,inflight))", async () => {
+        // Drive n1 into DEBT (inflight > its granted share) so the cap reserves
+        // n1's INFLIGHT, not its smaller share — the only path where the
+        // occupancy term changes the grant. Both lLocal=10 ⇒ lGlobal=10 for
+        // median AND min, so the case is aggregate-agnostic.
+        //   1. n1 solo               → share 10
+        //   2. n2 joins              → share 0  (n1 still holds 10)
+        //   3. n1 re-splits          → share 5
+        //   4. n1 reports inflight 9 → share 5 (stored inflight=9 > share=5: debt)
+        //   5. n2 heartbeats         → reserve max(n1.share=5, n1.inflight=9)=9 ⇒
+        //                              share = min(target 5, 10−9) = 1.
+        // Share-only (the pre-D-DAC-18 cap) would have granted n2 = 5 here; both
+        // coordinators must now agree on 1, which only the inflight term yields —
+        // so this case fails if the Lua `fieldInflight` extraction is wrong.
+        await expectConformant("debt-dominates", [
+          { nodeId: "n1", lLocal: 10, inflight: 0 },
+          { nodeId: "n2", lLocal: 10, inflight: 0 },
+          { nodeId: "n1", lLocal: 10, inflight: 0 },
+          { nodeId: "n1", lLocal: 10, inflight: 9 },
+          { nodeId: "n2", lLocal: 10, inflight: 0 },
+        ]);
+      });
+
       it("three nodes with distinct lLocal — exercises median vs min divergence", async () => {
         // live lLocal {6,10,14}: median (lower median) = 10; min = 6.
         // The two coordinators must AGREE with each other for the chosen

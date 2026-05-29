@@ -23,10 +23,10 @@
  * evicts expired fields, aggregates the live `lLocal` values into `lGlobal`
  * (`min` or lower-`median`, per the `aggregate` arg — DESIGN §7), computes this
  * node's equal-split TARGET across the sorted live nodeIds (DESIGN §6), CAPS the
- * grant at the budget not committed to other live nodes
- * (`max(0, min(target, lGlobal − Σ other shares))` — D-DAC-17), stores the
- * capped share back, and returns this node's `{share, lGlobal, N}`. All
- * arithmetic is integer.
+ * grant at the budget no other live node is currently HOLDING
+ * (`max(0, min(target, lGlobal − Σ_other max(share, inflight)))` — D-DAC-17 for
+ * the `share` term / D-DAC-18 for the `inflight` term), stores the capped share
+ * back, and returns this node's `{share, lGlobal, N}`. All arithmetic is integer.
  *
  * This is the Lua transcription of `TestConcurrencyCoordinator`'s reference
  * algorithm (DESIGN §10.1); the two MUST return identical `{share, lGlobal,
@@ -74,8 +74,9 @@ export interface RedisConcurrencyCoordinatorOptions {
  *
  * Per-node field value is four space-joined integers
  * `"lLocal inflight expiresAt share"`; `share` is the value this node's last
- * grant returned (0 for a first-seen node), carried forward so the budget cap
- * below sees what every other live node currently holds (D-DAC-17).
+ * grant returned (0 for a first-seen node) and `inflight` its last-reported
+ * in-flight count, both carried forward so the budget cap below sees what every
+ * other live node currently holds — `max(share, inflight)` (D-DAC-17 + D-DAC-18).
  *
  * Returns: { share, lGlobal, N } as a flat array (all integers).
  */
@@ -103,6 +104,7 @@ local flat = redis.call('HGETALL', KEYS[1])
 local limits = {}
 local ids = {}
 local sharesById = {}
+local inflightById = {}
 local maxExpiresAt = 0
 for i = 1, #flat, 2 do
   local id = flat[i]
@@ -111,6 +113,7 @@ for i = 1, #flat, 2 do
   local sp2 = string.find(val, ' ', sp1 + 1, true)
   local sp3 = string.find(val, ' ', sp2 + 1, true)
   local fieldLLocal = tonumber(string.sub(val, 1, sp1 - 1))
+  local fieldInflight = tonumber(string.sub(val, sp1 + 1, sp2 - 1))
   local fieldExpiresAt = tonumber(string.sub(val, sp2 + 1, sp3 - 1))
   local fieldShare = tonumber(string.sub(val, sp3 + 1))
   if fieldExpiresAt < now then
@@ -120,6 +123,7 @@ for i = 1, #flat, 2 do
     limits[#limits + 1] = fieldLLocal
     ids[#ids + 1] = id
     sharesById[id] = fieldShare
+    inflightById[id] = fieldInflight
     if fieldExpiresAt > maxExpiresAt then maxExpiresAt = fieldExpiresAt end
   end
 end
@@ -146,11 +150,21 @@ for i = 1, N do
 end
 local target = base + (rank < rem and 1 or 0)
 
--- 5. CAP the grant at the budget not currently committed to OTHER live nodes,
---    so Sum(share) <= lGlobal holds under any heartbeat interleaving (D-DAC-17).
+-- 5. CAP the grant at the budget no OTHER live node is currently HOLDING:
+--    reserve each peer's max(share, inflight), not just share (D-DAC-18). A
+--    peer's in-flight is non-revocable, so until it drains that capacity is
+--    occupied and is not re-granted to a joiner. The share term keeps
+--    Sum(share) <= lGlobal (D-DAC-17); the inflight term ELIMINATES the
+--    synchronous rebalance overshoot (hard in the synchronous model; a bounded
+--    async residual remains — DESIGN section 9.3 / D-DAC-18). Steady state
+--    (inflight==share) == the share-only cap.
 local others = 0
 for i = 1, N do
-  if ids[i] ~= nodeId then others = others + sharesById[ids[i]] end
+  if ids[i] ~= nodeId then
+    local s = sharesById[ids[i]]
+    local f = inflightById[ids[i]]
+    others = others + (s > f and s or f)
+  end
 end
 local share = lGlobal - others
 if target < share then share = target end
