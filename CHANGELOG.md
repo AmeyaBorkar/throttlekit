@@ -6,7 +6,28 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Acknowledged handoff for `distributedAdaptiveConcurrency` — an opt-in HARD
+  async `Σ inflight ≤ L_global` bound (D-DAC-19, TK-1330).** 0.10.0's occupancy cap
+  (D-DAC-18) eliminates the *synchronous* rebalance overshoot but leaves a bounded
+  (~1.5×), self-draining residual under async grant-reply + reporting lag. Setting
+  `acknowledgedHandoff: true` on `TestConcurrencyCoordinator` /
+  `RedisConcurrencyCoordinator` makes `Σ inflight ≤ L_global` a **hard instantaneous**
+  invariant: the coordinator reserves each peer `max(maxUnackedGrant, reported_inflight)`
+  — the largest share it issued that the peer has not confirmed superseding (the guard
+  echoes the grant **generation** it enforces, atomically with its in-flight) — so a
+  joiner is granted freed budget only once the incumbent confirms it lowered its applied
+  share AND drained. The overshoot becomes a **ramp delay** (≈1–2 heartbeats), not a
+  violation. **Default is off** (the D-DAC-18 occupancy cap — fastest ramp); enable it
+  for workloads that need a hard ceiling and tolerate the ramp latency. All
+  nodes/coordinators on a key must agree; enable only once every guard is upgraded (a
+  guard that doesn't echo the generation makes the coordinator over-reserve — safe).
+  Verified by `spec/GaleHeartbeatHandoff.tla` (TLC: hard + tight on 250,624 states), a
+  Java-free BFS twin (rule minimality + sufficiency + a torn-report negative test), the
+  1.5× property counterexample flipping to `≤ L_global`, and Test ≡ Redis dual-path.
+  Purely additive — `ConcurrencyReport` gains optional `seq`/`appliedGen`,
+  `ConcurrencyGrant` gains optional `gen`; existing behavior is unchanged when off.
 
 ## [0.10.0] — 2026-05-29
 

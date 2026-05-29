@@ -5,7 +5,8 @@
 > commit shape below is fixed. Implementers follow it literally — open
 > questions are confined to §14.
 >
-> Decision records: **D-DAC-1 .. D-DAC-18** in §13.
+> Decision records: **D-DAC-1 .. D-DAC-19** in §13 (D-DAC-19 = the opt-in
+> acknowledged-handoff async hard bound, §9.5 / `HARD-ASYNC-BOUND.md`).
 
 ---
 
@@ -90,8 +91,12 @@ the fleet's aggregate RTT signal**, not configured by hand. The gate must:
 > a runaway), the same eventual-consistency property as the rest of the distributed
 > library; the reproduced 1.5× counterexample is pinned as the property suite's
 > deterministic async reply-lag residual regression (§11.3). A hard *instantaneous*
-> async bound would need per-request coordination or acknowledged handoff (report the
-> applied share/seq + reserve it) — DEFERRED, not implemented (§9.3).
+> async bound is available as the **opt-in acknowledged handoff** (D-DAC-19,
+> `acknowledgedHandoff`, default off): the coordinator reserves each peer's
+> `max(maxUnackedGrant, reported_inflight)` — the max share it issued that the peer
+> has not confirmed superseding (via an echoed grant generation), closing the lag at
+> its root. TLC-verified hard + tight (`spec/GaleHeartbeatHandoff.tla`, 250,624
+> states); see §9.5 + `HARD-ASYNC-BOUND.md`. The cost is ramp latency, hence opt-in.
 >
 > What remains **liveness**-only is the **lease-expiry / outage residual**: a node
 > that TTL-expires, or runs `local-only` (the honest degraded mode), may keep serving
@@ -1029,6 +1034,42 @@ invariant of the system; the synchronous `InflightCap` does **not** — the asyn
 keeps the bounded, self-draining `Σ inflight` residual (§9.3), which the property suite
 (§11.3) exercises and pins as a deterministic regression instead.
 
+### 9.5 The async hard bound — acknowledged handoff (D-DAC-19, opt-in)
+
+The synchronous `InflightCap` is lifted to a **hard instantaneous** invariant of the
+**async** system by the opt-in **acknowledged handoff** (`acknowledgedHandoff`, default
+off). A second async spec, `spec/GaleHeartbeatHandoff.tla`, models the gap the
+synchronous spec abstracts away — committed-vs-applied share (grant-reply latency, a
+monotonic guard, out-of-order delivery), reporting lag, and non-revocable in-flight —
+and proves the reserve rule:
+
+```
+reserve_j = max( maxUnackedGrant_j , reported_inflight_j )
+```
+
+`maxUnackedGrant_j` is the largest share the coordinator has issued to `j` that `j` has
+not confirmed superseding (`j` echoes the grant **generation** it enforces; the
+coordinator bumps the generation only on a value change). The coordinator reserves on
+what **it itself issued** (lag-free), not on a laggy report — closing the reporting-lag
+hole the weaker `max(committed, reported_applied, reported_inflight)` rule leaves open.
+Both terms are **necessary** and the union **sufficient** (the BFS twin
+`distributed-async-leasing-model.test.ts` refutes each single-term rule — the
+committed-snapshot rule peaks at exactly 1.5×L — and proves the union hard + tight).
+
+**Verified.** TLC 2.19 (OpenJDK 17): `TypeOK + GlobalCap + InflightCap` hold on all
+**250,624** reachable states (`Nodes={n1,n2}`, `L=4`, `K=3`, depth 37, no error);
+`InflightCapTight` is violated (reaches `L`) ⇒ the bound is tight. The CI oracle is the
+Java-free BFS twin (minimality + sufficiency + a torn-report negative test pinning that
+the `(appliedGen, inflight)` report must be one atomic snapshot). The deterministic
+1.5× counterexample (§11.3) **flips** to `Σ inflight ≤ L_global` under handoff (real
+guard + coordinator; the joiner is held until the incumbent acks, then ramps — a delay,
+not a deadlock), and Test ≡ Redis dual-path covers the new field/rule. The cost is ramp
+latency (a joiner waits for incumbents' lowered grants to land AND be reported), hence
+opt-in; the D-DAC-18 occupancy cap stays the default. Full record:
+`HARD-ASYNC-BOUND.md`. (Running TLC also confirmed the 0.10.0 `GaleHeartbeatLeasing`
+spec at 76 distinct states = the BFS twin's pinned 76 — TLC parity, previously pending a
+Java env, now established for both specs.)
+
 ---
 
 ## 10. Coordinator wire semantics
@@ -1405,10 +1446,33 @@ isHealthy(): healthy   // toggled by setHealthy() for tests; when false, heartbe
   adversarial testing reproduced a 1.5× counterexample (fail-closed, constant
   `L_global`, both nodes live), now pinned as the property suite's deterministic
   async reply-lag residual regression (§11.3(d)). **A hard instantaneous async bound
-  would need per-request coordination or acknowledged handoff — report the *applied*
-  share/seq and reserve it — which is DEFERRED, not implemented.** The residual
-  liveness (lease-expiry/outage in-flight) is the D-DAC-14 note. Implemented in both
-  coordinators (§10.1/§10.2) + the guard (§8.2). User-approved, 2026-05-29.
+  is available as the opt-in acknowledged handoff (D-DAC-19), built + TLC-verified.**
+  The residual liveness (lease-expiry/outage in-flight) is the D-DAC-14 note.
+  Implemented in both coordinators (§10.1/§10.2) + the guard (§8.2). User-approved,
+  2026-05-29.
+
+- **D-DAC-19 — Acknowledged handoff ⇒ a HARD async `Σ inflight ≤ L_global` bound
+  (opt-in, default off).** Lifts the D-DAC-18 *synchronous* `InflightCap` to a hard
+  *instantaneous* invariant of the **async** system. The coordinator reserves each
+  peer `max(maxUnackedGrant_j, reported_inflight_j)`, where `maxUnackedGrant_j` is the
+  largest share it has issued to `j` that `j` has not confirmed superseding — `j`
+  echoes the grant **generation** it enforces (`appliedGen`, sampled atomically with
+  `inflight`), and the coordinator bumps the generation only on a value change (so a
+  stable value lets the peer catch up — no per-heartbeat ratchet — and resets the
+  reserve floor). It reserves on what the coordinator **itself issued** (lag-free),
+  not on a laggy report, closing the reporting-lag hole the weaker
+  `max(committed, reported_applied, reported_inflight)` rule leaves open. Both terms
+  are necessary, the union sufficient: the BFS twin
+  (`distributed-async-leasing-model.test.ts`) refutes each single-term rule (the
+  committed-snapshot rule peaks at exactly 1.5×L) and proves the union hard + tight;
+  `spec/GaleHeartbeatHandoff.tla` is TLC-verified (250,624 states, hard + tight, no
+  error). The 1.5× property counterexample (§11.3(d)) flips to `≤ L_global` under
+  handoff. Wire is additive (DR-14): `ConcurrencyReport.{seq,appliedGen}` +
+  `ConcurrencyGrant.gen`; the Redis field widens 4→7 ints (legacy values parse as 0).
+  Cost is ramp latency, so it is OPT-IN (`acknowledgedHandoff`); the D-DAC-18
+  occupancy cap stays the default. All nodes/coordinators on a key MUST agree; an
+  un-upgraded guard (no `appliedGen`) ⇒ the coordinator never resets that peer's floor
+  (the SAFE, over-reserving direction). See §9.5 + `HARD-ASYNC-BOUND.md`. TK-1330.
 
 1. **Demand-proportional allocation.** Replace equal-split with a leasing scheme
    that gives busy nodes more and idle nodes less, while preserving

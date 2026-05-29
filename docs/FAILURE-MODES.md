@@ -249,10 +249,15 @@ inferred global ceiling `L_global`, parcelled into per-node shares by a
 `max(share, inflight)`) plus monotonic grant application additionally **eliminate
 the synchronous / protocol-level rebalance overshoot** in `Σ inflight` — in steady
 state `Σ inflight → L_global`, and `InflightCap : Σ inflight ≤ L_global` holds on
-every reachable state of the synchronous model (D-DAC-18). They do **not** make
-`Σ inflight ≤ L_global` a hard *instantaneous* invariant of the async system: a
+every reachable state of the synchronous model (D-DAC-18). By default they do **not**
+make `Σ inflight ≤ L_global` a hard *instantaneous* invariant of the async system: a
 bounded (~1.5–2×), self-draining residual remains from grant-reply + reporting lag,
-and converges back as in-flight drains. The guard gates on `min(share,
+and converges back as in-flight drains. Setting `acknowledgedHandoff: true` on the
+coordinator (opt-in, D-DAC-19) makes it a **hard** instantaneous bound — the
+coordinator reserves each peer's max *un-acknowledged* grant (via an echoed grant
+generation) unioned with its reported in-flight, so a joiner waits until incumbents
+confirm they lowered AND drained; the cost is ~1–2 heartbeats of ramp latency
+(TLC-verified, `spec/GaleHeartbeatHandoff.tla`). The guard gates on `min(share,
 local.limit)`; `onCoordinatorOutage` (default `fail-closed`) decides what a
 coordinator outage means.
 
