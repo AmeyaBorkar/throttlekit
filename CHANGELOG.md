@@ -52,8 +52,13 @@ liveness-only / "not fixable"). **Minor** versioned: additive options + a new
 
 - **`distributedAdaptiveConcurrency` under `fail-closed` now self-fences by default**
   (D-DAC-21). A healthy node is unaffected (it never reaches its fence deadline); the
-  change closes the documented partition overshoot. Set `selfFence: false` to opt out, or
-  use `local-only` (which never self-fences). Behavior under `local-only` is unchanged.
+  change closes the documented partition overshoot. It adds **one clock read per
+  `acquire()`** while on (the time-based fence check — negligible for a network-bound
+  concurrency gate, and guarded by a single-clock-read test). A node whose heartbeats are
+  slow-but-successful (round-trip > the margin) will now shed where 0.10.x served — that
+  is `fail-closed`'s contract (never overshoot). Set `selfFence: false` for the 0.10.x
+  throw-only behavior, or use `local-only` (which never self-fences); `local-only` is
+  otherwise unchanged.
 - `HeartbeatScheduler` gains an optional `setTimer(fn, delayMs)` (one-shot timer) used by
   eager handoff. Existing schedulers keep working for the periodic-only default; a custom
   scheduler must add `setTimer` only if it enables `eagerHandoff`.

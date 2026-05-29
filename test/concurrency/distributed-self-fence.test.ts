@@ -146,6 +146,65 @@ describe("self-fencing — real guard (TK-1332, D-DAC-21)", () => {
     await guard.close();
   });
 
+  it("acquire() reads the clock AT MOST ONCE for the fence check (TK-P02 single-clock-read)", async () => {
+    // Guards the M1 fix: the fenced state is computed once per acquire and reused for both
+    // the onFenced edge-fire AND the gate — not via a second effectiveLimit()/isFenced().
+    let reads = 0;
+    let t = 0;
+    const counting = {
+      now(): number {
+        reads++;
+        return t;
+      },
+    };
+    const coord = new TestConcurrencyCoordinator({ clock: counting, aggregate: "min" });
+    const guard = distributedAdaptiveConcurrency({
+      coordinator: coord,
+      nodeId: "A",
+      key: KEY,
+      // local uses its OWN clock so only the guard's fence-check reads land on `counting`.
+      local: { minLimit: L, maxLimit: L, initialLimit: L, clock: new ManualClock(0) },
+      heartbeatMs: HB,
+      leaseTtlMs: TTL,
+      onCoordinatorOutage: "fail-closed", // selfFence default ON
+      clock: counting,
+      scheduler: nonFiring,
+    });
+    await guard.heartbeat();
+    t = 5000; // past the fence deadline ⇒ fenced
+    reads = 0;
+    guard.acquire(); // fenced ⇒ rejects; must read the fence clock exactly ONCE (was 2 pre-M1)
+    expect(reads, "fenced acquire reads the clock exactly once").toBe(1);
+    await guard.close();
+  });
+
+  it("eager-OFF + selfFence-OFF acquire does ZERO fence-clock reads (byte-identical hot path)", async () => {
+    let reads = 0;
+    const counting = {
+      now(): number {
+        reads++;
+        return 0;
+      },
+    };
+    const coord = new TestConcurrencyCoordinator({ clock: counting, aggregate: "min" });
+    const guard = distributedAdaptiveConcurrency({
+      coordinator: coord,
+      nodeId: "A",
+      key: KEY,
+      local: { minLimit: L, maxLimit: L, initialLimit: L, clock: new ManualClock(0) },
+      heartbeatMs: HB,
+      leaseTtlMs: TTL,
+      onCoordinatorOutage: "local-only", // selfFence default OFF
+      clock: counting,
+      scheduler: nonFiring,
+    });
+    await guard.heartbeat();
+    reads = 0;
+    for (let i = 0; i < 5; i++) guard.acquire();
+    expect(reads, "selfFence OFF ⇒ acquire never touches the guard clock").toBe(0);
+    await guard.close();
+  });
+
   it("rejects a non-integer / negative fenceSafetyMargin when self-fencing", () => {
     const clock = new ManualClock(0);
     const coord = new TestConcurrencyCoordinator({ clock });

@@ -223,9 +223,14 @@ draining the occupancy so the overshoot is closed end to end; non-cancellable in
 instead needs the margin to cover its max request duration. A healthy node (beats keep
 landing) **never** fences; `stats().fenced` exposes the state.
 
-**The assumption, made explicit (the load-bearing one): node↔coordinator clock skew ≤
-`fenceSafetyMargin`.** A timed-model gate (`distributed-self-fence-model.test.ts`)
-derives the exact requirement and refutes a smaller margin:
+**The assumption, made explicit (the load-bearing one): node↔coordinator clock
+divergence ≤ `fenceSafetyMargin`** — precisely, the max clock *offset* **plus** the
+*drift* accumulated over one `leaseTtlMs` (a fenced node's last good beat is ≤ one lease
+old, so that interval bounds the drift that matters). NTP keeps both to a few ms, so the
+default margin has orders of magnitude of headroom; the model below sweeps the offset
+term (the dominant one), and the drift term is covered by the same `margin ≥ divergence`
+inequality. A timed-model gate (`distributed-self-fence-model.test.ts`) derives the exact
+requirement and refutes a smaller margin:
 
 - with abort: `fenceSafetyMargin ≥ maxSkew` ⇒ zero overshoot for every skew ≤ maxSkew;
   a margin *below* maxSkew is **refuted** (overshoot reachable) — pinning the minimum;

@@ -108,19 +108,27 @@ export interface DistributedAdaptiveConcurrencyOptions {
    * Self-fencing enforces the lease on the node's OWN clock: it stops admitting at
    * `lastSuccessfulBeatExpiresAt − fenceSafetyMargin`, strictly BEFORE the
    * coordinator's reclaim, so peers never ramp into budget the node still holds.
-   * A healthy node (beats keep landing) NEVER fences. Assumption: bounded node↔
-   * coordinator clock skew ≤ {@link fenceSafetyMargin} (the standard lease
-   * assumption; FLP/CAP make this unavoidable without backend fence tokens). See
-   * `HARD-ASYNC-BOUND.md`, the timed gate `distributed-self-fence-model.test.ts`.
+   * A healthy node never fences **provided `leaseTtlMs − heartbeatMs` comfortably
+   * exceeds the heartbeat round-trip** — the default `leaseTtlMs = 2·heartbeatMs`
+   * gives a half-period of slack; do not set `leaseTtlMs` only marginally above
+   * `heartbeatMs` or an on-schedule node can fence transiently. Assumption: node↔
+   * coordinator clock divergence (offset + drift accumulated over one lease) ≤
+   * {@link fenceSafetyMargin} (the standard lease assumption; FLP/CAP make some such
+   * assumption unavoidable without backend fence tokens — which don't fit a fungible
+   * counting budget anyway). Adds one clock read per `acquire()` while on (the
+   * time-based fence check); set `selfFence: false` for the 0.10.x throw-only path.
+   * See `HARD-ASYNC-BOUND.md` §8, the timed gate `distributed-self-fence-model.test.ts`.
    */
   selfFence?: boolean;
   /**
-   * How long BEFORE the reported lease expiry the node self-fences, in ms — the
-   * slack that absorbs node↔coordinator clock skew (it MUST be ≥ your max skew, or
-   * the node can still be admitting when the coordinator reclaims). Only used when
-   * `selfFence` is on. Default `max(1, round((leaseTtlMs − heartbeatMs) / 2))` — the
-   * midpoint of the grace period between one missed beat and lease expiry, so a
-   * single slow beat never fences a healthy node.
+   * How long BEFORE the reported lease expiry the node self-fences, in ms — the slack
+   * that absorbs node↔coordinator clock divergence. It MUST be ≥ your max clock OFFSET
+   * **plus** the DRIFT accumulated over one `leaseTtlMs` (NTP keeps both tiny — a few
+   * ms — so the default has orders of magnitude of headroom), or the node can still be
+   * admitting when the coordinator reclaims. Only used when `selfFence` is on. Default
+   * `max(1, round((leaseTtlMs − heartbeatMs) / 2))` — the midpoint of the grace period
+   * between one missed beat and lease expiry, so a single slow beat never fences a
+   * healthy node.
    */
   fenceSafetyMargin?: number;
   /**
@@ -384,13 +392,31 @@ export function distributedAdaptiveConcurrency(
   }
 
   function acquire(): Lease {
-    // Self-fence check (D-DAC-21): fire onFenced on the transition; effectiveLimit→0 sheds.
-    if (selfFence) checkFence();
-    // Gate on min(share, local.limit). Both terms are ≤ local.limit, so whenever
-    // this admits, local.inflight < local.limit holds and local.acquire() is
-    // guaranteed to return ok:true (§4.2). On a closed gate, hand back a rejected
-    // lease that holds no slot.
-    if (local.inflight >= effectiveLimit()) {
+    // Compute the self-fence state at most ONCE per acquire (a single clock read — the
+    // TK-P02 single-clock-read-per-sync-check invariant; eager-OFF + selfFence-OFF does
+    // ZERO reads here, identical to 0.10.x). Reuse it for BOTH the onFenced edge-fire and
+    // the gate; do NOT also call effectiveLimit() (which would read the clock again).
+    let ceiling: number;
+    if (selfFence) {
+      const fenced = isFenced();
+      if (fenced) {
+        if (!fencedFired) {
+          fencedFired = true;
+          onFenced?.();
+        }
+        ceiling = 0; // self-fenced (D-DAC-21): shed before the coordinator reclaims
+      } else {
+        if (fencedFired) fencedFired = false;
+        ceiling = Math.min(share, local.limit);
+      }
+    } else {
+      ceiling = Math.min(share, local.limit);
+    }
+    // Gate on the ceiling (`min(share, local.limit)`, or 0 when fenced). Both share terms
+    // are ≤ local.limit, so whenever this admits, local.inflight < local.limit holds and
+    // local.acquire() is guaranteed to return ok:true (§4.2). On a closed gate, hand back
+    // a rejected lease that holds no slot.
+    if (local.inflight >= ceiling) {
       // Eager PULL (D-DAC-20): demand we can't satisfy while capped below fair share ⇒
       // peers are freeing budget ⇒ re-beat to claim it (debounced; no-op at steady state).
       if (eagerHandoff && belowFair()) scheduleEager();
