@@ -3,6 +3,7 @@ import { systemClock } from "../core/clock";
 import { ALLOW_FULL, combineDecisions } from "../core/combine";
 import { ThrottleKitError } from "../core/errors";
 import type { Clock, Decision, Limiter } from "../core/types";
+import { type FluidLpInput, solveFluidLp } from "./fluid-lp";
 import { type FusedAdmissionOptions, FusedDispatcher } from "./fused-lua";
 import { type LeaseAdmitter, leaseAsAdmission } from "./lease-shim";
 
@@ -35,6 +36,25 @@ export interface UnifiedAdmissionOptions {
   fused?: FusedAdmissionOptions;
   /** Injectable time source. Defaults to {@link systemClock}; forwarded to the lease shim. */
   clock?: Clock;
+  /**
+   * Admission policy. `"marginal"` (DEFAULT) = the 0.9.0 marginal-AND behavior
+   * (each axis allows independently). `"joint-lp"` = additionally apply a
+   * bid-price filter (admit iff `value ≥ p_R + p_C·cost`) on top of marginal
+   * feasibility — opt-in, research-backed (research/bigger-bets/joint-lp-admission).
+   * Strictly more selective than `"marginal"`: it only ever *removes* admits, so
+   * it cannot break any existing limit/safety property (D-JLP-5).
+   */
+  policy?: "marginal" | "joint-lp";
+  /**
+   * Required iff `policy: "joint-lp"`. Supply EXACTLY ONE of:
+   *  - `duals`: precomputed bid prices (you solved the LP elsewhere); or
+   *  - `workload`: a model the library solves once, at construction, via {@link solveFluidLp}.
+   * Requires a `cost` axis (the bid-price test is over the cost budget; D-JLP-11).
+   */
+  jointLp?: {
+    duals?: { rate: number; cost: number };
+    workload?: FluidLpInput;
+  };
 }
 
 /** Per-call options to {@link UnifiedAdmitter.admit} / {@link UnifiedAdmitter.admitSync}. */
@@ -49,6 +69,12 @@ export interface UnifiedAdmitOptions {
    * Defaults to 1.
    */
   cost?: number;
+  /**
+   * The request's value `vᵢ` for the joint-LP bid-price test. Ignored unless
+   * `policy: "joint-lp"`. Defaults to 1 (D-JLP-10) — a workload that doesn't set
+   * per-request value collapses joint-LP to a cost-threshold filter.
+   */
+  value?: number;
 }
 
 /** The result of one admit call. `release` is the lifecycle hook for the concurrency slot (or a no-op when denied). */
@@ -63,6 +89,13 @@ export interface UnifiedAdmission {
    * Idempotent: second and later calls do nothing.
    */
   release(opts?: { dropped?: boolean }): void;
+  /**
+   * True iff this admission was denied specifically by the joint-LP bid-price
+   * filter (every per-axis budget had slack, but `value < p_R + p_C·cost`).
+   * Absent/falsy under `policy: "marginal"` or any axis-bound denial. Lets the
+   * TK-1008 OTel `tk.binding_axis` attribute report `"policy"`.
+   */
+  policyDenied?: boolean;
 }
 
 /**
@@ -91,6 +124,17 @@ export interface UnifiedAdmitter {
 
 /** Shared no-op release — used by denied admissions where no slot is held. */
 const NOOP_RELEASE = (): void => {};
+
+/**
+ * Turn an all-axes-allowed snapshot into a joint-LP policy denial: flip `allowed`
+ * to false and zero `remaining`; preserve `limit`/`resetAt` so headers stay
+ * coherent. `retryAfterMs` is 0 — a bid-price rejection is value-based, not
+ * temporal, so there is nothing to wait for (retrying the identical request
+ * yields the same deny). The header renderer floors `Retry-After` at 1s anyway.
+ */
+function denyByPolicy(d: Decision): Decision {
+  return { ...d, allowed: false, remaining: 0, retryAfterMs: 0 };
+}
 
 /**
  * Compose three orthogonal admission axes (rate / concurrency / cost) into one
@@ -150,6 +194,37 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
     throw new ThrottleKitError(
       'unifiedAdmission: `fused` option group requires backend: "lua-fused"',
     );
+  }
+
+  // Joint-LP policy wiring (D-JLP-3/11). Resolve the static bid prices ONCE, at
+  // construction: either supplied directly (`duals`) or solved from a `workload`
+  // model via the zero-dep fluid-LP solver. `duals === undefined` ⇒ the bid-price
+  // gate is inert (the `"marginal"` default path is byte-for-byte unchanged).
+  const policy = options.policy ?? "marginal";
+  let duals: { rate: number; cost: number } | undefined;
+  if (policy === "joint-lp") {
+    // The bid-price test is over the cost budget (D-JLP-11). The cost axis is the
+    // top-level `cost` Limiter (sequential) OR `fused.cost` (lua-fused) — joint-LP
+    // composes over both backends (D-JLP-6).
+    if (cost === undefined && fused?.cost === undefined) {
+      throw new ThrottleKitError('unifiedAdmission: policy "joint-lp" requires a `cost` axis');
+    }
+    const jl = options.jointLp;
+    const hasDuals = jl?.duals !== undefined;
+    const hasWorkload = jl?.workload !== undefined;
+    if (hasDuals === hasWorkload) {
+      // both supplied, or neither
+      throw new ThrottleKitError(
+        'unifiedAdmission: policy "joint-lp" requires exactly one of `jointLp.duals` or `jointLp.workload`',
+      );
+    }
+    duals = hasDuals ? jl!.duals! : solveFluidLp(jl!.workload!).duals;
+  } else if (options.policy !== "marginal" && options.policy !== undefined) {
+    throw new RangeError(
+      `unifiedAdmission.policy: expected "marginal" | "joint-lp", got ${String(options.policy)}`,
+    );
+  } else if (options.jointLp !== undefined) {
+    throw new ThrottleKitError('unifiedAdmission: `jointLp` requires policy: "joint-lp"');
   }
 
   // Pre-build the concurrency-axis shim once. cheaper than re-wrapping per admit.
@@ -221,9 +296,32 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
     );
   }
 
+  /**
+   * The joint-LP bid-price filter (D-JLP-6). Inert unless `policy: "joint-lp"`
+   * is configured (`duals` defined). Runs AFTER every per-axis budget has allowed
+   * — so by the time it can deny, the combined snapshot is all-allow. Pure JS and
+   * backend-agnostic (works under sequential and lua-fused alike). Returns a
+   * policy-denial {@link UnifiedAdmission} (releasing the held slot) when the
+   * request's value doesn't clear `p_R + p_C·cost`, or `undefined` to let the
+   * admit finalize.
+   */
+  function applyPolicyGate(
+    value: number,
+    requestCost: number,
+    leaseRelease: ((opts?: { dropped?: boolean }) => void) | undefined,
+  ): UnifiedAdmission | undefined {
+    if (duals === undefined) return undefined;
+    const bid = duals.rate + duals.cost * requestCost;
+    if (value >= bid) return undefined;
+    // Value doesn't clear the budget's shadow price — deny by policy. Release the
+    // held concurrency slot (an upstream-style deny, not an overload drop).
+    leaseRelease?.({ dropped: false });
+    return { decision: denyByPolicy(combineSnapshot()), release: NOOP_RELEASE, policyDenied: true };
+  }
+
   return {
     async admit(opts?: UnifiedAdmitOptions): Promise<UnifiedAdmission> {
-      const { key = "", cost: requestCost = 1 } = opts ?? {};
+      const { key = "", cost: requestCost = 1, value = 1 } = opts ?? {};
       resetLast();
 
       // Step 1 — concurrency (synchronous, both backends).
@@ -251,7 +349,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
           // Combined Decision still folds in concurrency (which allowed; ALLOW_FULL-ish).
           return { decision: combineSnapshot(), release: NOOP_RELEASE };
         }
-        return finalize(leaseRelease);
+        return applyPolicyGate(value, requestCost, leaseRelease) ?? finalize(leaseRelease);
       }
 
       // Sequential path — rate (async).
@@ -275,11 +373,11 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
         }
       }
 
-      return finalize(leaseRelease);
+      return applyPolicyGate(value, requestCost, leaseRelease) ?? finalize(leaseRelease);
     },
 
     admitSync(opts?: UnifiedAdmitOptions): UnifiedAdmission {
-      const { key = "", cost: requestCost = 1 } = opts ?? {};
+      const { key = "", cost: requestCost = 1, value = 1 } = opts ?? {};
       resetLast();
 
       // The lua-fused path is inherently async (Redis EVALSHA round-trip), so
@@ -318,7 +416,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
         }
       }
 
-      return finalize(leaseRelease);
+      return applyPolicyGate(value, requestCost, leaseRelease) ?? finalize(leaseRelease);
     },
 
     lastDecisions(): Readonly<Record<UnifiedAxis, Decision | undefined>> {

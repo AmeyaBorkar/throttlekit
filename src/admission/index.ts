@@ -1056,3 +1056,14 @@ export type {
   FusedCostConfig,
   FusedRateConfig,
 } from "./fused-lua";
+
+// ── Primitive 9: solveFluidLp (joint-LP bid prices for unifiedAdmission, TK-1320) ───────────────
+
+/**
+ * Zero-dep solver for the two-budget fluid LP that backs `unifiedAdmission`'s
+ * opt-in `policy: "joint-lp"`. Returns the bid prices (LP duals) used by the
+ * bid-price admission filter `value ≥ p_R + p_C·cost`. See
+ * `research/bigger-bets/joint-lp-admission/DESIGN.md`.
+ */
+export { solveFluidLp } from "./fluid-lp";
+export type { FluidLpInput, FluidLpSolution, WorkloadType } from "./fluid-lp";

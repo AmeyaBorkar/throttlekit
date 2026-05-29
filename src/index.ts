@@ -134,6 +134,7 @@ export {
   leaseAsAdmission,
   learnedReservation,
   predictiveReservation,
+  solveFluidLp,
   tokenBudget,
   unifiedAdmission,
   weightedFairShare,
@@ -146,6 +147,8 @@ export type {
   DistributedTokenBudgetOptions,
   FairShareLimiter,
   FairShareOptions,
+  FluidLpInput,
+  FluidLpSolution,
   FusedAdmissionOptions,
   FusedAdmissionResult,
   FusedCostConfig,
@@ -166,4 +169,5 @@ export type {
   UnifiedAxis,
   WeightedFairShareLimiter,
   WeightedFairShareOptions,
+  WorkloadType,
 } from "./admission";
