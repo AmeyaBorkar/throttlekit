@@ -6,6 +6,15 @@ twin; implemented in both coordinators (Test + Redis) with dual-path conformance
 This doc records the scoping, the **corrected** reserve rule (the rule first
 proposed below in §2 was *refuted* by model-checking — see §4), and the result.
 
+> **Completed end to end (TK-1331 / TK-1332).** §1–§6 close the bound for *live,
+> cooperating* nodes at a ramp-latency cost. **§7 (eager handoff, D-DAC-20)** removes
+> that cost — the bound stays hard, the ramp drops to the physical floor. **§8
+> (self-fencing, D-DAC-21)** closes the one remaining residual — a crashed/partitioned
+> node's in-flight — under the standard bounded-clock-skew assumption, and states the
+> FLP/CAP frontier honestly. Together: a hard `Σ inflight ≤ L_global` with near-floor
+> ramp for live nodes and a closed partition case, no asterisks beyond a stated,
+> universal timing assumption.
+
 **Context.** 0.10.0 shipped the **occupancy cap** (D-DAC-18): the coordinator
 reserves each peer's `max(share, inflight)`, and the guard applies grants
 monotonically. This **eliminates the synchronous / protocol-level rebalance
@@ -135,3 +144,121 @@ the **default** — acknowledged handoff *builds on* it (still reserves occupanc
 the `reported_inflight` term; adds the un-acked-grant confirmation). `GlobalCap` is
 unchanged and remains hard. The honest 0.10.0 contract (synchronous-hard + bounded
 async residual) is the floor; this lifts the async case to **hard** at a latency cost.
+
+## 7. Removing the latency cost — eager (event-driven) handoff (D-DAC-20, TK-1331)
+
+The §3 cost (ramp latency, ~1–2 heartbeats) is **not fundamental** — it is an artifact
+of *batching the budget transfer onto the periodic heartbeat tick*. This is the
+Doorman / Kubernetes-APF poll shape; credit-based flow control (InfiniBand FCP, HTTP/2
+`WINDOW_UPDATE`) and watch-based semaphores (ZooKeeper/Chubby/etcd) escape it by moving
+the transfer onto the **release event**. We do the same, **guard-side only** (opt-in
+`eagerHandoff: true`): the guard fires an OFF-CYCLE heartbeat the instant local state
+shows the allocation is stale:
+
+- **PULL** — the node is capped *below its fair share* (`share < ⌊lGlobal/nodes⌋`,
+  computed from the already-returned `lGlobal`/`nodes` — **no new wire field**). It has
+  demand it can't satisfy and budget is coming, so it re-beats to claim it. (Probing
+  only *below fair* — not merely "blocked by share" — is what the model proved
+  necessary: a node *at* its fair share is always blocked-by-share, so the naive signal
+  loops forever at steady state.)
+- **PUSH** — an incumbent's in-flight drains to ≤ its (lowered) share with capacity it
+  has not yet reported. It re-beats so peers can claim the freed budget now.
+- **ACK** — the node applied a grant whose generation changed (a lowered share). Under
+  acknowledged handoff the coordinator reserves the node's un-acked-high grant until it
+  confirms; the node re-beats promptly to confirm. (The model showed this is the
+  load-bearing trigger: without it, an incumbent that lowered but isn't draining sits on
+  its un-acked grant until its next *periodic* beat, starving the joiner.)
+
+Off-cycle beats are **debounced** to ≥ `minHeartbeatMs` apart, coalesced through ONE
+pending timer — so steady state adds **zero** beats; the burst is transient, during a
+rebalance only.
+
+**Why it is safe for free.** Eager beats add no new action — an off-cycle beat is just a
+`Report`/`Reallocate` at a different *time*. The §4–§5 async model (BFS twin + TLC)
+quantifies over **every** interleaving of those actions and proves `Σ inflight ≤ L` on
+every reachable state. So any eager execution is a path the model already covers — the
+hard bound is preserved with no new proof obligation. What changes is *liveness*.
+
+**Verification (the liveness win).** A phase-swept sim of the REAL guard + coordinator
+(`distributed-eager-handoff.test.ts`) sweeps the joiner's arrival across a heartbeat
+period and measures ramp-to-fair:
+
+- periodic-only ramp is a **flat ~2× heartbeat** (one beat for the incumbent to report
+  the drain, one for the joiner to pick up);
+- eager removes the **entire second beat**: mean ≈ ½ heartbeat + drain, **floor ≈ drain
+  + one round-trip** (≪ a heartbeat);
+- `Σ inflight ≤ L` at **every** phase, eager or not (the safety regression guard).
+
+**The irreducible floor (stated honestly).** When the fleet is *saturated*, a new
+admission must wait for an in-flight op to complete somewhere — that is Little's Law, the
+definition of the cap, not a tunable. Eager handoff drives the *signaling* term to its
+minimum but cannot remove that physical wait. The one residual *protocol* term is the
+pull-model **"incumbent discovers it should lower on its next beat"** ([drain+RTT,
+heartbeat], avg ½ heartbeat) — shrinkable via `heartbeatMs` (cheap, since eager fires
+only during transients). A coordinator→incumbent **push** (Redis pub/sub) would remove
+even that; documented as future, **not** claimed here.
+
+**The pitch-perfect config** is therefore `{ acknowledgedHandoff: true, eagerHandoff:
+true }`: a hard `Σ inflight ≤ L_global` bound **and** a near-floor ramp — the two
+properties the 0.10.1 toggle forced you to choose between, now both.
+
+## 8. Closing the partition residual — self-fencing (D-DAC-21, TK-1332)
+
+The last residual (D-DAC-14): a crashed or network-partitioned node keeps serving its
+already-accepted in-flight, and in 0.10.x kept *admitting* against its last-known share
+until a heartbeat **threw** — but a partition **hangs** rather than throwing, so the
+node over-admitted for the whole partition while the coordinator reassigned its budget
+(`Σ inflight > L_global`, bounded by the budget but persistent — the unreachable node
+never learns). 0.10.x documented this as liveness-only / effectively unfixable. **It is
+fixable** — under a clearly-stated, standard assumption.
+
+**Self-fencing (default ON under `fail-closed`).** The node enforces its lease on its
+**own clock**: it stops admitting (`effectiveLimit → 0`) at `lastSuccessfulBeatExpiresAt
+− fenceSafetyMargin`, strictly *before* the coordinator's reclaim. This is family-2 lease
+self-expiry — Chubby's jeopardy/grace, Kubernetes' `leaseDuration > renewDeadline`.
+Crucially it triggers on **elapsed silence**, not on a beat *failing* — which is exactly
+what a partition produces (a hang), and exactly what 0.10.x's throw-driven fail-closed
+missed. An `onFenced` hook lets the app **abort** in-flight (e.g. `AbortController`),
+draining the occupancy so the overshoot is closed end to end; non-cancellable in-flight
+instead needs the margin to cover its max request duration. A healthy node (beats keep
+landing) **never** fences; `stats().fenced` exposes the state.
+
+**The assumption, made explicit (the load-bearing one): node↔coordinator clock skew ≤
+`fenceSafetyMargin`.** A timed-model gate (`distributed-self-fence-model.test.ts`)
+derives the exact requirement and refutes a smaller margin:
+
+- with abort: `fenceSafetyMargin ≥ maxSkew` ⇒ zero overshoot for every skew ≤ maxSkew;
+  a margin *below* maxSkew is **refuted** (overshoot reachable) — pinning the minimum;
+- without abort: `fenceSafetyMargin ≥ maxSkew + maxReq` (the un-aborted in-flight must
+  drain before reclaim) ⇒ zero overshoot; `= maxSkew` is **refuted**.
+
+Default margin `(leaseTtlMs − heartbeatMs)/2`, so one slow beat never fences a healthy
+node. Default OFF under `local-only` (which deliberately serves through an outage). The
+real-guard suite (`distributed-self-fence.test.ts`) proves the headline end to end: A
+self-fences + aborts *before* the coordinator reclaims ⇒ B takes over with `Σ inflight ≤
+L` (vs the documented overshoot with `selfFence: false`).
+
+### Why not fence tokens — and the honest impossibility frontier
+
+Fence tokens (Kleppmann) are the *clock-free* alternative for the partition problem, and
+the natural question is why we don't ship them. **They fence a *discrete* resource** —
+the backend rejects any request carrying a token below the highest it has seen, ordering
+successive holders of one lock. This budget is a **fungible, counting** resource (`L`
+interchangeable slots across `N` holders); a partitioned node's budget is reassigned
+*fungibly* to peers, with no discrete chain-of-custody for a token to order. To bound a
+*count* with fencing you need a **count-aware admission point at the backend** (a
+distributed semaphore keyed on lease validity) — which is a different architecture
+(resource-side enforcement, duplicating the gateway limiter), and which the library
+cannot provide because it does not control the backend. Self-fencing is the **gateway-side
+fit**, which is what this library is.
+
+The frontier is therefore precise, and it is a **theorem, not a tradeoff we chose**: with
+**neither** a timing assumption (self-fencing) **nor** backend cooperation (resource-side
+fencing) — pure asynchrony, a dumb backend, an unreachable node — bounding `Σ inflight ≤
+L_global` across a partition is **provably impossible** (FLP: a slow node and a dead node
+are indistinguishable; Two Generals: you cannot get an acknowledgement across a partition;
+CAP: under a partition you trade C or A). You cannot revoke work from a node you can
+neither reach nor detect. "No tradeoff" means giving every *satisfiable* deployment a path
+— self-fencing for the (universal) bounded-clock case, resource-side admission for those
+who can cooperate at the backend — and stating the impossible case as the mathematics it
+is.

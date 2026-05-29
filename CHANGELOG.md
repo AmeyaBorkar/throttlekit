@@ -6,7 +6,57 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+**The complete instantaneous hard bound, end to end — eager handoff (D-DAC-20) +
+self-fencing (D-DAC-21).** 0.10.0 (occupancy cap) + 0.10.1 (acknowledged handoff) made
+`Σ inflight ≤ L_global` a hard bound for *live, cooperating* nodes — but at two costs
+this release removes: the handoff's **ramp-latency tradeoff** (~2 heartbeats), and the
+**partition overshoot** a crashed/silent node caused (the residual 0.10.x documented as
+liveness-only / "not fixable"). **Minor** versioned: additive options + a new
+`stats().fenced` field, plus one safe behavior refinement (self-fencing defaults ON under
+`fail-closed`, closing a documented overshoot — healthy nodes are unaffected).
+
+### Added
+
+- **Eager (event-driven) handoff — hard bound at NEAR-FLOOR ramp (D-DAC-20, TK-1331).**
+  Opt-in `eagerHandoff: true` on `distributedAdaptiveConcurrency`. Acknowledged handoff
+  (0.10.1) makes the bound hard but costs ~2 heartbeats of ramp latency because the
+  budget transfer is *batched onto the periodic tick*. Eager handoff fires OFF-CYCLE
+  beats the instant local state shows the allocation is stale — **PULL** (capped below
+  fair share, from already-returned `lGlobal`/`nodes` — no wire change), **PUSH** (drained
+  below the lowered share), **ACK** (applied a generation-changing grant) — collapsing the
+  ramp toward the physical floor (drain + one round-trip) with **ZERO loosening of the
+  bound**. Guard-side only, so it is safe by the existing exhaustive async model (an
+  off-cycle beat is just a `Report`/`Reallocate` at a different time). Debounced to
+  `minHeartbeatMs`, so steady state adds zero beats. Pairs with `acknowledgedHandoff` for
+  the "pitch-perfect" config `{ acknowledgedHandoff: true, eagerHandoff: true }`. Requires
+  a scheduler with `setTimer` (the default has it). Verified: phase-swept real-guard sim
+  (eager mean ramp ≪ periodic's flat 2×heartbeat; `Σ inflight ≤ L` at every phase),
+  trigger/steady-state/compat unit tests, Redis dual-path.
+- **Self-fencing — closes the partition / lease-expiry in-flight overshoot (D-DAC-21,
+  TK-1332).** A crashed or partitioned node cannot heartbeat, but in 0.10.x kept admitting
+  against its last-known share until a beat *threw* — and a partition HANGS, so the node
+  over-admitted for the whole partition while the coordinator reassigned its budget
+  (`Σ inflight > L_global`). Self-fencing enforces the lease on the node's OWN clock: it
+  stops admitting at `lastSuccessfulBeatExpiresAt − fenceSafetyMargin`, strictly BEFORE the
+  coordinator's reclaim. New options: `selfFence` (default `true` under `fail-closed`,
+  `false` under `local-only`), `fenceSafetyMargin` (default `(leaseTtlMs − heartbeatMs)/2`;
+  MUST be ≥ your max node↔coordinator clock skew), `onFenced` (a hook to abort in-flight,
+  e.g. `AbortController`, draining the occupancy so the overshoot is closed end to end).
+  `stats()` gains `fenced: boolean`. A healthy node never fences. **Assumption (explicit):
+  bounded clock skew** — the standard lease assumption (Chubby jeopardy/grace, K8s
+  `leaseDuration > renewDeadline`); FLP + Two Generals + CAP make some assumption
+  unavoidable. Verified by a timed-model gate (derives the exact margin, refutes a smaller
+  one) + a real-guard suite incl. the headline no-overshoot-on-takeover integration.
+
+### Changed
+
+- **`distributedAdaptiveConcurrency` under `fail-closed` now self-fences by default**
+  (D-DAC-21). A healthy node is unaffected (it never reaches its fence deadline); the
+  change closes the documented partition overshoot. Set `selfFence: false` to opt out, or
+  use `local-only` (which never self-fences). Behavior under `local-only` is unchanged.
+- `HeartbeatScheduler` gains an optional `setTimer(fn, delayMs)` (one-shot timer) used by
+  eager handoff. Existing schedulers keep working for the periodic-only default; a custom
+  scheduler must add `setTimer` only if it enables `eagerHandoff`.
 
 ## [0.10.1] — 2026-05-29
 

@@ -257,14 +257,23 @@ coordinator (opt-in, D-DAC-19) makes it a **hard** instantaneous bound — the
 coordinator reserves each peer's max *un-acknowledged* grant (via an echoed grant
 generation) unioned with its reported in-flight, so a joiner waits until incumbents
 confirm they lowered AND drained; the cost is ~1–2 heartbeats of ramp latency
-(TLC-verified, `spec/GaleHeartbeatHandoff.tla`). The guard gates on `min(share,
-local.limit)`; `onCoordinatorOutage` (default `fail-closed`) decides what a
-coordinator outage means.
+(TLC-verified, `spec/GaleHeartbeatHandoff.tla`). **`eagerHandoff: true` (0.11.0,
+D-DAC-20) removes that cost** — the guard fires off-cycle beats on local triggers
+(below-fair / drained / generation-acked), collapsing the ramp toward the physical
+floor (drain + one round-trip) with no loosening of the bound; the "pitch-perfect"
+config is `{ acknowledgedHandoff: true, eagerHandoff: true }`. The guard gates on
+`min(share, local.limit)`; `onCoordinatorOutage` (default `fail-closed`) decides what
+a coordinator outage means. **Under `fail-closed`, `selfFence` (0.11.0, D-DAC-21,
+default ON) closes the partition/crash in-flight overshoot**: the node stops admitting
+on its OWN clock at `lastSuccessfulBeatExpiresAt − fenceSafetyMargin`, before the
+coordinator reclaims, and `onFenced` lets the app abort in-flight — eliminating the
+residual below (under the stated bounded-clock-skew assumption).
 
 | Condition | `fail-closed` (default) | `local-only` | Recovery |
 |---|---|---|---|
-| Coordinator unreachable | `share→0`, node sheds all (503) | `share→local.limit`, per-node self-limit; fleet may overshoot backend | Next successful heartbeat restores share |
-| Node crashes holding share | Its lease TTL (`2·heartbeatMs`) expires → coordinator reclaims; survivors' shares grow next heartbeat | same | Automatic within `leaseTtlMs` |
+| Coordinator unreachable (beat throws) | `share→0`, node sheds all (503) | `share→local.limit`, per-node self-limit; fleet may overshoot backend | Next successful heartbeat restores share |
+| **Node PARTITIONED** (alive, beats hang — still serving in-flight) | **Self-fences** (D-DAC-21): stops admitting on its own clock at `expiresAt − fenceSafetyMargin`, before the coordinator reclaims; `onFenced` aborts in-flight ⇒ **no `Σ inflight` overshoot** (under skew ≤ margin). Without self-fence (`local-only`, or `selfFence:false`) it keeps serving ⇒ bounded-by-`leaseTtlMs` overshoot | `local-only`: keeps serving (availability over bound — overshoot bounded by the partition) | A successful beat un-fences; lease re-leased |
+| Node crashes holding share (dead) | Its in-flight dies with it (no overshoot); lease TTL (`2·heartbeatMs`) expires → coordinator reclaims; survivors' shares grow next heartbeat | same | Automatic within `leaseTtlMs` |
 | `L_global` shrinks (backend degraded) / rebalance | Over-allocated nodes admit nothing new; in-flight drains; `Σ inflight → L_global`. The occupancy cap (D-DAC-18) eliminates the **synchronous** rebalance overshoot (a joiner is granted 0 until peers drain); the async system keeps a bounded (~1.5–2×) self-draining `Σ inflight` residual from grant/report lag — never a runaway | same | Convergence as in-flight drains, within max request duration (§9.3) |
 | Node JOINS (membership growth, `L_global` constant) | Budget cap gives the joiner `min(target, L_global − Σ_incumbent max(share, inflight)) = 0` until incumbents re-heartbeat DOWN to their fair shares AND drain; `Σ granted shares ≤ L_global` preserved at every instant (no over-commitment), robust even if the joiner re-heartbeats first. `Σ inflight` holds synchronously; the async path keeps the same bounded, self-draining residual (above) | same | Joiner earns its `≈ L/N` share over the next ≈ N heartbeats |
 | Stale share (between heartbeats) | Node may admit up to a now-too-large share for ≤ `heartbeatMs`; bounded by `min(share, local.limit)` fast-shrink | same | Smaller `heartbeatMs` trades coordinator load for reaction speed |

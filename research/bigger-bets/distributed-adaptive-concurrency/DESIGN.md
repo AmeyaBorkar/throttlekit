@@ -5,8 +5,11 @@
 > commit shape below is fixed. Implementers follow it literally — open
 > questions are confined to §14.
 >
-> Decision records: **D-DAC-1 .. D-DAC-19** in §13 (D-DAC-19 = the opt-in
-> acknowledged-handoff async hard bound, §9.5 / `HARD-ASYNC-BOUND.md`).
+> Decision records: **D-DAC-1 .. D-DAC-21** in §13 (D-DAC-19 = the opt-in
+> acknowledged-handoff async hard bound, §9.5 / `HARD-ASYNC-BOUND.md`; D-DAC-20 =
+> eager event-driven handoff — hard bound at near-floor ramp, TK-1331; D-DAC-21 =
+> self-fencing — closes the lease-expiry / partition overshoot under bounded clock
+> skew, TK-1332).
 
 ---
 
@@ -1376,13 +1379,15 @@ isHealthy(): healthy   // toggled by setHealthy() for tests; when false, heartbe
   lag (the cap reserves a peer's *last-reported* in-flight) leave a bounded (~1.5–2×),
   self-draining `Σ inflight` residual — reproduced as the deterministic regression in
   §11.3(d). A hard instantaneous async bound would need acknowledged handoff (deferred).
-  Also genuinely liveness-only is the **lease-expiry / outage residual**: a node that
-  TTL-expires, or runs `local-only` (the honest degraded mode), may keep serving
-  in-flight the coordinator no longer budgets — bounded by `leaseTtlMs` (D-DAC-7 /
-  D-DAC-11), clamped by `min(share, local.limit)` (D-DAC-6), and identical to
-  single-node `adaptiveConcurrency` after its estimate drops. The per-node
+  The other residual was the **lease-expiry / outage residual**: a crashed/partitioned
+  node may keep serving in-flight the coordinator no longer budgets — bounded by
+  `leaseTtlMs` (D-DAC-7 / D-DAC-11), clamped by `min(share, local.limit)` (D-DAC-6).
+  **This is now CLOSED under bounded clock skew by self-fencing (D-DAC-21, default ON
+  under `fail-closed`):** the node stops admitting on its own clock before the
+  coordinator reclaims, and `onFenced` aborts its in-flight. Only `local-only` (which
+  opts into serving through an outage) retains it by design. The per-node
   `inflight[n] ≤ share[n]` debt-drain (one node over its freshly-cut share) still
-  occurs and still drains monotonically. See D-DAC-18 / §9.3.
+  occurs and still drains monotonically. See D-DAC-18 / D-DAC-21 / §9.3.
 - **D-DAC-15 — `nodeId` is required, no default.** Collisions corrupt the
   aggregate (toward under-admission — safe — but wrong); fail loud if absent.
 - **D-DAC-16 — Ship Test + Redis coordinators; defer Postgres.** Mirrors
@@ -1473,6 +1478,62 @@ isHealthy(): healthy   // toggled by setHealthy() for tests; when false, heartbe
   occupancy cap stays the default. All nodes/coordinators on a key MUST agree; an
   un-upgraded guard (no `appliedGen`) ⇒ the coordinator never resets that peer's floor
   (the SAFE, over-reserving direction). See §9.5 + `HARD-ASYNC-BOUND.md`. TK-1330.
+
+- **D-DAC-20 — Eager (event-driven) handoff ⇒ the acknowledged-handoff ramp latency
+  collapses toward the physical floor, with NO loosening of the bound (opt-in
+  `eagerHandoff`, default off).** D-DAC-19 makes `Σ inflight ≤ L_global` hard but at
+  ~2 heartbeats of ramp latency, because the budget transfer is *batched onto the
+  periodic tick* (the Doorman/APF poll shape; credit-flow-control and watch-semaphores
+  escape it by moving the transfer onto the *release event*). The guard fires OFF-CYCLE
+  beats on three purely-local triggers: **PULL** — capped below fair share
+  (`share < ⌊lGlobal/nodes⌋`, from already-returned telemetry — no new wire field);
+  **PUSH** — in-flight drained to ≤ the (lowered) share with un-reported freed capacity;
+  **ACK** — applied a grant whose generation changed (the incumbent confirms the lowered
+  share promptly, so the coordinator stops reserving its un-acked-high grant). Off-cycle
+  beats are debounced to ≥ `minHeartbeatMs` apart through ONE pending timer, so steady
+  state adds ZERO beats (the burst is transient, during a rebalance only). It is
+  **guard-side only — no coordinator/wire change** — so it is SAFE BY THE EXISTING
+  EXHAUSTIVE MODEL: an off-cycle beat is just a `Report`/`Reallocate` at a different
+  time, a subset of the interleavings the async twin (D-DAC-19) already proves
+  `Σ inflight ≤ L`. What it changes is *liveness*: a phase-swept real-guard sim shows
+  periodic-only ramp is a flat ~2×heartbeat, eager removes the entire second beat
+  (mean ≈ ½ heartbeat + drain; floor ≈ drain + one round-trip), `Σ inflight ≤ L` at
+  every phase. **The irreducible residual is the pull-model "incumbent discovers on its
+  next beat" term** ([drain+RTT, heartbeat]); a coordinator→incumbent PUSH would remove
+  it (future, not claimed). Pairs with `acknowledgedHandoff` for a hard bound at
+  near-floor ramp — the "pitch-perfect" config `{acknowledgedHandoff:true,
+  eagerHandoff:true}`. Requires `scheduler.setTimer` (added, optional). Verified by
+  `distributed-eager-handoff.test.ts` (swept ramp + trigger/steady-state/compat + Redis
+  dual-path) and `HARD-ASYNC-BOUND.md` §7. TK-1331.
+
+- **D-DAC-21 — Self-fencing ⇒ the lease-expiry / partition in-flight overshoot (the
+  D-DAC-14 residual once called "liveness-only / unfixable") is CLOSED under the standard
+  bounded-clock-skew assumption (default ON under `fail-closed`).** A crashed/partitioned
+  node cannot heartbeat, but in 0.10.x kept ADMITTING against its last-known share until a
+  beat *threw* — and a partition HANGS rather than throwing, so the node over-admitted for
+  the whole partition while the coordinator reassigned its budget (`Σ inflight > L_global`).
+  Self-fencing enforces the lease on the node's OWN clock: it stops admitting (the gate's
+  `effectiveLimit → 0`) at `lastSuccessfulBeatExpiresAt − fenceSafetyMargin`, strictly
+  BEFORE the coordinator's reclaim (this is family-2 lease self-expiry — Chubby
+  jeopardy/grace, K8s `leaseDuration > renewDeadline`). The `onFenced` hook lets the app
+  ABORT in-flight (e.g. `AbortController`), draining the occupancy so the overshoot is
+  closed end to end (non-cancellable in-flight instead needs the margin to cover its max
+  duration). A healthy node (beats keep landing) NEVER fences; `stats().fenced` exposes the
+  state. **The assumption, made explicit (the load-bearing one): node↔coordinator clock
+  skew ≤ `fenceSafetyMargin`.** A timed-model gate (`distributed-self-fence-model.test.ts`)
+  derives the EXACT margin (`≥ maxSkew` with abort, `≥ maxSkew + maxReq` without) and
+  REFUTES a smaller one; the real-guard suite (`distributed-self-fence.test.ts`) shows a
+  silent node fences before reclaim, a healthy node never fences, onFenced fires once per
+  episode + on recovery, and the headline integration — A self-fences+aborts before reclaim
+  ⇒ B takes over with `Σ inflight ≤ L` (vs the documented overshoot with `selfFence:false`).
+  Default margin `(leaseTtlMs − heartbeatMs)/2` so one slow beat never fences a healthy
+  node; default OFF under `local-only` (which deliberately serves through an outage).
+  **Fence tokens (Kleppmann) are NOT the fit here** — they fence a *discrete* resource;
+  this budget is a *fungible counting* one with no discrete chain-of-custody for a token to
+  order. The clock-free alternative is resource-side count-aware admission (the backend's
+  job, a different architecture; documented). The unbounded-skew + uncooperative-backend
+  corner is **provably impossible** (FLP + Two Generals + CAP) — not a tradeoff, a theorem.
+  See `HARD-ASYNC-BOUND.md` §8. TK-1332.
 
 1. **Demand-proportional allocation.** Replace equal-split with a leasing scheme
    that gives busy nodes more and idle nodes less, while preserving
