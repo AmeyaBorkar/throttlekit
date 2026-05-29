@@ -392,6 +392,11 @@ export function distributedAdaptiveConcurrency(
   }
 
   function acquire(): Lease {
+    // A closed guard has left the fleet (close() ran leave()): admit nothing. Without
+    // this, acquire() kept admitting against the last-known `share` until the lease
+    // TTL elapsed — a budget the coordinator may already have reassigned. Short-circuit
+    // before any clock read, so a closed guard does zero work (TK-P02-friendly).
+    if (closed) return { ok: false, release: NOOP_RELEASE };
     // Compute the self-fence state at most ONCE per acquire (a single clock read — the
     // TK-P02 single-clock-read-per-sync-check invariant; eager-OFF + selfFence-OFF does
     // ZERO reads here, identical to 0.10.x). Reuse it for BOTH the onFenced edge-fire and

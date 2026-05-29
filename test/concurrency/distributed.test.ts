@@ -565,4 +565,34 @@ describe("distributedAdaptiveConcurrency (§11.1)", () => {
       await guard.close();
     });
   });
+
+  describe("closed guard rejects (0.11.1 fix)", () => {
+    it("acquire() denies after close() — no admitting against a stale share", async () => {
+      const clock = new ManualClock(0);
+      const coord = new TestConcurrencyCoordinator({ aggregate: "min", clock });
+      const guard = distributedAdaptiveConcurrency({
+        coordinator: coord,
+        nodeId: "node-a",
+        key: "backend",
+        local: { minLimit: 10, maxLimit: 10, initialLimit: 10 },
+        clock,
+        scheduler: new FakeScheduler(),
+        // local-only ⇒ share = local.limit even without a neighbour, so the open
+        // guard admits; the point is what happens AFTER close().
+        onCoordinatorOutage: "local-only",
+      });
+      await guard.heartbeat();
+      const open = guard.acquire();
+      expect(open.ok).toBe(true); // open guard admits against its share
+      open.release();
+
+      await guard.close();
+
+      // After close() the node has left the fleet; it must admit NOTHING (previously
+      // it kept admitting against the last-known share until the lease TTL).
+      const afterClose = guard.acquire();
+      expect(afterClose.ok).toBe(false);
+      expect(guard.inflight).toBe(0); // a rejected lease holds no slot
+    });
+  });
 });
