@@ -1,9 +1,19 @@
-# Joint-LP admission policy — DESIGN (0.10.1)
+# Joint-LP admission policy — DESIGN (shipped 0.11.1)
 
-> Status: **design lock** (TK-1319). Implementation is TK-1320..TK-1323.
-> Ship is **conditional on DR-19** (ε ≥ 5%) — **MET**: TK-1007 measured
+> Status: **SHIPPED in 0.11.1** (2026-05-29; TK-1320..TK-1323). Re-sequenced from
+> the originally-planned 0.10.1 → **0.11.1** because eager handoff + self-fencing
+> took 0.11.0; the design is otherwise as locked at TK-1319. Throughout this doc,
+> read "0.10.1" as **0.11.1**.
+> Ship was **conditional on DR-19** (ε ≥ 5%) — **MET**: TK-1007 measured
 > ε = 25.33% mean. Default behavior is **unchanged**; joint-LP is strictly
 > opt-in (`policy: "joint-lp"`).
+>
+> Implemented as specified, with two refinements found in build/review:
+> (1) `solveFluidLp` generalizes the 2-type reference to **N types** via greedy
+> per-regime fill + enumerate-and-verify dual recovery, with a KKT optimality
+> certificate as the gate (§4/§9.1); (2) the cost-axis requirement (D-JLP-11)
+> accepts `fused.cost` so joint-LP composes over the lua-fused backend (D-JLP-6).
+> Directly-supplied `jointLp.duals` are validated (finite, ≥ 0) at construction.
 >
 > Decision records: **D-JLP-1 .. D-JLP-12** in §11.
 > Research basis: `research/bigger-bets/unified/THEORY.md` + `…/sim.ts` (TK-1007).

@@ -9,8 +9,11 @@ import { solveFluidLp } from "../../src/admission/fluid-lp";
  * caveat (research/.../joint-lp-admission/DESIGN.md §7) is never silently "fixed".
  *
  * The bid prices come from the SHIPPED library solver `solveFluidLp` (not the
- * research reference), tying the calibrated ε = 25.33% to the code that runs in
- * production. The arrival/regret harness is the deterministic kernel from
+ * research reference), tying the calibrated benefit to the code that runs in
+ * production. Note the headline ε = 25.33% is the mean over all FIVE ρ (it folds
+ * in the negative ρ=+1 foil); this test asserts the mean over the four
+ * NON-degenerate ρ ∈ {−1,−0.5,0,+0.5}, which is ≈ 39.8%, plus the foil separately.
+ * The arrival/regret harness is the deterministic kernel from
  * `research/bigger-bets/unified/sim.ts` (TK-1007), inlined here so the test owns
  * its fixture and never depends on research code; the Mulberry32 seed makes every
  * number exact, no flake.

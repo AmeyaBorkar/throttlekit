@@ -149,6 +149,7 @@ contributed (see `research/bigger-bets/unified/DESIGN.md` §4.1).
 |---|---|---|
 | Rate-axis store unreachable | Per-axis `failMode` of the rate Limiter (`"open"` admits, `"closed"` denies); the cost axis still runs | The fused EVAL fails; admit rejects the promise — release any held concurrency, surface the error to the caller (≈ `failMode: "closed"`) |
 | Cost-axis store unreachable | Per-axis `failMode` of the cost Limiter; rate already ran | Same as above (atomic — both axes fail together) |
+| Rate/cost limiter **throws** after a concurrency slot was acquired (e.g. a store error not mapped to `failMode`, or an async-only store under `admitSync`) | **The held slot is released (`{ dropped: false }`) before the error propagates** (0.11.1 fix — previously leaked; the fused path always guarded this) | The fused dispatch's error branch already released the held slot and re-throws |
 | Concurrency-axis: nothing (in-process, no store) | n/a — no failure mode | n/a |
 | Caller forgets to call `release()` after a successful admit | Concurrency slot leak (the in-flight count grows monotonically until the process restarts) | Same — the unified layer cannot enforce caller lifecycle |
 | Caller double-releases | Idempotent: `Lease.release()` is a no-op on second call (documented in `src/concurrency/adaptive.ts`) | Same |
@@ -166,12 +167,30 @@ decision, admit.lastDecisions())`. Conventions:
 - When multiple axes deny (only possible in lua-fused mode), the same
   priority applies — deterministic and matches the user's mental model.
 - Omitted from admitted decisions.
+- A **joint-LP policy** denial (below) is *not* an axis denial — every axis
+  allowed, the bid-price filter bound. The result carries `policyDenied: true`;
+  no `binding_axis` is set.
+
+**Joint-LP policy — operational caveat (0.11.1, opt-in).** `policy: "joint-lp"`
+adds a bid-price filter (`admit iff value ≥ p_R + p_C·cost`) that closes a mean
+ε = 25.33% revenue gap when the cost axis binds. It is **strictly more selective**
+than the default — it can only *reduce* admissions, never breach a limit. The one
+operational hazard is statistical, not a safety failure: under a **highly
+autocorrelated, near-absorbing** workload (long runs of a single request type) the
+*static* fluid-LP duals can **under-perform** marginal-AND — the textbook fluid-LP
+failure under non-stationarity (Talluri–van Ryzin 1998; at ρ = +1 in the TK-1007
+sweep joint-LP's regret is worse). **Default `"marginal"` is the safe choice;**
+enable joint-LP when the cost axis binds and request types differ in value-density,
+and re-measure ε on your own trace if arrivals are strongly autocorrelated. The
+duals are static (solved once at construction) — there is no runtime adaptation in
+0.11.1 (online sample-then-price is documented future work).
 
 See `research/bigger-bets/unified/DESIGN.md` for the full design,
-`examples/unified.ts` for an LLM-gateway-style example, and
-`research/bigger-bets/unified/THEORY.md` for the joint-vs-marginal
-empirical regret analysis (TK-1007 — verdict: SHIP joint-LP runtime in
-0.10.1).
+`examples/unified.ts` and `examples/joint-lp-admission.ts` for LLM-gateway-style
+examples, `research/bigger-bets/joint-lp-admission/DESIGN.md` for the joint-LP
+policy (D-JLP-1..12), and `research/bigger-bets/unified/THEORY.md` for the
+joint-vs-marginal empirical regret analysis (TK-1007 — verdict: SHIPPED as the
+opt-in joint-LP policy in 0.11.1, ε = 25.33% ≫ the 5% gate).
 
 ## `weightedFairEscrow` — outage shapes (0.9.1)
 

@@ -23,6 +23,7 @@ npx tsx examples/basic-memory.ts
 | [`distributed-sketch.ts`](./distributed-sketch.ts) | Cluster-wide heavy-hitter detection by merging per-node sketches |
 | [`analytics.ts`](./analytics.ts) | In-process allow/deny stats + top-K heavy hitters (`withAnalytics`) |
 | [`admission-control.ts`](./admission-control.ts) | Client-side adaptive shedding + fair cross-tenant budget split |
+| [`joint-lp-admission.ts`](./joint-lp-admission.ts) | Bid-price admission policy — steer a cost-bound budget to high-value requests |
 | [`hono.ts`](./hono.ts) | Hono v4 middleware, run via `app.fetch` (no server) |
 
 The Redis example needs a reachable Redis (`REDIS_URL`) and the Postgres example a reachable Postgres

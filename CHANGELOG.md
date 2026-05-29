@@ -8,6 +8,59 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [0.11.1] — 2026-05-29
+
+**Joint-LP admission policy — an opt-in bid-price filter for cost-bound gateways.**
+`unifiedAdmission`'s default ("marginal-AND") admits when each axis independently has
+room; when the **cost** axis binds and request types differ in value-per-token, that
+greedily spends budget on whatever arrives first, starving higher-value requests. The new
+`policy: "joint-lp"` adds a revenue-management bid-price filter on top — admit iff
+`value ≥ p_R + p_C·cost`, with shadow prices solved from the workload's fluid LP. THEORY.md
+(TK-1007) measured the mean revenue gap it closes at **ε = 25.33%** across the realistic
+arrival-correlation sweep. **Patch** versioned: purely additive opt-in (`policy` defaults
+to `"marginal"`, byte-for-byte unchanged) plus two correctness fixes.
+
+### Added
+
+- **`policy: "joint-lp"` on `unifiedAdmission` (TK-1320..1323).** Opt-in. Supply the bid
+  prices directly (`jointLp: { duals }`) or a workload model the library solves once at
+  construction (`jointLp: { workload }`). Per-call `value` (default 1) drives the
+  bid-price test; the result gains `policyDenied: true` when the filter (not an axis)
+  bound. **Strictly more selective** than marginal-AND (D-JLP-5) — it only ever *removes*
+  admits, so it cannot break any existing limit/safety property — and runs identically
+  over both the sequential and `lua-fused` backends (D-JLP-6, dual-path verified). The
+  default `"marginal"` path is unchanged (D-JLP-2, property-tested).
+- **`solveFluidLp(...)` — a zero-dep two-budget fluid-LP solver** (new export, with
+  `WorkloadType` / `FluidLpInput` / `FluidLpSolution`). Returns the bid prices (LP duals),
+  the optimal admit plan, and the objective. Hand-written vertex enumeration generalized to
+  N request types; correctness pinned by a **KKT optimality certificate** over random
+  instances (primal + dual feasibility + complementary slackness, which jointly prove LP
+  optimality without an external solver) plus the THEORY.md canonical fixture.
+- **`examples/joint-lp-admission.ts`** — an LLM gateway whose cost budget is steered to
+  high-value completions; the bid-price filter ~doubles revenue vs marginal-AND on the
+  adversarial arrival order.
+
+**Honest caveat (do not bury — D-JLP-9):** under highly autocorrelated, near-*absorbing*
+workloads the static fluid-LP duals can **under-perform** marginal-AND (the textbook
+fluid-LP failure under non-stationarity; Talluri–van Ryzin 1998). At ρ = +1 in the sweep,
+joint-LP's regret is *worse* — a foil the empirical-regret gate regression-guards so it is
+never silently "fixed". Default stays marginal-AND; enable joint-LP when the cost axis
+binds and request types differ in value-density. See
+`research/bigger-bets/joint-lp-admission/DESIGN.md` §7.
+
+### Fixed
+
+- **`unifiedAdmission` (sequential backend) no longer leaks a concurrency slot when a
+  rate/cost limiter throws.** If a Redis-backed rate/cost `check()` rejected (e.g. a store
+  outage) after the concurrency slot was acquired, the held slot was never released — the
+  `lua-fused` path already guarded this, the sequential path did not (a latent gap since
+  0.9.0 / TK-1004). Both `admit` and `admitSync` now release the held slot before
+  propagating the error. Surfaced by the 0.11.1 adversarial review.
+- **A closed `DistributedConcurrencyGuard` now rejects new acquisitions.** After `close()`,
+  `acquire()` previously kept admitting against the last-known share until the lease TTL
+  elapsed; it now denies immediately (the node has left the coordinator). Flagged by the
+  0.11.0 adversarial review as a candidate cleanup.
+
 ## [0.11.0] — 2026-05-29
 
 **The complete instantaneous hard bound, end to end — eager handoff (D-DAC-20) +
