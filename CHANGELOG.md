@@ -6,6 +6,10 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.11.0] — 2026-05-29
+
 **The complete instantaneous hard bound, end to end — eager handoff (D-DAC-20) +
 self-fencing (D-DAC-21).** 0.10.0 (occupancy cap) + 0.10.1 (acknowledged handoff) made
 `Σ inflight ≤ L_global` a hard bound for *live, cooperating* nodes — but at two costs
