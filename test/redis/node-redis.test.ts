@@ -15,12 +15,24 @@ import { MemoryStore } from "../../src/stores/memory";
  * End-to-end proof for the node-redis (`redis`) adapter: the atomic Lua, carried by the official
  * node-redis client through {@link fromNodeRedis}, produces bit-identical decisions to the JS
  * executor — the same dual-path guarantee the ioredis conformance test makes, but exercising the
- * adapter's call translation against a live server. Gated on a real Redis (THROTTLEKIT_TEST_REDIS);
- * uses a dedicated DB so a parallel Redis-using file's FLUSHDB can't wipe it.
+ * adapter's call translation against a live server. Gated on a real Redis (THROTTLEKIT_TEST_REDIS).
+ *
+ * Isolation: this file SHARES Redis DB 7 with test/twotier/weighted-fair-escrow-properties.test.ts.
+ * There are 17 Redis-backed test files but only 16 logical DBs (stock Redis; CI's service container
+ * can't be given more), so exactly one pair must co-tenant a DB. Co-tenancy is collision-safe here
+ * because NEITHER file issues a DB-global FLUSHDB: every key below is namespaced under a unique
+ * per-process RUN token (so even a fast re-run can't hit its own stale, not-yet-TTL'd keys), and
+ * WFE's keys are unique per fast-check attempt. Do NOT add a flushDb() here, and do NOT move either
+ * file onto a DB that another file flushes — that is exactly the cross-file flake this avoids.
  */
 
 const url = process.env.THROTTLEKIT_TEST_REDIS;
 const d = url ? describe : describe.skip;
+
+// Unique per-process namespace so re-runs never collide with their own stale (not-yet-TTL'd) keys.
+// This file shares Redis DB 7 with weighted-fair-escrow-properties.test.ts (see header) and so must
+// NOT FLUSHDB; RUN-scoped keys make a flush unnecessary. Date.now()/Math.random() are fine here.
+const RUN = `${Date.now().toString(36)}.${Math.floor(Math.random() * 0x7fffffff).toString(36)}`;
 
 /** Deterministic PRNG so failures reproduce exactly. */
 function mulberry32(seed: number): () => number {
@@ -59,7 +71,7 @@ d("node-redis adapter: dual-path conformance vs JS", () => {
   beforeAll(async () => {
     client = createClient({ url: url as string, database: 7 });
     await client.connect();
-    await client.flushDb();
+    // No flushDb: DB 7 is shared (see file header). RUN-namespaced keys keep runs independent.
   });
 
   afterAll(async () => {
@@ -78,7 +90,7 @@ d("node-redis adapter: dual-path conformance vs JS", () => {
           store: new MemoryStore({ clock, sweepIntervalMs: 0 }),
         });
         const redis = rateLimit({ strategy: c.make(), clock, store });
-        const key = `nr:${c.name}:${t}`;
+        const key = `nr:${RUN}:${c.name}:${t}`;
 
         for (let s = 0; s < STEPS; s++) {
           const delta = Math.floor(rng() * 900);

@@ -375,11 +375,12 @@ dRedis("dual-path conformance — L1 ≡ L2 with quantum = L (RedisStore, DB 7)"
   let client: Redis;
 
   beforeAll(async () => {
-    // Dedicated DB 7 — DR-P4-12. Other allocations: DB 0 conformance-grid, DB 2 lua-property,
-    // DB 6 check-many, DB 8 federation/redis-coordinator, DB 11 unified-fused, DB 12 fused-
-    // conformance. DB 7 is free as of the 0.9.0 baseline.
+    // DB 7 is SHARED with test/redis/node-redis.test.ts (17 Redis-backed test files, only 16 logical
+    // DBs — exactly one pair must co-tenant). Safe because neither file does a DB-global FLUSHDB:
+    // this suite's L2 keys are unique per fast-check attempt (see `key` below) and node-redis
+    // namespaces under a per-run token. Do NOT add a flushdb() here — it would wipe node-redis's
+    // in-flight keys (and vice-versa) and reintroduce the cross-file flake fixed on 2026-05-30.
     client = new Redis(url as string, { db: 7 });
-    await client.flushdb();
   });
 
   afterAll(async () => {

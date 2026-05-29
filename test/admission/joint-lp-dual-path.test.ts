@@ -9,8 +9,9 @@
  *  2. Binding axes ⇒ filter + budget interaction ⇒ the admit/deny pattern agrees
  *     (mirrors the TK-1006 sequential≡fused conformance, robust to ms clock-skew).
  *
- * Gated on `THROTTLEKIT_TEST_REDIS` (e.g. redis://localhost:6380). DB 12 (8/9/10/11
- * are used by other gated suites).
+ * Gated on `THROTTLEKIT_TEST_REDIS` (e.g. redis://localhost:6380). DB 15 — its own dedicated
+ * DB (DB 12 belongs to fused-conformance.test.ts; 8/9/10/11 are other gated suites). One DB
+ * per file is the suite invariant; only node-redis ↔ WFE intentionally share (DB 7, flush-free).
  */
 
 import { createClient } from "redis";
@@ -31,7 +32,7 @@ d("joint-LP dual-path conformance (D-JLP-6)", () => {
   let client: ReturnType<typeof createClient>;
 
   beforeAll(async () => {
-    client = createClient({ url: url as string, database: 12 });
+    client = createClient({ url: url as string, database: 15 });
     await client.connect();
     await client.flushDb();
   });
