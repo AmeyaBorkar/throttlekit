@@ -20,8 +20,9 @@ the backend's true capacity. The adaptive limiter that was supposed to
 gap with `distributedAdaptiveConcurrency()`: a drop-in `ConcurrencyGuard`
 that keeps the fleet's total in-flight count under one cooperatively-
 inferred global ceiling. **Minor** versioned because the surface is purely
-additive — no change to `adaptiveConcurrency`, `federate`,
-`unifiedAdmission`, or any existing adapter.
+additive — no API or behavioral change to `federate`, `unifiedAdmission`, or
+any existing adapter. (`adaptiveConcurrency`'s internals were rewritten for
+performance this release — identical API and behavior; see *Performance* below.)
 
 ### Added
 
@@ -54,12 +55,19 @@ additive — no change to `adaptiveConcurrency`, `federate`,
   Postgres is **deferred** to a follow-up patch, mirroring federation's
   0.8.3 (Redis) → 0.8.4 (Postgres) rollout (D-DAC-16).
 
-- **Equal-split allocation (D-DAC-9)** — `L_global` is divided into per-node
-  shares by `base = ⌊L/N⌋` plus one to the lowest-ranked `rem` nodes
-  (deterministic lexicographic `nodeId` tiebreak, no RNG), so
-  `Σ share = L_global` **exactly** — no carry-over, no clawback. Idle nodes
-  still hold `≈ L/N` (a documented utilization limitation, never a safety
-  bug); demand-proportional allocation is a future refinement.
+- **Budget-capped equal-split allocation (D-DAC-9 / D-DAC-17)** — each grant is
+  the equal-split target (`base = ⌊L/N⌋` plus one to the lowest-ranked `rem` by
+  deterministic lexicographic `nodeId`, no RNG) **capped at the budget not
+  committed to the other live nodes**: `share = max(0, min(target, L_global − Σ
+  other live shares))`. The cap makes **`GlobalCap`: `Σ share ≤ L_global`** a
+  hard invariant under *any* staggered-heartbeat interleaving — a node that joins
+  computes `min(target, L_global − L_global) = 0` and stays at 0 until incumbents
+  re-split down (the cap subsumes any one-shot "provisional join", which is
+  *insufficient* — it fails if the joiner re-heartbeats first). The fleet
+  converges to the exact split within ≈ N heartbeats; idle-node skew is the
+  documented utilization limitation (never a safety bug). `Σ inflight ≤ L_global`
+  is **not** a hard invariant — in-flight is non-revocable, so it drains down
+  after a rebalance (D-DAC-14), clamped by `min(share, local.limit)`.
 
 - **Median / min aggregation, never sum (D-DAC-10)** —
   `aggregate({lLocal}) → L_global` is `"median"` (**default**, the lower
@@ -76,22 +84,22 @@ additive — no change to `adaptiveConcurrency`, `federate`,
   the coordinator returns; `"local-only"` falls back to pure in-process
   adaptive concurrency (`share → local.limit`), staying up at the cost of the
   fleet possibly overshooting the backend. Cold start schedules the first
-  heartbeat on the **next tick** (D-DAC-12); a newly-seen node is
-  **provisional** for one heartbeat (`share = 0`) so the fleet cannot
-  transiently exceed `L_global` during membership growth (D-DAC-17).
+  heartbeat on the **next tick** (D-DAC-12); the budget cap (D-DAC-17) holds
+  `Σ share ≤ L_global` across membership growth — a joining node is granted 0
+  until incumbents re-split down, with no separate provisional-join bookkeeping.
 
 - **`spec/GaleHeartbeatLeasing.tla` + `.cfg` (TK-1314)** — the safety spec, a
-  one-step relabeling of `GaleFederatedLeasing` from clock-release (window)
-  escrow to event-release (heartbeat) shares (`windowMs → heartbeat_T`,
-  `globalBudget → L`, `escrow → share − inflight`). Carries an explicit
-  `live` variable and a provisional `Join` action so the model exhibits
-  **staggered joins**; `Overshoot` / `ShareCap` / `ShareBudget` are
-  quantified over the live set and hold across membership growth, while
-  `OvershootTight` is intentionally violated (tightness witness — `L` is the
-  least upper bound). The proof fixes `L_global` *within* a heartbeat
-  (D-DAC-13); the shrink-drain transient when `L_global` drops is liveness,
-  not safety (in-flight persists across a `Roll`, over-allocated nodes admit
-  nothing new and drain — D-DAC-14).
+  relabeling of `GaleFederatedLeasing` from clock-release (window) escrow to
+  event-release (heartbeat) shares (`windowMs → heartbeat_T`, `globalBudget → L`).
+  Models the **staggered, budget-capped** protocol: an `active` set, a
+  `Reallocate(n)` action that caps each grant at the budget left by the other
+  active nodes, plus `Join`/`Leave`. The committed safety invariant is
+  **`GlobalCap`: `Σ active share ≤ L`** — which a stateless equal-split would
+  violate under a staggered join; `GlobalCapTight` is intentionally violated
+  (tightness witness — `L` is the least upper bound). The proof fixes `L`
+  *within* a heartbeat (D-DAC-13). `Σ inflight ≤ L` is deliberately **not** an
+  invariant — in-flight is non-revocable and drains after a rebalance: liveness,
+  not safety (D-DAC-14).
 
 - **`research/bigger-bets/distributed-adaptive-concurrency/DESIGN.md`
   (TK-1314)** — design lock; 17 decision records D-DAC-1..D-DAC-17. Lit
@@ -102,21 +110,22 @@ additive — no change to `adaptiveConcurrency`, `federate`,
 ### Tested
 
 - **BFS twin** at `test/concurrency/distributed-leasing-model.test.ts`
-  (TK-1316) — the `GaleHeartbeatLeasing` transition system in TS (including
-  the `live` variable and the provisional `Join` action); enumerates all
-  reachable states for `Nodes={n1,n2}, Budgets={4,6}`, asserts the
-  distinct-state count equals the pinned TLC figure, asserts
-  `Overshoot` + `ShareCap` + `ShareBudget` on every state, that
-  `OvershootTight` is violated, and that at least one transition is a
-  provisional join (membership growth observably covered).
+  (TK-1316) — the `GaleHeartbeatLeasing` transition system in TS (the `active`
+  set, the budget-capped `Reallocate`, `Join`/`Leave`); exhaustively enumerates
+  all reachable states for `Nodes={n1,n2}, L=4`, asserts `TypeOK` + **`GlobalCap`**
+  on every state, pins the distinct-state count (`64`), witnesses the
+  `GlobalCapTight` violation, and asserts at least one transition is a `Join`
+  (membership growth observably covered). TLC parity is pending a Java env.
 
 - **Property test** at `test/concurrency/distributed-invariant.test.ts`
   (TK-1316, fast-check) — random fleets (2-6 nodes), random `lLocal` reports,
   random `acquire`/`release`/`heartbeat` interleavings with simulated
-  cross-node latency; asserts `Σ inflight ≤ peek().lGlobal` (the consistent
-  budget, not `Σ granted shares`) at every step, with deterministic
-  sub-scenarios that exercise the shrink-drain/debt transient and the
-  provisional-join membership-growth transient.
+  out-of-order grant landing. In a constant-`lGlobal` regime it asserts
+  **`GlobalCap`** — `Σ` of coordinator-committed shares `≤ lGlobal` (read via
+  `peek()`) at every step, the exact over-commitment the budget cap fixes; a
+  shrink-biased sub-scenario provably enters the in-flight drain transient (a
+  coverage assertion fails if it never does). `Σ inflight ≤ lGlobal` is not
+  asserted as a hard invariant (drain-lag, D-DAC-14).
 
 - **Dual-path conformance** at
   `test/concurrency/coordinator-conformance.test.ts` (TK-1316, Redis-gated on
@@ -131,6 +140,20 @@ additive — no change to `adaptiveConcurrency`, `federate`,
   drops straight into `expressAdaptiveConcurrency({ guard })` and every
   sibling 0.9.2 adapter unchanged — the forward-compat hook the middleware
   family promised (D-M-12) realized.
+
+### Performance
+
+- **`adaptiveConcurrency` acquire/release ~3× faster (TK-1316).** Its hot path
+  was rewritten from a fresh per-acquire `release` closure — which kept the
+  rolling-min deque + gradient math in V8's *unoptimized* tier (each one-shot
+  closure never tiers up) — to a class holding state in fields, with a `release`
+  method **bound once per lease**: a single optimized body that is still safe to
+  call detached (as the lease-shim, `unifiedAdmission`, and the adapters do).
+  **Identical API and behavior** (all 1027 tests unchanged). On the project
+  bench, acquire+release drops ~895 → ~297 ns/op (the pure logic ~14× faster;
+  the end-to-end gain is larger on hosts where `Date.now()` is cheap), still
+  ~0 alloc; `distributedAdaptiveConcurrency` inherits it (~1026 → ~290 ns/op).
+  Now covered by `bench/run.ts` ("Concurrency — acquire + release").
 
 ## [0.9.2] — 2026-05-29
 

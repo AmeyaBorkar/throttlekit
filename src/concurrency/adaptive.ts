@@ -35,6 +35,7 @@ export interface Lease {
   /**
    * Return the slot and record the request's latency. Pass `dropped: true` for a request that
    * failed/timed out (treated as an overload signal). Idempotent: a second call does nothing.
+   * Safe to call detached (e.g. `const r = lease.release; r()`).
    */
   release(opts?: { dropped?: boolean }): void;
 }
@@ -59,6 +60,50 @@ export interface ConcurrencyGuard {
 const NOOP_RELEASE = (): void => {};
 
 /**
+ * The single shared rejected lease — over the inferred ceiling, holds no slot.
+ * Immutable and reused so a rejection allocates nothing; its `release` is a plain
+ * no-op (no `this`), safe to call detached.
+ */
+const REJECTED_LEASE: Lease = Object.freeze({ ok: false, release: NOOP_RELEASE });
+
+/**
+ * One granted slot.
+ *
+ * **Why this shape.** `release` must be callable detached — the lease-shim,
+ * `unifiedAdmission`, and the framework adapters all do `const r = lease.release; r()`.
+ * It must also be *fast*: a fresh per-acquire `release` closure (the prior design) ran the
+ * deque + gradient math in V8's unoptimized tier (~14× slower on the logic, ~3× end-to-end).
+ * The resolution is a class whose `release` is a single shared method **bound once in the
+ * constructor**: shared ⇒ V8 optimizes it; bound ⇒ detach-safe. The heavy work lives in the
+ * guard's optimized {@link AdaptiveGuard.settle}. The per-lease internal state is `#private`, so
+ * the lease's enumerable shape is exactly `{ ok, release }`. Benchmarked in `bench/run.ts`
+ * ("Concurrency — acquire + release").
+ */
+class GrantedLease implements Lease {
+  readonly ok = true;
+  readonly release: (opts?: { dropped?: boolean }) => void;
+  #guard: AdaptiveGuard;
+  #startTime: number;
+  #inflightAtAcquire: number;
+  #released = false;
+
+  constructor(guard: AdaptiveGuard, startTime: number, inflightAtAcquire: number) {
+    this.#guard = guard;
+    this.#startTime = startTime;
+    this.#inflightAtAcquire = inflightAtAcquire;
+    // Bind the shared method once per lease: detach-safe stable `this`, while the body stays a
+    // single optimized function (not a per-acquire closure).
+    this.release = this.#doRelease.bind(this);
+  }
+
+  #doRelease(opts?: { dropped?: boolean }): void {
+    if (this.#released) return; // idempotent: ignore double-release
+    this.#released = true;
+    this.#guard.settle(this.#startTime, this.#inflightAtAcquire, opts?.dropped ?? false);
+  }
+}
+
+/**
  * Adaptive concurrency limiter — a TCP-congestion-control-style ceiling on concurrent requests,
  * modeled on Netflix's concurrency-limits. Two laws are available:
  *
@@ -73,6 +118,178 @@ const NOOP_RELEASE = (): void => {};
  * rise again after a deploy or load shift, avoiding the all-time-min low bias. See
  * docs/DESIGN-NOTES.md ("Adaptive concurrency (Gradient2 + AIMD)") for the verified math and
  * citations.
+ *
+ * State lives in instance fields and the per-request work ({@link AdaptiveGuard.settle} →
+ * `#recordRtt`/`#updateGradient2`) in shared methods, so V8 keeps the hot path optimized; see
+ * {@link GrantedLease} for the detach-safe lease.
+ */
+class AdaptiveGuard implements ConcurrencyGuard {
+  // Config (immutable after construction).
+  readonly #minLimit: number;
+  readonly #maxLimit: number;
+  readonly #algorithm: "gradient2" | "aimd";
+  readonly #smoothing: number;
+  readonly #tolerance: number;
+  readonly #backoffRatio: number;
+  readonly #window: number;
+  readonly #cap: number;
+  readonly #clock: Clock;
+
+  // State (mutated each request).
+  /** Fractional estimate; the public `limit` is its integer floor. */
+  #estimate: number;
+  #inflightCount = 0;
+  /** Best (minimum) RTT observed over the last `window` samples; 0 until the first sample. */
+  #rttNoload = 0;
+  #lastRtt = 0;
+  /** Monotonically increasing index of the next RTT sample (also the count seen so far). */
+  #nextSeq = 0;
+
+  // Windowed rolling-minimum via a monotonic deque (ascending by value): the front is always the
+  // min over the last `window` samples. Each sample is pushed/popped at most once, so updates are
+  // O(1) amortized regardless of how large `window` is. Storing the sample sequence number lets
+  // stale entries (older than `window`) expire off the front. Old minima thus age out and the
+  // baseline can drift back up after a load shift — "best recently observed", not all-time min.
+  // Capacity is `window + 1` so a push transiently overlapping a not-yet-expired front never
+  // overwrites a live slot.
+  readonly #dqSeq: Float64Array;
+  readonly #dqVal: Float64Array;
+  #dqHead = 0; // index of the current minimum (inclusive)
+  #dqTail = 0; // one past the last retained entry (exclusive); empty when head === tail
+
+  constructor(cfg: {
+    minLimit: number;
+    maxLimit: number;
+    initialLimit: number;
+    algorithm: "gradient2" | "aimd";
+    window: number;
+    smoothing: number;
+    tolerance: number;
+    backoffRatio: number;
+    clock: Clock;
+  }) {
+    this.#minLimit = cfg.minLimit;
+    this.#maxLimit = cfg.maxLimit;
+    this.#algorithm = cfg.algorithm;
+    this.#smoothing = cfg.smoothing;
+    this.#tolerance = cfg.tolerance;
+    this.#backoffRatio = cfg.backoffRatio;
+    this.#window = cfg.window;
+    this.#cap = cfg.window + 1;
+    this.#clock = cfg.clock;
+    this.#estimate = cfg.initialLimit;
+    this.#dqSeq = new Float64Array(this.#cap);
+    this.#dqVal = new Float64Array(this.#cap);
+  }
+
+  get limit(): number {
+    return Math.floor(this.#estimate);
+  }
+
+  get inflight(): number {
+    return this.#inflightCount;
+  }
+
+  acquire(): Lease {
+    const ceiling = Math.floor(this.#estimate);
+    if (this.#inflightCount >= ceiling) {
+      // Over the inferred ceiling: hand back the shared rejected lease (no slot, no alloc).
+      return REJECTED_LEASE;
+    }
+    this.#inflightCount++;
+    // `inflightAtAcquire` is the post-increment count (utilization at grant time).
+    return new GrantedLease(this, this.#clock.now(), this.#inflightCount);
+  }
+
+  /**
+   * Settle one granted lease: drop the slot, record its RTT, feed the inference law. Called
+   * exactly once by {@link GrantedLease} (idempotency is enforced there). Public so the lease can
+   * reach it; intentionally absent from {@link ConcurrencyGuard}, so callers don't see it.
+   * @internal
+   */
+  settle(startTime: number, inflightAtAcquire: number, dropped: boolean): void {
+    this.#inflightCount--;
+
+    const rtt = Math.max(0, this.#clock.now() - startTime);
+    this.#recordRtt(rtt);
+    this.#lastRtt = rtt;
+
+    if (this.#algorithm === "gradient2") {
+      this.#updateGradient2(rtt, dropped, inflightAtAcquire);
+    } else {
+      this.#updateAimd(rtt, dropped, inflightAtAcquire);
+    }
+  }
+
+  stats(): { limit: number; inflight: number; rttNoload: number; lastRtt: number } {
+    return {
+      limit: Math.floor(this.#estimate),
+      inflight: this.#inflightCount,
+      rttNoload: this.#rttNoload,
+      lastRtt: this.#lastRtt,
+    };
+  }
+
+  /** Push `rtt` as the next sample into the deque and refresh `rttNoload` to the windowed min. */
+  #recordRtt(rtt: number): void {
+    const cap = this.#cap;
+    const window = this.#window;
+    const dqSeq = this.#dqSeq;
+    const dqVal = this.#dqVal;
+    const seq = this.#nextSeq++;
+    if (seq === 0) this.#rttNoload = rtt; // first sample is the initial baseline
+
+    // Expire the front if it has fallen out of the trailing `window` samples.
+    if (this.#dqTail > this.#dqHead && dqSeq[this.#dqHead % cap]! <= seq - window) this.#dqHead++;
+
+    // Drop entries no smaller than the incoming value: they can never be the min while it lives.
+    while (this.#dqTail > this.#dqHead && dqVal[(this.#dqTail - 1) % cap]! >= rtt) this.#dqTail--;
+
+    dqVal[this.#dqTail % cap] = rtt;
+    dqSeq[this.#dqTail % cap] = seq;
+    this.#dqTail++;
+
+    this.#rttNoload = dqVal[this.#dqHead % cap]!;
+  }
+
+  /** Apply the Gradient2 law for one completed request. */
+  #updateGradient2(rtt: number, dropped: boolean, inflightAtAcquire: number): void {
+    let gradient: number;
+    if (dropped) {
+      // A drop is strong evidence of overload: pin the gradient to its floor.
+      gradient = 0.5;
+    } else if (rtt <= 0) {
+      // No measurable latency => no queueing signal; treat as fully healthy.
+      gradient = 1;
+    } else {
+      gradient = clamp((this.#tolerance * this.#rttNoload) / rtt, 0.5, 1.0);
+    }
+
+    // Don't grow the limit while the system is under-utilized: a healthy sample taken when we
+    // were nowhere near the ceiling carries no information that we *could* go higher.
+    if (!dropped && inflightAtAcquire * 2 < this.#estimate) return;
+
+    const queueSize = Math.sqrt(this.#estimate);
+    let newLimit = this.#estimate * gradient + queueSize;
+    newLimit = this.#estimate * (1 - this.#smoothing) + newLimit * this.#smoothing;
+    this.#estimate = clamp(newLimit, this.#minLimit, this.#maxLimit);
+  }
+
+  /** Apply the AIMD law for one completed request. */
+  #updateAimd(rtt: number, dropped: boolean, inflightAtAcquire: number): void {
+    if (dropped || rtt > this.#rttNoload * this.#tolerance) {
+      // Multiplicative decrease on overload.
+      this.#estimate = Math.max(this.#minLimit, Math.floor(this.#estimate * this.#backoffRatio));
+    } else if (inflightAtAcquire * 2 >= this.#estimate) {
+      // Additive increase, but only while we are actually pushing the ceiling.
+      this.#estimate = Math.min(this.#maxLimit, this.#estimate + 1);
+    }
+  }
+}
+
+/**
+ * Construct an adaptive concurrency limiter. The factory keeps the call-site API identical to the
+ * prior implementation; see {@link AdaptiveGuard} for the algorithm and the hot-path rationale.
  */
 export function adaptiveConcurrency(options: AdaptiveConcurrencyOptions = {}): ConcurrencyGuard {
   const minLimit = options.minLimit ?? 4;
@@ -114,129 +331,15 @@ export function adaptiveConcurrency(options: AdaptiveConcurrencyOptions = {}): C
     );
   }
 
-  const window = Math.floor(rttWindow);
-
-  /** Fractional estimate; the public `limit` is its integer floor. */
-  let estimate = initialLimit;
-  let inflight = 0;
-  /** Best (minimum) RTT observed over the last `window` samples; 0 until the first sample. */
-  let rttNoload = 0;
-  let lastRtt = 0;
-  /** Monotonically increasing index of the next RTT sample (also the count seen so far). */
-  let nextSeq = 0;
-
-  // Windowed rolling-minimum via a monotonic deque (ascending by value): the front is always the
-  // min over the last `window` samples. Each sample is pushed/popped at most once, so updates are
-  // O(1) amortized regardless of how large `window` is. Storing the sample sequence number lets
-  // stale entries (older than `window`) expire off the front. Old minima thus age out and the
-  // baseline can drift back up after a load shift — "best recently observed", not all-time min.
-  // Capacity is `window + 1` so a push transiently overlapping a not-yet-expired front never
-  // overwrites a live slot.
-  const cap = window + 1;
-  const dqSeq = new Float64Array(cap); // sequence number of each retained sample
-  const dqVal = new Float64Array(cap); // its RTT value
-  let dqHead = 0; // index of the current minimum (inclusive)
-  let dqTail = 0; // one past the last retained entry (exclusive); empty when head === tail
-
-  /** Push `rtt` as sample `seq` into the deque and refresh `rttNoload` to the windowed min. */
-  function recordRtt(rtt: number): void {
-    const seq = nextSeq++;
-    if (seq === 0) rttNoload = rtt; // first sample is the initial baseline
-
-    // Expire the front if it has fallen out of the trailing `window` samples.
-    if (dqTail > dqHead && dqSeq[dqHead % cap]! <= seq - window) dqHead++;
-
-    // Drop entries no smaller than the incoming value: they can never be the min while it lives.
-    while (dqTail > dqHead && dqVal[(dqTail - 1) % cap]! >= rtt) dqTail--;
-
-    dqVal[dqTail % cap] = rtt;
-    dqSeq[dqTail % cap] = seq;
-    dqTail++;
-
-    rttNoload = dqVal[dqHead % cap]!;
-  }
-
-  /** Apply the Gradient2 law for one completed request. */
-  function updateGradient2(rtt: number, dropped: boolean, inflightAtAcquire: number): void {
-    let gradient: number;
-    if (dropped) {
-      // A drop is strong evidence of overload: pin the gradient to its floor.
-      gradient = 0.5;
-    } else if (rtt <= 0) {
-      // No measurable latency => no queueing signal; treat as fully healthy.
-      gradient = 1;
-    } else {
-      gradient = clamp((tolerance * rttNoload) / rtt, 0.5, 1.0);
-    }
-
-    // Don't grow the limit while the system is under-utilized: a healthy sample taken when we
-    // were nowhere near the ceiling carries no information that we *could* go higher.
-    if (!dropped && inflightAtAcquire * 2 < estimate) return;
-
-    const queueSize = Math.sqrt(estimate);
-    let newLimit = estimate * gradient + queueSize;
-    newLimit = estimate * (1 - smoothing) + newLimit * smoothing;
-    estimate = clamp(newLimit, minLimit, maxLimit);
-  }
-
-  /** Apply the AIMD law for one completed request. */
-  function updateAimd(rtt: number, dropped: boolean, inflightAtAcquire: number): void {
-    if (dropped || rtt > rttNoload * tolerance) {
-      // Multiplicative decrease on overload.
-      estimate = Math.max(minLimit, Math.floor(estimate * backoffRatio));
-    } else if (inflightAtAcquire * 2 >= estimate) {
-      // Additive increase, but only while we are actually pushing the ceiling.
-      estimate = Math.min(maxLimit, estimate + 1);
-    }
-  }
-
-  function acquire(): Lease {
-    const ceiling = Math.floor(estimate);
-    if (inflight >= ceiling) {
-      // Over the inferred ceiling: hand back a rejected lease that holds no slot.
-      return { ok: false, release: NOOP_RELEASE };
-    }
-
-    inflight++;
-    const startTime = clock.now();
-    const inflightAtAcquire = inflight; // utilization at the moment we granted the slot
-    let released = false;
-
-    const release = (opts?: { dropped?: boolean }): void => {
-      if (released) return; // idempotent: ignore double-release
-      released = true;
-      inflight--;
-
-      const rtt = Math.max(0, clock.now() - startTime);
-      recordRtt(rtt);
-      lastRtt = rtt;
-
-      const dropped = opts?.dropped ?? false;
-      if (algorithm === "gradient2") {
-        updateGradient2(rtt, dropped, inflightAtAcquire);
-      } else {
-        updateAimd(rtt, dropped, inflightAtAcquire);
-      }
-    };
-
-    return { ok: true, release };
-  }
-
-  return {
-    acquire,
-    get limit(): number {
-      return Math.floor(estimate);
-    },
-    get inflight(): number {
-      return inflight;
-    },
-    stats() {
-      return {
-        limit: Math.floor(estimate),
-        inflight,
-        rttNoload,
-        lastRtt,
-      };
-    },
-  };
+  return new AdaptiveGuard({
+    minLimit,
+    maxLimit,
+    initialLimit,
+    algorithm,
+    window: Math.floor(rttWindow),
+    smoothing,
+    tolerance,
+    backoffRatio,
+    clock,
+  });
 }
