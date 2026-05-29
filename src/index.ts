@@ -8,7 +8,7 @@
  */
 
 /** The current package version. Kept in sync with package.json. */
-export const version = "0.11.1";
+export const version = "0.11.2";
 
 export type {
   Clock,
@@ -71,6 +71,8 @@ export type {
 export { TestConcurrencyCoordinator } from "./concurrency/test-concurrency-coordinator";
 export { RedisConcurrencyCoordinator } from "./concurrency/redis-concurrency-coordinator";
 export type { RedisConcurrencyCoordinatorOptions } from "./concurrency/redis-concurrency-coordinator";
+export { PostgresConcurrencyCoordinator } from "./concurrency/postgres-concurrency-coordinator";
+export type { PostgresConcurrencyCoordinatorOptions } from "./concurrency/postgres-concurrency-coordinator";
 export {
   eoqOptimum,
   leaseSizer,

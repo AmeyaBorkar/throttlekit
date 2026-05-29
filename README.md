@@ -128,4 +128,4 @@ Dual-path conformance (JS ≡ Lua on thousands of generated timelines, now inclu
 
 ## Status & license
 
-ThrottleKit is `0.x`: feature-complete and heavily tested, but young — the public API may still be refined before a `1.0` that commits to SemVer stability. MIT-licensed and developed in the open.
+ThrottleKit is `0.x`: feature-complete and heavily tested, but young — the public API may still be refined before a `1.0` that commits to SemVer stability. See [STABILITY.md](./STABILITY.md) for exactly what is stable today (the core algorithms, stores, adapters, and federation) vs the opt-in experimental frontier (the unified-admission policy layer, distributed-concurrency tuning knobs, escrow layer). MIT-licensed and developed in the open.

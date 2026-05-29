@@ -430,8 +430,9 @@ export function distributedAdaptiveConcurrency(
   `RedisCoordinator`'s client-shape + error mapping. Construction:
   `new RedisConcurrencyCoordinator({ client, aggregate?, prefix? })`.
 
-- **Postgres** — **deferred** to a follow-up patch (§14.2), exactly as the
-  federation `PostgresCoordinator` (0.8.4) followed the Redis one (0.8.3).
+- **`PostgresConcurrencyCoordinator`** — **SHIPPED** in 0.11.2 (TK-1402), the event-release
+  sibling of the federation `PostgresCoordinator` (0.8.4). Runs the shared pure `heartbeat-core`
+  compute inside a `pg_advisory_xact_lock` transaction; dual-path tested `Test ≡ Postgres`.
 
 ### 5.4 Exports
 
@@ -1560,9 +1561,11 @@ isHealthy(): healthy   // toggled by setHealthy() for tests; when false, heartbe
    budget. The gate measured +25–50pp utilization under skew, 0 regression when balanced; the
    cap is untouched so all safety proofs carry over (re-checked exhaustively under the new
    target). Default stays equal-split. See §6 / D-DAC-22.
-2. **`PostgresConcurrencyCoordinator`.** Same `INSERT … ON CONFLICT` +
-   per-window-marker shape as `PostgresCoordinator`, with a `tk_conc_state`
-   table keyed by `(key, nodeId)` and a single-statement aggregate-split. Follow-up patch.
+2. **`PostgresConcurrencyCoordinator`** — **SHIPPED** in 0.11.2 (TK-1402). A `tk_conc_state`
+   table keyed by `(key, node_id)`; per heartbeat it advisory-locks the key, loads its rows,
+   runs the shared `heartbeat-core` compute (so it is structurally conformant with the Test
+   coordinator — not a transcription), then deletes evicted rows + upserts self. Exported from
+   the root entry; dual-path `Test ≡ Postgres` across aggregate × allocation × handoff.
 3. **Online `L_global` smoothing at the coordinator** (e.g. an EMA over
    successive aggregates) to damp cross-heartbeat oscillation beyond the
    per-node EMA. Research, not committed.

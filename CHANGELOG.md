@@ -6,8 +6,22 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.11.2] — 2026-05-30
+
+**Two opt-in concurrency upgrades + a stability charter — all additive; `0.11.1` users upgrade
+with zero behavior change.**
+
 ### Added
 
+- **Postgres concurrency coordinator — `PostgresConcurrencyCoordinator` (TK-1402).** A drop-in
+  `ConcurrencyCoordinator` backed by a single Postgres primary — the event-release sibling of
+  the federation `PostgresCoordinator`. It runs the SAME heartbeat compute as the in-memory
+  reference inside one `pg_advisory_xact_lock` transaction (the shared pure `heartbeat-core`),
+  so it is structurally conformant — dual-path tested `Test ≡ Postgres` across aggregate ×
+  allocation × acknowledged-handoff. Store parity with `RedisConcurrencyCoordinator` for fleets
+  already running Postgres; exported from the root entry.
 - **`allocation: "demand-proportional"` on the distributed concurrency coordinators
   (TK-1403, D-DAC-22).** Opt-in — default stays `"equal-split"`, byte-for-byte unchanged.
   Under skewed load, equal-split strands an idle node's `≈ L/N` share where a busy peer
@@ -21,6 +35,16 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   `RedisConcurrencyCoordinator` dual path. Every node keeps a `≥ 1` probe slot, so it is
   starvation-free when `L_global ≥ N`. All nodes/coordinators on a key must agree (like
   `aggregate`).
+- **STABILITY.md** — a published stability + versioning charter: what is stable today (the core
+  algorithms, stores, adapters, federation) vs the opt-in experimental frontier, and what `1.0`
+  will commit to. Now shipped in the package and linked from the README.
+
+### Changed
+
+- Internal: the coordinator heartbeat compute is now a shared pure `heartbeat-core` used by both
+  the Test and Postgres coordinators (one source of truth; no behavior change), additionally
+  hardened to never self-evict a node on its own heartbeat (a latent crash on a past-`expiresAt`
+  report).
 
 ## [0.11.1] — 2026-05-29
 
