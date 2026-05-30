@@ -6,6 +6,13 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.11.3] — 2026-05-30
+
+**Two opt-in joint-LP upgrades — both additive; `0.11.2` users upgrade with zero behavior
+change (default and 2-axis joint-LP are byte-for-byte unchanged).**
+
 ### Added
 
 - **Online (sample-then-price) dual refinement for the joint-LP policy — opt-in
