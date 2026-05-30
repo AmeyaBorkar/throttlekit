@@ -287,6 +287,8 @@ export interface SketchRateLimiter {
  * slightly early once collisions inflate its estimate. By the CMS bound that early-denial slack is
  * `<= epsilon * N` with probability `>= 1 - delta`. Over-denying (never over-admitting) is exactly
  * the right bias for DDoS and abuse protection.
+ *
+ * @experimental Excluded from the 1.x SemVer guarantee (may change in a minor). See STABILITY.md.
  */
 export function sketchRateLimit(options: SketchRateLimitOptions): SketchRateLimiter {
   const limit = options.limit;
@@ -425,6 +427,8 @@ export interface MergeableSketch {
  * for an exact shared limit use {@link rateLimit} over a Redis/Postgres store, or `twoTier`. The
  * library provides the mergeable data structure and the math, not the merge schedule or transport —
  * those stay yours (gossip, a periodic push to a coordinator, etc.).
+ *
+ * @experimental Excluded from the 1.x SemVer guarantee (may change in a minor). See STABILITY.md.
  */
 export function mergeableSketch(options: MergeableSketchOptions = {}): MergeableSketch {
   const epsilon = options.epsilon ?? 0.01;

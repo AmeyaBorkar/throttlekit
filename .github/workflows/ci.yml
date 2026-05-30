@@ -22,6 +22,25 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
 
+  package:
+    name: Package surface (publint + attw)
+    runs-on: ubuntu-latest
+    # Locks the 24-subpath × ESM/CJS .d.ts/.d.cts resolution matrix. publint checks the published
+    # manifest (exports/main/types correctness); attw (--profile node16) verifies every subpath
+    # resolves to the right declarations under node16 + bundler resolution. Blocking: a freeze whose
+    # type-resolution silently rots is not frozen. node10 is intentionally out of scope (engines.node
+    # >=18; the exports map is not legacy-node-resolvable by design).
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run publint
+      - run: npm run attw
+
   test:
     name: Test (node ${{ matrix.node }})
     runs-on: ubuntu-latest

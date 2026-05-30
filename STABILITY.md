@@ -1,66 +1,87 @@
 # Stability & versioning policy
 
-ThrottleKit is **`0.x`**: feature-complete and heavily tested, but pre-1.0. This document
-states exactly what you can rely on today, what is still moving, and what `1.0` will commit
-to — so you can adopt the parts that are stable without waiting for the frontier to settle.
+ThrottleKit follows [Semantic Versioning](https://semver.org). This document is the **1.0 promise**:
+what is frozen, how it may still evolve without breaking you, and what is explicitly *not* covered.
 
-## Versioning today (`0.x`)
+## The promise (`1.x`)
 
-- **Additive, opt-in changes ship as a patch** (e.g. `0.11.1` added the joint-LP policy,
-  `0.11.2` adds the Postgres concurrency coordinator). New strategies, stores, adapters, and
-  opt-in options are additive and do not change existing behavior.
-- **Breaking changes are avoided** and, when unavoidable before `1.0`, are called out in the
-  CHANGELOG. The one earmarked breaking change for `1.0` is the `Decision.bindingAxis` field
-  (today exposed via the OTel `tk.binding_axis` attribute + `UnifiedAdmitter.lastDecisions()`).
-- The **Lua / SQL wire format is implicit** and may gain new script names (a compatible,
-  additive change); there is **no frozen wire protocol** yet (deliberately deferred).
+- **No breaking changes to the stable surface within `1.x`.** Removals and renames go through a
+  deprecation cycle (a minor marks `@deprecated`; removal waits for the next major).
+- **The library only adds, never narrows.** New strategies, stores, adapters, options, result fields,
+  and subpath entry points ship as **minor** releases. Bug fixes are **patches**.
+- **Experimental surface is carved out** (listed below) and may change in a minor — it is opt-in and
+  never affects the stable core or default behavior.
 
-## Two tiers
+## How a frozen API still evolves (the flexibility rules)
 
-### Stable core — relied upon, frozen in intent
+The surface is designed so it can grow for years without a major bump. Two rules, by direction:
 
-These surfaces have been stable across many releases and are what `1.0` will lock under
-SemVer. Changes here will be additive or follow a deprecation cycle.
+- **Producer types** — values the library *returns* and you *read* (`Decision`, `Forecast`, `*Stats`,
+  `UnifiedAdmission`): grow **only by appending optional `readonly` fields**. Therefore **do not
+  reject unknown keys** on them (no `zod.strict()` / exhaustive "no extra properties" validation on a
+  `Decision`) — a future minor may add an optional field, and strict consumers would break.
+- **Consumer interfaces** — contracts *you* implement and the library *calls* (`Store`, `Strategy`,
+  `Clock`, `ConcurrencyCoordinator`): grow **only by adding optional members**; a required member,
+  a narrowed parameter, or a widened return would be breaking and waits for a major. **Capability
+  detection is by presence:** an optional method that's present means the capability is available
+  (e.g. `store.applySync`, `limiter.peek`, `limiter.checkSync` throwing when unsupported). New
+  capabilities (e.g. a future `Store.applyMany?`) arrive this way, as minors.
+- **Closed string unions are major-version boundaries.** `FailMode` (`"open" | "closed"`),
+  `TwoTierMode`, `QuotaCadence`, and `DecisionKind` are conceptually-complete sets; adding a member is
+  a major. `UnifiedAxis` (`"rate" | "concurrency" | "cost"`) is the one union we expect *might* grow —
+  so every snapshot that keys on it is a `Partial<Record<UnifiedAxis, …>>`, which makes adding a 4th
+  axis a **minor**, not a major.
+- **Errors carry a frozen `code`.** Every `ThrottleKitError` has a `readonly code`
+  (`"store_unavailable" | "rate_limit_exceeded" | "not_implemented" | "queue_full" | "config_invalid"
+  | "throttlekit_error"`). Prefer it over `instanceof` when robustness across realms / duplicate
+  bundles matters. The value set grows additively.
 
-- **Types:** `Limiter`, `Store`, `Strategy`, `Decision`, `Clock`, `FailMode`.
-- **Algorithms:** `gcra`, `tokenBucket`, `fixedWindow`, `slidingWindow`, `slidingWindowLog`,
-  `quota`, `leakyBucket` — each pure, machine-checked, and dual-path conformant (JS ≡ Lua).
+These rules are **mechanically enforced**, not just documented: type-level tests (`test/types/`) pin
+the frozen shapes — `readonly` fields, the exact members of each closed union, `bindingAxis`'s shape,
+and the error-`code` set — and fail the typecheck (CI's `tsc`) on any drift, while `attw` + `publint`
+lock the ESM/CJS `.d.ts`/`.d.cts` resolution matrix across all 24 subpaths on every push.
+
+## Stable core — frozen under SemVer at `1.0`
+
+- **Types:** `Limiter`, `Store`, `Strategy`, `Decision`, `Clock`, `FailMode`, `Forecast`, and the
+  error family (`ThrottleKitError` + subclasses, with `code`).
+- **Algorithms:** `gcra`, `tokenBucket`, `fixedWindow`, `slidingWindow`, `slidingWindowLog`, `quota`,
+  `leakyBucket` — each pure, machine-checked, and dual-path conformant (JS ≡ Lua).
 - **Core API:** `rateLimit`, `combineDecisions`, `ALLOW_FULL`, `systemClock`, `ManualClock`,
-  the error types, `buildRateLimitHeaders`, `createEnforcer`.
-- **Stores:** `MemoryStore`, Redis (`throttlekit/redis`), Postgres (`throttlekit/postgres`),
-  DynamoDB, Deno KV, Cloudflare — all cross-conformant via the shared `testkit`.
-- **Framework adapters** (`throttlekit/express`, `/fastify`, `/koa`, `/hono`, `/next`,
-  `/nest`, `/sveltekit`, `/remix`, `/elysia`, `/trpc`, `/grpc`, `/lambda`, `/fetch`).
-- **Cross-cluster federation** (`federate`, `GlobalCoordinator`, `RedisCoordinator`,
-  `PostgresCoordinator`) — the K-independent overshoot bound is proven and shipped.
+  `buildRateLimitHeaders`, `createEnforcer`, `multiRateLimit` / `all` / `any`, `tapDecisions`,
+  the security helpers (`clientIp`, `hashKey`, `hmacKeyer`), and the config loader (`throttlekit/config`).
+- **Stores:** `MemoryStore`, Redis (`throttlekit/redis`), Postgres (`throttlekit/postgres`), DynamoDB,
+  Deno KV, Cloudflare — all cross-conformant via the shared `throttlekit/testkit`.
+- **Framework adapters** (`throttlekit/express`, `/fastify`, `/koa`, `/hono`, `/next`, `/nest`,
+  `/sveltekit`, `/remix`, `/elysia`, `/trpc`, `/grpc`, `/lambda`, `/fetch`).
+- **Cross-cluster federation** (`throttlekit/federation`: `federate`, `GlobalCoordinator`,
+  `RedisCoordinator`, `PostgresCoordinator`) — the K-independent overshoot bound is proven and shipped.
+- **Unified admission core:** `unifiedAdmission` and its `UnifiedAdmitter` / `UnifiedAdmission` shape
+  (including `bindingAxis` and `lastDecisions()`) and the OTel layer (`throttlekit/otel`).
+- **Pure-math helpers** (frozen signatures — fixed formulas, positional by design):
+  `eoqOptimum`, `guaranteedShare`, `weightedMaxMin`, `criticalFractile`.
 
-### Experimental frontier — opt-in, may be refined before `1.0`
+## Experimental — opt-in, excluded from the `1.x` SemVer guarantee
 
-These landed recently and may gain/rename options before `1.0`. They are **opt-in** — none
-affects the stable core or default behavior — and each carries its own caveats in the docs.
+These are tagged `@experimental` in their JSDoc. They ship and are tested, but their options/shapes
+may change in a **minor**; none affects the stable core or any default. Pin an exact version if you
+depend on their exact shape.
 
-- **Unified admission policy layer** — `unifiedAdmission` is stable; the `policy: "joint-lp"`
-  bid-price filter, `solveFluidLp`, and the planned `jointLp.adaptive` are experimental
-  (their value depends on workload modeling; see the joint-LP caveats).
-- **Distributed adaptive concurrency** — `distributedAdaptiveConcurrency` and its coordinators
-  are stable in their safety guarantee, but the tuning knobs (`acknowledgedHandoff`,
-  `eagerHandoff`, `selfFence`, and the new `allocation: "demand-proportional"`) are still being
-  calibrated and may change defaults.
-- **Escrow / two-tier layer** — `weightedFairEscrow`, `twoTier`, `leaseSizer`,
-  `predictiveLeaseSizer`, `learnedReservation`, `predictiveReservation`.
-- **Sketches & analytics** — `sketchRateLimit`, `mergeableSketch`, `withAnalytics`.
+- **Joint-LP admission policy:** `unifiedAdmission`'s `policy: "joint-lp"` filter, `jointLp.*`
+  (incl. `jointLp.adaptive`), and `solveFluidLp`. (`unifiedAdmission` itself with the default
+  `policy: "marginal"` is stable.)
+- **Distributed adaptive concurrency tuning knobs:** `distributedAdaptiveConcurrency`'s safety bound
+  is stable, but `acknowledgedHandoff`, `eagerHandoff`, `selfFence`, `recalibration`, and
+  `allocation: "demand-proportional"` are still being calibrated and may change defaults.
+- **Escrow / two-tier learned layer:** `weightedFairEscrow`, `federatedWeightedFairEscrow`,
+  `regionFairPool`, `twoTier`'s `lease.adaptive`, `leaseSizer`, `predictiveLeaseSizer`,
+  `learnedReservation`, `predictiveReservation`, `tokenBudget` / `distributedTokenBudget`,
+  `fairShare` / `weightedFairShare`. (The `twoTier` *modes* — `strict` / `cached-deny` / fixed-`batch`
+  `leased` — are stable; the learned sizers are the experimental part.)
+- **Sketches & analytics:** `sketchRateLimit`, `mergeableSketch`, `withAnalytics`.
 
-## What `1.0` will commit to
+## Explicitly out of scope at `1.0`
 
-1. No breaking changes to the **stable core** signatures within `1.x` (additive only;
-   removals go through a deprecation cycle).
-2. A decision on `Decision.bindingAxis` (add the field, or formally bless the current OTel +
-   `lastDecisions()` path as the permanent API).
-3. A documented wire-protocol versioning policy (whether the Lua/SQL format is frozen or stays
-   additive-only) — currently **deferred**; reopening it is an explicit, separate decision.
-4. Graduation of the experimental frontier items that have soaked, with any that remain in
-   flux clearly marked `@experimental`.
-
-We are intentionally **not rushing `1.0`**: declaring it commits to SemVer stability for all
-`1.x`, and several frontier features are days-to-weeks old. The plan is a deliberate
-stabilization milestone, not a date.
+- **The Lua / SQL wire format is not frozen.** It is implicit and additive-only (new script names are a
+  compatible change). Whether to publish a *versioned, frozen* wire protocol — the precondition for
+  third-party/polyglot clients — is a separate, deliberate decision, **deferred** past `1.0`.

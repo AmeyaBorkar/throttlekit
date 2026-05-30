@@ -111,6 +111,8 @@ const RED_TOL = 1e-7;
  *
  * @throws ThrottleKitError if `types` is empty, any `cost`/`value`/`weight` is
  *   non-finite or negative, or either budget is non-finite or ≤ 0.
+ *
+ * @experimental Excluded from the 1.x SemVer guarantee (may change in a minor). See STABILITY.md.
  */
 export function solveFluidLp(input: FluidLpInput): FluidLpSolution {
   validate(input);

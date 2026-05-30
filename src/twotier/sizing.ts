@@ -92,6 +92,8 @@ export function eoqOptimum(orderCost: number, strandPenalty: number, demand: num
  * const batch = sizer.size();          // use this as twoTier lease.batch
  * // …serve the window, counting how many credits this node actually demanded…
  * sizer.observe(demandThisWindow);     // learn for next window
+ *
+ * @experimental Excluded from the 1.x SemVer guarantee (may change in a minor). See STABILITY.md.
  */
 export function leaseSizer(options: LeaseSizerOptions): LeaseSizer {
   const c = options.orderCost;
@@ -185,6 +187,8 @@ export interface PredictiveLeaseSizer {
  * const batch = sizer.size(predictedDemandNextWindow); // blends the hint with the robust learner
  * // …serve the window…
  * sizer.observe(realisedDemand);
+ *
+ * @experimental Excluded from the 1.x SemVer guarantee (may change in a minor). See STABILITY.md.
  */
 export function predictiveLeaseSizer(options: PredictiveLeaseSizerOptions): PredictiveLeaseSizer {
   const c = options.orderCost;

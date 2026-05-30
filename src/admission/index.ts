@@ -869,6 +869,8 @@ export function criticalFractile(holdCost: number, overrunCost: number): number 
  *   }
  *   policy.observe(produced); // learn from the realised cost
  * }
+ *
+ * @experimental Excluded from the 1.x SemVer guarantee (may change in a minor). See STABILITY.md.
  */
 export function learnedReservation(options: LearnedReservationOptions): LearnedReservation {
   const h = options.holdCost;
@@ -967,6 +969,8 @@ export interface PredictiveReservation {
  * const r = policy.reserve(predictedOutputLength); // blends the hint with the robust learner
  * // …run the request under a tokenBudget meter, then:
  * policy.observe(producedTokens);
+ *
+ * @experimental Excluded from the 1.x SemVer guarantee (may change in a minor). See STABILITY.md.
  */
 export function predictiveReservation(
   options: PredictiveReservationOptions,

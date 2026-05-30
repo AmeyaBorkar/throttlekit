@@ -171,6 +171,8 @@ class StreamSummary {
  * A request is counted exactly once per *successful* inner check, against the window the check
  * lands in. Each observation feeds the requested summary; denials additionally feed the denied
  * summary.
+ *
+ * @experimental Excluded from the 1.x SemVer guarantee (may change in a minor). See STABILITY.md.
  */
 export function withAnalytics(limiter: Limiter, options: AnalyticsOptions = {}): AnalyticsLimiter {
   const topK = options.topK ?? 10;
