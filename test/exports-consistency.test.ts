@@ -25,6 +25,7 @@ interface SubpathTarget {
 interface PackageJson {
   exports: Record<string, SubpathTarget | string>;
   bin: Record<string, string>;
+  files: string[];
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -79,4 +80,38 @@ describe("package exports ⇆ tsup entries", () => {
       expect(pkg.exports[`./${name}`]).toBeDefined();
     });
   }
+});
+
+/**
+ * npm publishes ONLY `package.json#files` (plus a few always-included names). This is the wall
+ * that keeps internal source, TLA⁺ specs, tests, and the LOCAL-ONLY research/roadmap/paper docs
+ * out of the tarball. Guard its SHAPE so a careless `files` edit can't start shipping internals.
+ */
+describe("package files allowlist (no internal leakage)", () => {
+  it("ships the built output", () => {
+    expect(pkg.files).toContain("dist");
+  });
+
+  it("lists no path into a subdirectory — a slash would publish a whole internal tree", () => {
+    for (const entry of pkg.files) {
+      expect(entry).not.toMatch(/[/\\]/);
+    }
+  });
+
+  it("never lists an internal source/research/spec directory or a wildcard", () => {
+    for (const forbidden of [
+      "src",
+      "research",
+      "spec",
+      "test",
+      "bench",
+      "examples",
+      "grafana",
+      ".",
+      "*",
+      "**",
+    ]) {
+      expect(pkg.files).not.toContain(forbidden);
+    }
+  });
 });

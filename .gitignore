@@ -19,3 +19,11 @@ states/
 
 # Claude Code session state — runtime-only, never committed.
 .claude/
+
+# Strategic / unpublished research kept LOCAL (0.13.0, #206): the roadmap + paper drafts.
+# The DESIGN docs, verification gates, and eval data (.ts/.json/.csv/.svg) stay tracked as PUBLIC
+# evidence — only these prose documents are private. They stay on disk, just out of the repo.
+research/bigger-bets/PLAN.md
+research/hotnets2026/
+research/gale/*.md
+research/cost-uncertainty/*.md
