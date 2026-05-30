@@ -8,6 +8,61 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [1.0.0] — 2026-05-31
+
+**The API is frozen under SemVer.** ThrottleKit is feature-complete and battle-tested; `1.0` is a
+commitment, not a rewrite. The stable core (algorithms, stores, adapters, federation, the unified-
+admission core) now only grows additively within `1.x`, and that promise is **mechanically enforced**,
+not just documented. Upgrading from `0.13.0` is a recompile: runtime behavior is byte-for-byte
+unchanged, and the only source-level break is one long-deprecated type alias. See
+[STABILITY.md](./STABILITY.md) for the full v1 promise and [BENCH.md](./BENCH.md) for measured numbers.
+
+### Added
+
+- **The v1 promise, written down and enforced ([STABILITY.md](./STABILITY.md)).** Explicit
+  producer-vs-consumer evolution rules (producer result types grow only by appending optional `readonly`
+  fields; consumer interfaces grow only by optional members, capability-by-presence), closed-union
+  boundaries as major-version lines, and the enumerated stable-core vs. opt-in experimental frontier.
+- **Mechanical enforcement so the freeze can't silently rot.** Type-level surface tests
+  (`test/types/freeze-surface.test.ts`) pin the frozen shapes — `readonly` `Decision`/`Forecast` fields,
+  the exact members of each closed union, `bindingAxis`'s shape, the error-`code` set — and fail the
+  typecheck on any drift; `publint` + `attw` (`--profile node16`) lock the 24-subpath ESM/CJS
+  `.d.ts`/`.d.cts` resolution matrix on every push (new CI `package` job, new `npm run check:package`).
+- **`bindingAxis` on the `UnifiedAdmission` result (TK-1410, #182) — the decision that gated the freeze.**
+  A denied unified decision now carries `readonly bindingAxis?: UnifiedAxis` (`"rate"` | `"concurrency"` |
+  `"cost"`) naming the axis that bound, matching the existing `throttlekit.binding_axis` OTel attribute
+  and `lastDecisions()`. Placed on the multi-axis result wrapper, **not** the universal `Decision` (where
+  it would be meaningless for every single-strategy producer). Additive.
+- **A frozen `code` discriminant on every error.** `ThrottleKitError` (and subclasses) now expose a
+  `readonly code: ThrottleKitErrorCode` (`"throttlekit_error"` | `"store_unavailable"` |
+  `"not_implemented"` | `"rate_limit_exceeded"` | `"queue_full"` | `"config_invalid"`) — prefer it over
+  `instanceof` when robustness across realms or duplicate bundles matters. The value set grows additively.
+- **[BENCH.md](./BENCH.md)** — a measured, reproducible performance document (in-process sync/async +
+  concurrency, head-to-head vs. `rate-limiter-flexible` and `express-rate-limit` across memory/Redis/
+  Postgres, the two-tier leasing lever), packaged with the release.
+- **`@experimental` JSDoc** on the opt-in frontier (`solveFluidLp`, `learnedReservation`,
+  `predictiveReservation`, `sketchRateLimit`, `mergeableSketch`, `withAnalytics`, `leaseSizer`,
+  `predictiveLeaseSizer`) so the carve-out is visible at the source.
+
+### Changed
+
+- **`Decision` and `Forecast` result fields are now `readonly`.** Provably non-breaking at runtime
+  (nothing mutates a returned `Decision`); a compile error here means code was mutating a value it should
+  treat as immutable.
+- **`UnifiedAdmitter.lastDecisions()` is now typed `Readonly<Partial<Record<UnifiedAxis, Decision>>>`**
+  (was a total `Record`). Unconfigured axes were already absent at runtime; the `Partial` makes that
+  explicit — and makes a future fourth admission axis a **minor**, not a major. TypeScript consumers that
+  indexed an axis directly may now need a presence check.
+- **`YamlParseError` (`throttlekit/config`) now extends `ThrottleKitError`** (was bare `Error`), so config
+  parse failures are catchable by the error family. Additive — it remains `instanceof Error`.
+- **README rewritten** into a concise, numbers-led production form (the verified bound + the measured
+  perf lead; honest caveats and losses live in BENCH.md / SCOREBOARD.md).
+
+### Removed
+
+- **`FetchLimiterOrStrategy`** — the lone `@deprecated` type alias in `throttlekit/fetch`. The only
+  source-level break in this release; replace it with `LimiterOrStrategy` (what it already aliased).
+
 ## [0.13.0] — 2026-05-31
 
 **Adaptive lease sizing wired into `twoTier`, opt-in concurrency recalibration, and a blocking,

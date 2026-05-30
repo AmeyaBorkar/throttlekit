@@ -2,12 +2,14 @@
 
 Whether the project meets its stated expectations. Legend: ✅ met · 🟡 partial · ⬜ not started.
 
-Benchmarks below were produced on **2026-05-28** by `npm run bench -- --redis` (with `--expose-gc`)
-and the head-to-head `npm run bench:compare`, on: **AMD Ryzen AI 9 HX 370** (24 logical cores),
-31 GB RAM, Windows 11 (build 26200), **Node v24.13.1**; Redis 7 and PostgreSQL 16 in Docker Desktop
-(WSL2 backend) over the loopback. All are reproducible on your hardware (`npm run bench`), not vendor
-claims, and vary run-to-run (±10% on the sync and Redis rows; the async in-process rows swing more,
-since the comparative harness runs all contenders in one process under shared GC pressure).
+Benchmarks below were produced for **1.0.0 on 2026-05-31** by `npm run bench -- --redis` (with
+`--expose-gc`) and the head-to-head `npm run bench:compare`, on: **AMD Ryzen AI 9 HX 370** (24 logical
+cores), 31 GB RAM, Windows 11 (build 26200), **Node v24.13.1**; Redis 7 and PostgreSQL 16 in Docker
+Desktop (WSL2 backend) over the loopback. **[BENCH.md](./BENCH.md) is the canonical performance
+document** (full methodology, per-tier tables, caveats); the headline numbers are echoed here against
+their design targets. All are reproducible on your hardware (`npm run bench`), not vendor claims, and
+vary run-to-run (±10% on the sync and Redis rows; the async in-process rows swing more, since the
+comparative harness runs all contenders in one process under shared GC pressure).
 **The Redis/Postgres latencies here are Docker-Desktop-on-Windows (WSL2, NAT-bound) and are dominated
 by that network path — native Linux / CI is materially lower. Read the cross-library *relative*
 numbers and the round-trip *counts* as the signal, not the absolute microseconds.**
@@ -16,14 +18,14 @@ numbers and the round-trip *counts* as the signal, not the absolute microseconds
 
 | Path | Target | Measured | Status |
 |---|---|---|---|
-| In-memory `checkSync` (GCRA) | sub-microsecond; ~0 steady-state allocations | **171 ns/op (5.85M ops/s)**, ~1 B/op | ✅ |
-| In-memory `check` (async) | low single-digit microseconds | **284 ns/op (3.52M ops/s)** | ✅ |
-| Redis `strict` decision | exactly **1** round trip | **1 EVALSHA / req**; p50 ~1.2ms / p99 ~1.8ms (Docker/WSL2 loopback) | ✅ |
-| `leased` steady state | ~**1 round trip per B** requests | **exactly 100 reqs / round trip** at batch 100 (69.9k ops/s) | ✅ |
+| In-memory `checkSync` (GCRA) | sub-microsecond; ~0 steady-state allocations | **169 ns/op (5.9M ops/s)**, ~1 B/op | ✅ |
+| In-memory `check` (async) | low single-digit microseconds | **~300 ns/op (3.3M ops/s)** | ✅ |
+| Redis `strict` decision | exactly **1** round trip | **1 EVALSHA / req**; p50 ~1.2ms / p99 ~2.4ms (Docker/WSL2 loopback) | ✅ |
+| `leased` steady state | ~**1 round trip per B** requests | **exactly 100 reqs / round trip** at batch 100 (66.4k ops/s) | ✅ |
 | Multi-dimensional (k axes) on Redis | **1** round trip regardless of k | **1 fused EVALSHA** over k keys (conformance-proven) | ✅ |
 | Unified admission (rate ⊕ concurrency ⊕ cost) Lua-fused | **1** round trip for rate + cost | **1 fused EVALSHA** (`tk:v1:fused-rc:check`); concurrency stays in-process; sequential ≡ fused byte-identical across 300 timelines (TK-1006) | ✅ |
 
-Token bucket `checkSync` 200 ns/op (5.00M ops/s); fixed window `checkSync` 215 ns/op (4.65M ops/s, ~0 B/op). Numbers re-baselined for 0.9.0 (best-of-10 ×2M iters; pinned in `bench/baseline.json`; the bench gate fails the build on >10% regression vs that file). The drift from 0.8.5 numbers (186/181/192 → 171/200/215 ns) is within machine-state noise on Windows micro-benchmarks: no `src/algorithms/*` or `src/core/limiter.ts` or `src/stores/memory.ts` files changed between 0.8.5 and 0.9.0 (verified via `git diff --stat 865656b..HEAD`), only NEW files were added. **0.9.1 carries the 0.9.0 baseline forward unchanged** — the new `src/twotier/weighted-fair-escrow.ts` is an O(N) per-tenant primitive (N = active tenants), separate from the per-key hot path; no algorithm or store files changed at all in 0.9.1.
+Token bucket `checkSync` 181 ns/op (5.5M ops/s); fixed window `checkSync` 193 ns/op (5.2M ops/s, ~0 B/op). **The 1.0.0 freeze touched only `readonly` modifiers and JSDoc on these paths — zero runtime change — so the baseline carries forward.** `bench/baseline.json` pins a machine-independent *relative* metric (each strategy's cost normalised to an in-run reference loop), and the CI bench gate is now **blocking**: a real hot-path regression fails the build rather than shipping. Numbers vary a few percent run-to-run on Windows micro-benchmarks; see [BENCH.md](./BENCH.md) for the full per-tier breakdown.
 
 ## Versus alternatives (`npm run bench:compare`)
 
@@ -35,18 +37,19 @@ same guarantee even at equal ops/s. Nothing hidden or cherry-picked.
 
 | Library | Algorithm | API | ops/s | ns/op |
 |---|---|---|---|---|
-| **throttlekit** | GCRA | `checkSync` (sync) | **5.84M** | 171 (≈1 B/op) |
-| **throttlekit** | GCRA | `check` (async) | 3.39M | 295 |
-| throttlekit | fixed-window | `check` (async) | 3.41M | 293 |
-| rate-limiter-flexible | fixed-window | `consume` (async) | 2.77M | 362 |
-| express-rate-limit | fixed-window | store `increment` (async) | 4.74M | 211 |
+| **throttlekit** | GCRA | `checkSync` (sync) | **5.9M** | 169 (≈1 B/op) |
+| **throttlekit** | GCRA | `check` (async) | 3.3M | 301 |
+| throttlekit | fixed-window | `check` (async) | 3.3M | 300 |
+| rate-limiter-flexible | fixed-window | `consume` (async) | 3.0M | 331 |
+| express-rate-limit | fixed-window | store `increment` (async) | 5.0M | 199 |
 
-ThrottleKit owns the **sync** path (≈allocation-free at 171 ns; no incumbent offers a sync API) and
-on **async** now edges *past* rate-limiter-flexible (3.4M vs 2.77M) while doing more real work per
+ThrottleKit owns the **sync** path (≈allocation-free at 169 ns; no incumbent offers a sync API) and
+on **async** edges *past* rate-limiter-flexible (3.3M vs 3.0M) while doing more real work per
 check — GCRA / fixed-window returning a full immutable `Decision` over a timing-wheel + CLOCK store
 (smooth pacing, bounded memory, TTL expiry). express-rate-limit's bare `Map.increment` (a plain
-counter, no `Decision` object) is still ~1.4× faster on this micro-benchmark — the honest cost of
-ThrottleKit's richer per-check contract. The `throttlekit` fixed-window row is the closest
+counter, no `Decision` object) is ~1.5× faster *async* on this micro-benchmark — the honest cost of
+ThrottleKit's richer per-check contract, though ThrottleKit's `checkSync` computes a full decision in
+less time still (169 ns). The `throttlekit` fixed-window row is the closest
 apples-to-apples. All contenders are far beyond real-world per-process need; the distributed tail and
 `leased` amortization matter more in practice.
 
@@ -54,27 +57,28 @@ apples-to-apples. All contenders are far beyond real-world per-process need; the
 
 | Library | Algorithm | ops/s | p50 | p99 | p999 |
 |---|---|---|---|---|---|
-| **throttlekit** | GCRA | 787 | 1.22 ms | 1.83 ms | **2.28 ms** |
-| rate-limiter-flexible | fixed-window | 824 | 1.17 ms | 1.79 ms | 3.01 ms |
+| **throttlekit** | GCRA | 778 | 1.19 ms | **2.39 ms** | **3.87 ms** |
+| rate-limiter-flexible | fixed-window | 752 | 1.23 ms | 2.58 ms | 4.45 ms |
 
-Both do one atomic Lua round trip per request; **tied on throughput and p50** (latency-bound, serial
-awaits — not pipelined), but ThrottleKit holds a **tighter tail** — p999 ~1.3× lower (cached
-`EVALSHA` + a leaner script). `@upstash/ratelimit` is excluded: it requires the Upstash cloud REST
-endpoint and can't be benchmarked locally on equal footing.
+Both do one atomic Lua round trip per request; **level on throughput and p50** (latency-bound, serial
+awaits — not pipelined), with ThrottleKit holding a **tighter tail** in this run — p99 and p999 both
+lower (cached `EVALSHA` + a leaner script). The absolute milliseconds are the Docker-on-Windows
+loopback, not Redis; read the *relative* shape. `@upstash/ratelimit` is excluded: it requires the
+Upstash cloud REST endpoint and can't be benchmarked locally on equal footing.
 
 **PostgreSQL (loopback, identical `pg.Pool` / server / DB):**
 
 | Library | Algorithm | Round trips | ops/s | p50 / avg |
 |---|---|---|---|---|
-| throttlekit `PostgresStore` | GCRA | ~5 (txn) | 127 | 7.6 ms |
-| **rate-limiter-flexible** | fixed-window | 1 (upsert) | **372** | **2.5 ms** |
-| **throttlekit `twoTier(leased)`** | GCRA | 1 per **100** reqs | **13.8k** | **72.6 µs** |
+| throttlekit `PostgresStore` | GCRA | ~5 (txn) | 121 | 7.9 ms |
+| **rate-limiter-flexible** | fixed-window | 1 (upsert) | **348** | **2.7 ms** |
+| **throttlekit `twoTier(leased)`** | GCRA | 1 per **100** reqs | **12.3k** | **81 µs** |
 
 Two honest, opposite results. **Per single op, rate-limiter-flexible wins ~2.9×** — it expresses its
 counter as one atomic `INSERT … ON CONFLICT DO UPDATE`, while `PostgresStore` runs a generic
 read-modify-write **transaction** (advisory lock → read → write → commit) so the *same proven
 transform* drives every strategy and backend; that generality costs round trips. **At throughput,
-`twoTier(leased)` over Postgres wins ~37×** (13.8k vs 372 ops/s; 72.6 µs vs 2.5 ms/op) — one
+`twoTier(leased)` over Postgres wins ~35×** (12.3k vs 348 ops/s; 81 µs vs 2.7 ms/op) — one
 transaction per `batch`, a lever rate-limiter-flexible has no equivalent for. So: reach for leased on
 hot keys; the bare single-op path trails on latency by design. (A single-round-trip per-op win is
 possible via a server-side PL/pgSQL function — a third execution path — but isn't shipped.) Per-op
@@ -165,6 +169,6 @@ shipped (Layers 1–3 now ship). Reproduce with `npx vitest run test/cost`.
 |---|---|
 | `biome check` clean (0 warnings) | ✅ |
 | `tsc --noEmit` clean (strict, incl. examples) | ✅ |
-| Test coverage on `src` | ✅ **1403 tests** (1098 pass + 125 skipped without `THROTTLEKIT_TEST_REDIS`/`PG`; the 65-test growth in 0.10.0 is the distributed-adaptive-concurrency suite — the heartbeat-leasing BFS twin (occupancy-capped model; `GlobalCap` AND `InflightCap` on every reachable state, distinct=76, re-checked exhaustively at {2,3} nodes × L∈{4,6}) + property invariants (committed-`GlobalCap` under out-of-order grants; the D-DAC-18 occupancy cap eliminating the **synchronous** rebalance overshoot; a deterministic regression test pinning the bounded **async** reply-lag residual that the cap does NOT remove — DESIGN §9.3) + dual-path Test≡Redis coordinator conformance (incl. the inflight-debt-dominates case) + unit coverage of the `distributedAdaptiveConcurrency` primitive (TK-1316), plus the `adaptiveConcurrency`/distributed acquire-path bench. TK-1330 (D-DAC-19, opt-in acknowledged handoff) adds the async BFS twin (refutes committed-snapshot + grant-only, proves the union hard + tight, torn-report negative test) + the residual flip-to-≤L property test + handoff dual-path cases — and `spec/GaleHeartbeatHandoff.tla` is **TLC-verified** (250,624 states, hard + tight); running TLC also confirmed the 0.10.0 sync spec at 76 distinct = the twin's pinned 76 (TLC parity now established, no longer pending a Java env). 0.11.0 (D-DAC-20 eager handoff + D-DAC-21 self-fencing) adds the eager-handoff suite (phase-swept REAL-guard ramp sim — eager mean ramp ≪ periodic's flat 2×heartbeat, `Σ inflight ≤ L` at every phase + triggers/steady-state/compat + Redis dual-path) and the self-fencing suite (a timed-model gate deriving the exact `fenceSafetyMargin ≥ maxSkew` and refuting a smaller one, + a real-guard suite incl. the headline no-overshoot-on-takeover integration). 0.11.1 (joint-LP admission policy) adds the fluid-LP solver suite — the THEORY fixture, a now-independent KKT optimality certificate, a random-feasible lower bound, AND a tie-heavy integer cross-check against a brute-force oracle (the degenerate class the first solver got wrong, found by adversarial review) — plus the empirical-regret gate (ε band over the four non-degenerate ρ + the ρ=+1 foil regression guard), the joint-LP property suite (monotone/strictly-selective/default-unchanged-with-golden/duals=0≡marginal/shape), the **budget-preservation** regression (a filtered request consumes no budget — the bid-price filter runs before the rate/cost debit), the Redis dual-path (filter identical seq≡fused), and a closed-guard rejection test; the 3-skeptic adversarial pass found and fixed the solver degeneracy + the filter-ordering budget drain + a pre-existing sequential slot-leak. All pre-existing tests carried forward; bench gate green at the 0.9.0 baseline. 0.11.2 adds the **PostgresConcurrencyCoordinator** (TK-1402, dual-path `Test ≡ Postgres` across aggregate × allocation × handoff, via the shared `heartbeat-core` refactor) + **demand-proportional allocation** (TK-1403, exhaustive BFS twin under the new target + the skew gate + 3 adversarial skeptics). 0.11.3 adds the **online guarded dual refinement** (`jointLp.adaptive`, TK-1401 — the regret gate reproduced on the shipped state machine + warm-up invariants + the autocorrelation foil-cousin guard + a 3-skeptic pass) and the **3-axis joint-LP** concurrency shadow price (TK-1405 — a 3-budget dual solver + filter behavior + a 3-skeptic pass that caught the per-request-`hold` validation + `admitFractions`-feasibility bugs, both regression-guarded). The **federated WFE** (TK-1404, 0.12.0) adds the composition gate (fluid exactness = 0 dev on 4 + 400 worlds + the F1–F4 failure boundary + a Part-5 validation of the shipped `regionFairPool`∘`federatedWeightedFairEscrow` against the flat oracle) + 17 tests + a 3-skeptic pass that caught a cost>1 lazy-lease deadlock, an `l1.maxKeys` eviction over-admit, and a gate-vs-code gap (all regression-guarded), re-verified at an 854K-trial Σ≤L fuzz. Coverage **re-baselined at 0.11.3**: **87.8% lines / 86.1% branch / 91.6% func** on `src` (full Redis+Postgres run, 1329 tests) — up from 0.11.2's 87.4 / 85.6 / 91.4 (the new solver + warm-up + 3-axis code is well-covered). The 0.8.0 95.2% figure predates the ~4× surface growth from federation/admission/concurrency + research scaffolding — the lower number reflects breadth, not a core regression). **0.13.0** adds adaptive lease sizing wired into `twoTier` (`lease.adaptive`, GALE Pillar 2 — 10 integration tests incl. a 4-node Σ≤Limit safety sim), opt-in Envoy-style minRTT recalibration for `adaptiveConcurrency` (7 tests), the `throttlekit/twotier` subpath + an exports-allowlist guard, version single-sourcing, and a **blocking, machine-independent** bench gate; full suite **1403 green** with Redis+Postgres serial. |
+| Test coverage on `src` | ✅ **1414 tests** (full Redis+Postgres serial run; ~125 skip without `THROTTLEKIT_TEST_REDIS`/`PG`; the 65-test growth in 0.10.0 is the distributed-adaptive-concurrency suite — the heartbeat-leasing BFS twin (occupancy-capped model; `GlobalCap` AND `InflightCap` on every reachable state, distinct=76, re-checked exhaustively at {2,3} nodes × L∈{4,6}) + property invariants (committed-`GlobalCap` under out-of-order grants; the D-DAC-18 occupancy cap eliminating the **synchronous** rebalance overshoot; a deterministic regression test pinning the bounded **async** reply-lag residual that the cap does NOT remove — DESIGN §9.3) + dual-path Test≡Redis coordinator conformance (incl. the inflight-debt-dominates case) + unit coverage of the `distributedAdaptiveConcurrency` primitive (TK-1316), plus the `adaptiveConcurrency`/distributed acquire-path bench. TK-1330 (D-DAC-19, opt-in acknowledged handoff) adds the async BFS twin (refutes committed-snapshot + grant-only, proves the union hard + tight, torn-report negative test) + the residual flip-to-≤L property test + handoff dual-path cases — and `spec/GaleHeartbeatHandoff.tla` is **TLC-verified** (250,624 states, hard + tight); running TLC also confirmed the 0.10.0 sync spec at 76 distinct = the twin's pinned 76 (TLC parity now established, no longer pending a Java env). 0.11.0 (D-DAC-20 eager handoff + D-DAC-21 self-fencing) adds the eager-handoff suite (phase-swept REAL-guard ramp sim — eager mean ramp ≪ periodic's flat 2×heartbeat, `Σ inflight ≤ L` at every phase + triggers/steady-state/compat + Redis dual-path) and the self-fencing suite (a timed-model gate deriving the exact `fenceSafetyMargin ≥ maxSkew` and refuting a smaller one, + a real-guard suite incl. the headline no-overshoot-on-takeover integration). 0.11.1 (joint-LP admission policy) adds the fluid-LP solver suite — the THEORY fixture, a now-independent KKT optimality certificate, a random-feasible lower bound, AND a tie-heavy integer cross-check against a brute-force oracle (the degenerate class the first solver got wrong, found by adversarial review) — plus the empirical-regret gate (ε band over the four non-degenerate ρ + the ρ=+1 foil regression guard), the joint-LP property suite (monotone/strictly-selective/default-unchanged-with-golden/duals=0≡marginal/shape), the **budget-preservation** regression (a filtered request consumes no budget — the bid-price filter runs before the rate/cost debit), the Redis dual-path (filter identical seq≡fused), and a closed-guard rejection test; the 3-skeptic adversarial pass found and fixed the solver degeneracy + the filter-ordering budget drain + a pre-existing sequential slot-leak. All pre-existing tests carried forward; bench gate green at the 0.9.0 baseline. 0.11.2 adds the **PostgresConcurrencyCoordinator** (TK-1402, dual-path `Test ≡ Postgres` across aggregate × allocation × handoff, via the shared `heartbeat-core` refactor) + **demand-proportional allocation** (TK-1403, exhaustive BFS twin under the new target + the skew gate + 3 adversarial skeptics). 0.11.3 adds the **online guarded dual refinement** (`jointLp.adaptive`, TK-1401 — the regret gate reproduced on the shipped state machine + warm-up invariants + the autocorrelation foil-cousin guard + a 3-skeptic pass) and the **3-axis joint-LP** concurrency shadow price (TK-1405 — a 3-budget dual solver + filter behavior + a 3-skeptic pass that caught the per-request-`hold` validation + `admitFractions`-feasibility bugs, both regression-guarded). The **federated WFE** (TK-1404, 0.12.0) adds the composition gate (fluid exactness = 0 dev on 4 + 400 worlds + the F1–F4 failure boundary + a Part-5 validation of the shipped `regionFairPool`∘`federatedWeightedFairEscrow` against the flat oracle) + 17 tests + a 3-skeptic pass that caught a cost>1 lazy-lease deadlock, an `l1.maxKeys` eviction over-admit, and a gate-vs-code gap (all regression-guarded), re-verified at an 854K-trial Σ≤L fuzz. Coverage **re-baselined at 0.11.3**: **87.8% lines / 86.1% branch / 91.6% func** on `src` (full Redis+Postgres run, 1329 tests) — up from 0.11.2's 87.4 / 85.6 / 91.4 (the new solver + warm-up + 3-axis code is well-covered). The 0.8.0 95.2% figure predates the ~4× surface growth from federation/admission/concurrency + research scaffolding — the lower number reflects breadth, not a core regression). **0.13.0** adds adaptive lease sizing wired into `twoTier` (`lease.adaptive`, GALE Pillar 2 — 10 integration tests incl. a 4-node Σ≤Limit safety sim), opt-in Envoy-style minRTT recalibration for `adaptiveConcurrency` (7 tests), the `throttlekit/twotier` subpath + an exports-allowlist guard, version single-sourcing, and a **blocking, machine-independent** bench gate; full suite **1403 green** with Redis+Postgres serial. **1.0.0** freezes the API under SemVer (the v1 promise + mechanical enforcement: type-level surface tests + `attw` + `publint`), adds the `bindingAxis` result field, the error-`code` discriminant, and BENCH.md; the freeze adds 11 tests (binding-axis + freeze-surface) and a federation-gate timeout fix — full suite **1414 green** with Redis+Postgres serial. |
 | CI green (lint, typecheck, test matrix node 20/22/24 + Redis service, build) + bench:gate regression gate (blocking, machine-independent) | ✅ |
 | Build emits valid ESM + CJS + types (12 subpaths — added `throttlekit/federation`) | ✅ |
