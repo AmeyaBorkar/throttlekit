@@ -6,6 +6,14 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.13.0] — 2026-05-31
+
+**Adaptive lease sizing wired into `twoTier`, opt-in concurrency recalibration, and a blocking,
+machine-independent bench gate. Additive and opt-in; `0.12.0` users upgrade with zero behavior
+change — fixed-batch leasing and Netflix-style concurrency are byte-for-byte unchanged.**
+
 ### Added
 
 - **Adaptive lease sizing for `twoTier` leased mode — GALE Pillar 2, now wired in (TK-1407, #177).**
@@ -33,6 +41,17 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   resulting low-concurrency samples, and adopts it. Off by default (today's Netflix-style windowed
   min, byte-for-byte unchanged). The probe only *reduces* concurrency, so it can never over-admit; it
   costs a brief throughput dip while draining. Pinned by `test/concurrency/adaptive-recalibration.test.ts`.
+- **`throttlekit/twotier` subpath export (#205).** The two-tier / escrow family (`twoTier`,
+  `weightedFairEscrow`, `federatedWeightedFairEscrow`, `regionFairPool`, `leaseSizer`, …) now imports
+  from `throttlekit/twotier` as well as the root barrel, so the documented subpath resolves. Additive —
+  the root barrel is byte-for-byte unchanged.
+
+### Changed
+
+- **The CI bench regression gate is now blocking and machine-independent (TK-1408, #179).** It compares
+  each strategy's `checkSync` cost normalised to an in-run reference loop (a dimensionless ratio), so a
+  baseline recorded on one machine stays valid on any CI runner; the `bench-gate` job dropped
+  `continue-on-error`, so a real relative hot-path regression now fails the build.
 
 ## [0.12.0] — 2026-05-30
 
