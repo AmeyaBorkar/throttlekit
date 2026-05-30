@@ -66,6 +66,12 @@ requests.
   with `lease.windowCoupled: true` (which discards stale credits at the L2 window boundary). The
   outage does not loosen this bound; it only defers the re‑lease. See
   [`docs/FORMAL-MODEL.md`](FORMAL-MODEL.md).
+- **`leased` with `lease.adaptive` (online lease sizing, GALE Pillar 2):** the learner only chooses
+  `batch`, which by the bound above governs *efficiency*, not the cap — worst‑case admissions stay
+  within `Limit + N·(batch−1)` for whatever batch it picks (exactly `Limit` under `windowCoupled`),
+  so no learner output can over‑admit. A learner that transiently overshoots to a large batch just
+  strands budget that window (under‑utilization), self‑correcting as it observes realised demand.
+  Per‑key learner state is bounded by `l1.maxKeys` (set it on public endpoints, as for any leased mode).
 
 ## Federation outages (`federate(...)` / `FederatedStore`)
 

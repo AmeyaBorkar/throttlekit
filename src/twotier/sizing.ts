@@ -22,12 +22,13 @@
  * (the batch only sets coordination frequency, not the bound), so adaptive sizing can never loosen the
  * proven guarantee — it only trades coordination against stranding.
  *
- * **Using it with {@link twoTier} today.** This is a standalone, pure learner: keep one per leasing
- * node, and each window feed it the demand you observed ({@link LeaseSizer.observe}) and read back the
- * batch to use next ({@link LeaseSizer.size}) — e.g. reconstruct the limiter with the new
- * `lease.batch`, or use it to choose the batch at startup from a demand estimate. Wiring the sizer
- * *into* the `twoTier` lease loop as live in-flight adaptation is a deliberate follow-up (it changes
- * the async hot path and is best validated by the at-scale cluster eval); the learner itself ships now.
+ * **Using it with {@link twoTier}.** Set `lease.adaptive` (these {@link LeaseSizerOptions}, or a
+ * `() => LeaseSizer` factory) and the limiter drives one of these learners *per key* automatically:
+ * each L2 window it feeds the learner the demand that key actually served and leases at the size it
+ * reads back, with safety unchanged (Pillar 1 caps admissions for any size). You can also still drive
+ * a sizer by hand — call {@link LeaseSizer.observe} each window and reconstruct the limiter with the
+ * new `lease.batch` — e.g. to pick a startup batch from a demand estimate, or to use
+ * {@link predictiveLeaseSizer} (which needs a per-window demand hint the in-loop wiring can't supply).
  *
  * Pure and deterministic: no clock, no RNG.
  */

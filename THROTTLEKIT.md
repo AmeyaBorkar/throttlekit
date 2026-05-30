@@ -108,10 +108,11 @@ that primitive — not a different library.
 
 9. **Provable distributed leasing (research track).** The leasing bound anchors an ongoing research
    program — *GALE* — that makes overshoot **independent of fleet size** (shipped as
-   `lease.windowCoupled`), sizes leases online with an `O(√T)`-regret guarantee (online EOQ), adds
-   **weighted work-conserving fairness** across tenants, and proves a **trilemma** lower bound tying
-   overshoot, coordination, and utilization. Each result is machine-checked or measured; see
-   [`research/gale/`](./research/gale). (Research modules; not public API beyond `lease.windowCoupled`.)
+   `lease.windowCoupled`), sizes leases online with an `O(√T)`-regret guarantee (online EOQ, shipped as
+   `lease.adaptive`), adds **weighted work-conserving fairness** across tenants (`weightedFairEscrow`,
+   `federatedWeightedFairEscrow`), and proves a **trilemma** lower bound tying overshoot, coordination,
+   and utilization. Each result is machine-checked (`test/gale/`) or measured. Pillars graduate into the
+   public API as they harden; the remainder stays in the research track.
 
 ---
 
@@ -512,6 +513,13 @@ exceed the configured limit by at most `L × B` within a refill interval — a b
 `B = 1` to recover strict behavior; raise `B` to trade a known, small overshoot for collapsing network
 cost from O(requests) to O(requests / B). This is the same bargain CPUs make with store buffers:
 slightly relaxed global ordering for a large throughput win, with the looseness bounded and explicit.
+
+**Sizing `B` automatically (GALE Pillar 2).** Rather than pin `B`, set `lease.adaptive` and each key's
+batch is sized online: the limiter feeds a per-key learner the demand that key served each window and
+leases at the size it reads back, descending onto the EOQ batch `√(2·orderCost·demand/strandPenalty)`
+— trading L2 round trips against stranded budget without hand-tuning. Safety is unchanged: the `L × B`
+(and, with `windowCoupled`, exactly `Limit`) bound holds for *any* `B` the learner picks. See
+`examples/adaptive-lease-sizing.ts`.
 
 | Mode | Network cost | Global accuracy | Best for |
 |---|---|---|---|

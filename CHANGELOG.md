@@ -6,7 +6,25 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Adaptive lease sizing for `twoTier` leased mode — GALE Pillar 2, now wired in (TK-1407, #177).**
+  Set `lease.adaptive` (EOQ options `{ orderCost, strandPenalty }`, or a `() => LeaseSizer` factory) and
+  the limiter sizes each key's lease batch online instead of using a fixed `lease.batch`: every L2 window
+  it feeds the per-key learner the demand that key actually served and leases at the size it reads back,
+  descending onto the EOQ optimum `√(2·orderCost·demand/strandPenalty)` and tracking drift. `lease.batch`
+  becomes an optional per-key warm-start. The `leaseSizer` learner already shipped; this live-wires it
+  into the lease loop (previously a documented manual step). Additive and opt-in — fixed-batch leasing is
+  byte-for-byte unchanged.
+  - **Safety is decoupled from the size (Pillar 1):** the per-window global bound holds for *any* batch
+    the learner emits — exactly `Limit` under `lease.windowCoupled` — so adaptive sizing only trades
+    coordination (L2 round trips) against stranding, never the cap. Pinned by a 4-node, over-subscribed,
+    drifting-demand sim in `test/twotier/adaptive-lease-sizing.test.ts`.
+  - **Per key, bounded:** one independent learner per key; cold keys evict with their entry, so bound
+    them with `l1.maxKeys` on public endpoints (as for any leased mode). On steady demand a node that
+    starts at a tiny `batch` converges to far fewer round trips within a handful of windows.
+  - **`predictiveLeaseSizer` (Pillar 3)** stays a manual tool — it needs a per-window demand hint the
+    in-loop wiring can't supply; wrap it in a `() => LeaseSizer` factory to have it driven per key.
 
 ## [0.12.0] — 2026-05-30
 

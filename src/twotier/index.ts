@@ -5,6 +5,8 @@ import { rateLimit } from "../core/limiter";
 import { decisionTransform } from "../core/transform";
 import type { Clock, Decision, Limiter, Store, Strategy } from "../core/types";
 import { requireCost } from "../core/validate";
+import { leaseSizer } from "./sizing";
+import type { LeaseSizer, LeaseSizerOptions } from "./sizing";
 
 export { eoqOptimum, leaseSizer, predictiveLeaseSizer } from "./sizing";
 export type {
@@ -45,8 +47,12 @@ export type {
 export type TwoTierMode = "strict" | "cached-deny" | "leased";
 
 export interface LeaseOptions {
-  /** Tokens leased from L2 per refill. Larger batch ⇒ fewer round trips, larger overshoot bound. */
-  batch: number;
+  /**
+   * Tokens leased from L2 per refill. Larger batch ⇒ fewer round trips, larger overshoot bound.
+   * Required unless {@link LeaseOptions.adaptive} is set — with adaptive sizing this is an optional
+   * per-key warm-start size; the online learner takes over from there.
+   */
+  batch?: number;
   /**
    * When the local budget is at or below this level, refill asynchronously (so requests never
    * block on the network). Default 0, which disables proactive refill — purely lease-on-demand,
@@ -66,6 +72,19 @@ export interface LeaseOptions {
    * `spec/GaleWindowCoupledLeasing.tla`). Default false (credits carry over — the legacy behaviour).
    */
   windowCoupled?: boolean;
+  /**
+   * **Adaptive (online) lease sizing — GALE Pillar 2.** Instead of a fixed {@link LeaseOptions.batch},
+   * size each key's batch online with a {@link leaseSizer}: every L2 window the limiter feeds the
+   * learner the demand that key actually served and reads back the batch for the next window, descending
+   * onto the EOQ optimum `√(2·orderCost·demand/strandPenalty)` and tracking drift. One independent
+   * learner per key (cold keys evict with their entry — bound them with {@link L1Options.maxKeys}).
+   *
+   * Pass {@link LeaseSizerOptions} (the limiter builds a `leaseSizer` per key) or a `() => LeaseSizer`
+   * factory for a custom per-key learner. Safety is untouched: by Pillar 1 the per-window global bound
+   * holds for *any* batch the learner emits (exactly `Limit` under {@link LeaseOptions.windowCoupled}),
+   * so adaptive sizing only trades coordination against stranding — it can never loosen the cap.
+   */
+  adaptive?: LeaseSizerOptions | (() => LeaseSizer);
 }
 
 export interface L1Options {
@@ -122,6 +141,12 @@ interface LeaseEntry {
   refilling: boolean;
   /** An on-demand lease is in flight — concurrent misses await it instead of issuing their own. */
   pending: Promise<Decision> | undefined;
+  /** Per-key adaptive sizer (GALE Pillar 2), or undefined when `lease.adaptive` isn't set. */
+  sizer: LeaseSizer | undefined;
+  /** Credits this key actually served in the window being accumulated — the learner's demand signal. */
+  windowDemand: number;
+  /** `resetAt` of the window `windowDemand` accumulates for; undefined until the first lease arms it. */
+  windowEnd: number | undefined;
 }
 
 /**
@@ -201,11 +226,36 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
   // leased
   const lease = options.lease;
   if (lease === undefined) {
-    throw new ThrottleKitError("leased mode requires `lease.batch`");
+    throw new ThrottleKitError("leased mode requires `lease.batch` (or `lease.adaptive`)");
+  }
+  const adaptive = lease.adaptive;
+  let makeSizer: (() => LeaseSizer) | undefined;
+  if (adaptive === undefined) {
+    makeSizer = undefined;
+  } else if (typeof adaptive === "function") {
+    makeSizer = adaptive;
+  } else {
+    // Fail fast on invalid EOQ params: construct one now to validate, then mint a fresh, independent
+    // learner per key (shared read-only options, separate state).
+    const sizerOptions: LeaseSizerOptions = {
+      ...(lease.batch !== undefined ? { initialSize: lease.batch } : {}),
+      ...adaptive,
+    };
+    leaseSizer(sizerOptions);
+    makeSizer = () => leaseSizer(sizerOptions);
   }
   const batch = lease.batch;
-  if (!Number.isFinite(batch) || batch < 1) {
-    throw new RangeError(`lease.batch must be a finite number >= 1, got ${String(batch)}`);
+  if (makeSizer === undefined) {
+    if (batch === undefined) {
+      throw new ThrottleKitError("leased mode requires `lease.batch` (or `lease.adaptive`)");
+    }
+    if (!Number.isFinite(batch) || batch < 1) {
+      throw new RangeError(`lease.batch must be a finite number >= 1, got ${String(batch)}`);
+    }
+  } else if (batch !== undefined && (!Number.isFinite(batch) || batch < 1)) {
+    throw new RangeError(
+      `lease.batch (adaptive warm-start) must be a finite number >= 1, got ${String(batch)}`,
+    );
   }
   const lowWater = lease.lowWater ?? 0;
   const returnIdleAfterMs = lease.returnIdleAfterMs;
@@ -224,11 +274,24 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
         const oldest = entries.keys().next(); // approximate FIFO eviction of the oldest key
         if (!oldest.done) entries.delete(oldest.value);
       }
-      e = { credits: 0, lastDecision: undefined, lastUse: 0, refilling: false, pending: undefined };
+      e = {
+        credits: 0,
+        lastDecision: undefined,
+        lastUse: 0,
+        refilling: false,
+        pending: undefined,
+        sizer: makeSizer?.(),
+        windowDemand: 0,
+        windowEnd: undefined,
+      };
       entries.set(fk, e);
     }
     return e;
   };
+
+  /** The lease size for one refill: the per-key learner's current size if adaptive, else `batch`. */
+  const leaseSizeFor = (e: LeaseEntry): number =>
+    e.sizer !== undefined ? Math.max(1, e.sizer.size()) : (batch as number);
 
   const synthAllow = (e: LeaseEntry, now: number): Decision => ({
     allowed: true,
@@ -243,14 +306,18 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
     if (e.credits > lowWater) return;
     if (e.refilling) return;
     e.refilling = true;
+    const amt = leaseSizeFor(e);
     // Fire-and-forget: requests never block on a refill. Re-fetch by key in the callbacks in case
     // the entry was evicted/reclaimed while the refill was in flight.
-    l2.apply(fk, decisionTransform(strategy, clock.now(), batch))
+    l2.apply(fk, decisionTransform(strategy, clock.now(), amt))
       .then((d) => {
         const t = entries.get(fk);
         if (t !== undefined) {
           t.lastDecision = d;
-          if (d.allowed) t.credits += batch;
+          if (d.allowed) {
+            t.credits += amt;
+            if (t.sizer !== undefined && t.windowEnd === undefined) t.windowEnd = d.resetAt;
+          }
         }
       })
       .catch(() => {
@@ -280,6 +347,14 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
     let e = entryFor(fk);
     e.lastUse = now;
 
+    // Adaptive sizing: once the window this key was accumulating demand for has rolled, feed the
+    // learner that window's served demand and let it resize the batch for subsequent windows.
+    if (e.sizer !== undefined && e.windowEnd !== undefined && now >= e.windowEnd) {
+      e.sizer.observe(e.windowDemand);
+      e.windowDemand = 0;
+      e.windowEnd = undefined;
+    }
+
     if (windowCoupled && e.lastDecision !== undefined) {
       // Once the L2 window that granted these credits has rolled over, they expire rather than
       // carrying across the boundary — removing the sole source of cross-window overshoot.
@@ -292,18 +367,22 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
     for (;;) {
       if (e.credits >= cost) {
         e.credits -= cost;
+        if (e.sizer !== undefined) e.windowDemand += cost;
         maybeRefill(fk, e);
         return synthAllow(e, now);
       }
 
       let lease = e.pending;
       if (lease === undefined) {
-        const leaseAmount = Math.max(batch, cost);
+        const leaseAmount = Math.max(leaseSizeFor(e), cost);
         lease = l2.apply(fk, decisionTransform(strategy, clock.now(), leaseAmount)).then((d) => {
           const t = entries.get(fk);
           if (t !== undefined) {
             t.lastDecision = d;
-            if (d.allowed) t.credits += leaseAmount;
+            if (d.allowed) {
+              t.credits += leaseAmount;
+              if (t.sizer !== undefined && t.windowEnd === undefined) t.windowEnd = d.resetAt;
+            }
           }
           return d;
         });
