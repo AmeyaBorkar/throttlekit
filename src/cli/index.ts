@@ -21,6 +21,7 @@ import { parseDuration } from "../core/duration";
 import { rateLimit } from "../core/limiter";
 import type { Limiter } from "../core/types";
 import { MemoryStore } from "../stores/memory";
+import { version } from "../version";
 
 /** Where the CLI writes its output — swap for an in-memory sink in tests. */
 export interface Output {
@@ -278,7 +279,7 @@ export async function main(argv: readonly string[], out: Output = consoleOut): P
     return 0;
   }
   if (cmd === "--version") {
-    out.log("0.12.0");
+    out.log(version);
     return 0;
   }
   const rest = parseArgs(argv.slice(1));

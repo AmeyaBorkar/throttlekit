@@ -7,8 +7,8 @@
  * @packageDocumentation
  */
 
-/** The current package version. Kept in sync with package.json. */
-export const version = "0.12.0";
+/** The current package version (single-sourced in `./version`; asserted to match package.json). */
+export { version } from "./version";
 
 export type {
   Clock,

@@ -119,7 +119,8 @@ boundary, so a coordinator outage cannot leak un-leased capacity.
 
 Pillar 4 lifted across regions (TK-1404): per-region tenant WFE composed via a shared
 `regionFairPool` (a WFE over regions, region weight = active aggregate tenant weight) into a global
-weighted-max-min split. Theorems + gate: `research/gale/PILLAR4-fairness.md` §"Federated composition".
+weighted-max-min split. Gate + tests: `research/bigger-bets/federation/federated-wfe-gate.ts`
+(machine-checked) and `test/twotier/federated-weighted-fair-escrow.test.ts`.
 
 | Condition | Behavior | Bound |
 |---|---|---|
@@ -268,10 +269,10 @@ single-process and L2-backed multi-process modes.
 axis via the optional `tenant?` widening (DR-P4-4), the binding-axis
 attribute surfaces `"cost"` when WFE denies.
 
-See `research/bigger-bets/pillar4-wfe/DESIGN.md` for the full design,
-`examples/weighted-fair-escrow.ts` for an LLM-gateway-multi-tenant
-example, and `research/gale/PILLAR4-fairness.md` for the canonical
-theorems and proofs.
+See `research/bigger-bets/pillar4-wfe/DESIGN.md` for the full design and
+`examples/weighted-fair-escrow.ts` for an LLM-gateway multi-tenant
+example; the fairness gate + tests are
+`test/gale/fair-escrow.test.ts` and `test/twotier/weighted-fair-escrow.test.ts`.
 
 
 ## `unifiedAdmission` / `adaptiveConcurrency` middleware — outage shapes (0.9.2)

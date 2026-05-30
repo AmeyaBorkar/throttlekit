@@ -88,6 +88,8 @@ const limiter = twoTier({
 
 `leased` trades exactness for throughput, with a worst-case overshoot you choose: **carryover** gives `admitted ≤ Limit + N·(Batch−1)` (tight, but grows with fleet size `N`); **`windowCoupled: true`** expires credits at the L2 window so `admitted ≤ Limit` — **independent of `N`**.
 
+**Don't want to hand-pick `batch`?** Set `lease.adaptive` and each key's batch is sized online (GALE Pillar 2): the limiter learns the demand each key serves and leases at the EOQ optimum, trading round trips against stranded budget — with the bound above untouched. See [`examples/adaptive-lease-sizing.ts`](./examples/adaptive-lease-sizing.ts).
+
 > **Formally verified.** These bounds are *proven*, not claimed. A [TLA⁺ spec](./spec/DistributedLeasing.tla) is **model-checked with TLC** (carryover overshoot is *exactly* `Limit + N·(Batch−1)`, tight by counterexample); window-coupling tightens it to *exactly* `Limit`, independent of N ([second spec](./spec/GaleWindowCoupledLeasing.tla) + a Java-free [exhaustive checker](./test/gale/leasing-variants.test.ts) reproducing both in CI). The shipped core of **GALE**; details in [`docs/FORMAL-MODEL.md`](./docs/FORMAL-MODEL.md).
 
 **Multi-region** is the same mechanism with regions as the leasing nodes and one shared L2 — region-local latency, the *same* verified bound capping worldwide overshoot. Walkthroughs: [Distributed & provable](https://github.com/AmeyaBorkar/throttlekit/wiki/Distributed-and-Provable).
