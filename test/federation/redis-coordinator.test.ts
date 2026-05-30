@@ -22,6 +22,26 @@ import { fromNodeRedis } from "../../src/redis/clients";
 const url = process.env.THROTTLEKIT_TEST_REDIS;
 const d = url ? describe : describe.skip;
 
+/**
+ * Block until the start of a fresh window when the current one is about to roll. The RedisCoordinator
+ * derives its window from real server time, so a multi-request e2e body that straddles a boundary sees
+ * the per-window budget refresh mid-run — over-admitting against the ≤-budget assertion. Waiting for a
+ * clean boundary gives the body a full `windowMs` of headroom, so the test is deterministic no matter
+ * how busy/slow the run is. (Fixes a pre-existing release-gate flake that only surfaces under load.)
+ */
+async function alignToFreshWindow(
+  c: ReturnType<typeof createClient>,
+  windowMs: number,
+): Promise<void> {
+  const reply = (await c.sendCommand(["TIME"])) as unknown as [string | Buffer, string | Buffer];
+  const serverMs =
+    Number(reply[0].toString()) * 1000 + Math.floor(Number(reply[1].toString()) / 1000);
+  const msToBoundary = windowMs - (serverMs % windowMs);
+  // The e2e bodies complete in a few seconds even under load; only wait when the window is closer.
+  if (msToBoundary < 10_000)
+    await new Promise((resolve) => setTimeout(resolve, msToBoundary + 100));
+}
+
 d("RedisCoordinator + federate (TK-906)", () => {
   let client: ReturnType<typeof createClient>;
 
@@ -198,6 +218,7 @@ d("RedisCoordinator + federate (TK-906)", () => {
           batch,
         }),
       );
+      await alignToFreshWindow(client, windowMs); // run entirely within one real-time window
       let redisAdmitted = 0;
       for (let i = 0; i < 400; i++) {
         if ((await redisLimiters[0]!.check("k")).allowed) redisAdmitted++;
@@ -236,6 +257,7 @@ d("RedisCoordinator + federate (TK-906)", () => {
         }),
       );
 
+      await alignToFreshWindow(client, 60_000); // run entirely within one real-time window
       // Drive ~1000 reqs total (way past the budget).
       let total = 0;
       for (let i = 0; i < 350; i++) {
