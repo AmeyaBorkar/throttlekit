@@ -216,7 +216,7 @@ interface TenantEntry {
  *
  * @example
  * // Multi-process WFE — one shared L2 counter, atomic leases:
- * import { weightedFairEscrow, MemoryStore } from "throttlekit";
+ * import { weightedFairEscrow } from "throttlekit/twotier";
  * import { RedisStore } from "throttlekit/redis";
  *
  * const escrow = weightedFairEscrow({

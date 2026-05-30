@@ -276,6 +276,16 @@
         "default": "./dist/config.cjs"
       }
     },
+    "./twotier": {
+      "import": {
+        "types": "./dist/twotier.d.ts",
+        "default": "./dist/twotier.js"
+      },
+      "require": {
+        "types": "./dist/twotier.d.cts",
+        "default": "./dist/twotier.cjs"
+      }
+    },
     "./federation": {
       "import": {
         "types": "./dist/federation.d.ts",

@@ -56,7 +56,7 @@
  *   claim surplus; window-coupling bounds the gain to one window.
  *
  * @example
- * import { regionFairPool, federatedWeightedFairEscrow } from "throttlekit";
+ * import { regionFairPool, federatedWeightedFairEscrow } from "throttlekit/twotier";
  *
  * const pool = regionFairPool({ limit: 1_000_000, windowMs: 60_000 }); // global L, shared
  * const us = federatedWeightedFairEscrow({ region: "us-east", pool, weightOf: (t) => weights[t] ?? 1 });
