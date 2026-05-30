@@ -1,0 +1,923 @@
+{
+  "contractVersion": "1",
+  "generatedFrom": "throttlekit@1.0.1",
+  "frozen": false,
+  "decisionFields": [
+    "allowed",
+    "limit",
+    "remaining",
+    "resetAt",
+    "retryAfterMs"
+  ],
+  "suites": [
+    {
+      "primitive": "rateLimit",
+      "name": "gcra/burst5-rate10ps",
+      "strategy": {
+        "kind": "gcra",
+        "options": {
+          "limit": 10,
+          "periodMs": 1000,
+          "burst": 5
+        }
+      },
+      "key": "k",
+      "ops": [
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 4,
+            "resetAt": 100,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 3,
+            "resetAt": 200,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 2,
+            "resetAt": 300,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 1,
+            "resetAt": 400,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 500,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 500,
+            "retryAfterMs": 100
+          }
+        },
+        {
+          "now": 100,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 600,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 100,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 600,
+            "retryAfterMs": 100
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 4,
+            "resetAt": 1100,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "rateLimit",
+      "name": "gcra/fractional-T",
+      "strategy": {
+        "kind": "gcra",
+        "options": {
+          "limit": 3,
+          "periodMs": 1000,
+          "burst": 3
+        }
+      },
+      "key": "k",
+      "ops": [
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 3,
+            "remaining": 2,
+            "resetAt": 334,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 3,
+            "remaining": 1,
+            "resetAt": 667,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 3,
+            "remaining": 0,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 3,
+            "remaining": 0,
+            "resetAt": 1000,
+            "retryAfterMs": 334
+          }
+        },
+        {
+          "now": 334,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 3,
+            "remaining": 0,
+            "resetAt": 1334,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 667,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 3,
+            "remaining": 0,
+            "resetAt": 1667,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 3,
+            "remaining": 0,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "rateLimit",
+      "name": "gcra/cost-gt-1",
+      "strategy": {
+        "kind": "gcra",
+        "options": {
+          "limit": 100,
+          "periodMs": 1000,
+          "burst": 50
+        }
+      },
+      "key": "k",
+      "ops": [
+        {
+          "now": 0,
+          "cost": 10,
+          "expect": {
+            "allowed": true,
+            "limit": 50,
+            "remaining": 40,
+            "resetAt": 100,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 25,
+          "expect": {
+            "allowed": true,
+            "limit": 50,
+            "remaining": 15,
+            "resetAt": 350,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 20,
+          "expect": {
+            "allowed": false,
+            "limit": 50,
+            "remaining": 15,
+            "resetAt": 350,
+            "retryAfterMs": 50
+          }
+        },
+        {
+          "now": 0,
+          "cost": 15,
+          "expect": {
+            "allowed": true,
+            "limit": 50,
+            "remaining": 0,
+            "resetAt": 500,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 500,
+          "cost": 5,
+          "expect": {
+            "allowed": true,
+            "limit": 50,
+            "remaining": 45,
+            "resetAt": 550,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "rateLimit",
+      "name": "gcra/large-epoch",
+      "strategy": {
+        "kind": "gcra",
+        "options": {
+          "limit": 60,
+          "periodMs": 60000,
+          "burst": 10
+        }
+      },
+      "key": "k",
+      "ops": [
+        {
+          "now": 1700000000000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 9,
+            "resetAt": 1700000001000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1700000000000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 8,
+            "resetAt": 1700000002000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1700000000500,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 7,
+            "resetAt": 1700000003000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1700000060000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 9,
+            "resetAt": 1700000061000,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "rateLimit",
+      "name": "tokenBucket/cap10-refill5ps",
+      "strategy": {
+        "kind": "tokenBucket",
+        "options": {
+          "capacity": 10,
+          "refillPerSec": 5
+        }
+      },
+      "key": "k",
+      "ops": [
+        {
+          "now": 0,
+          "cost": 4,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 6,
+            "resetAt": 800,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 6,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 2000,
+            "retryAfterMs": 200
+          }
+        },
+        {
+          "now": 200,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 2200,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 5,
+          "expect": {
+            "allowed": false,
+            "limit": 10,
+            "remaining": 4,
+            "resetAt": 2200,
+            "retryAfterMs": 200
+          }
+        },
+        {
+          "now": 10000,
+          "cost": 10,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 12000,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "rateLimit",
+      "name": "tokenBucket/fractional-refill",
+      "strategy": {
+        "kind": "tokenBucket",
+        "options": {
+          "capacity": 7,
+          "refillPerSec": 3
+        }
+      },
+      "key": "k",
+      "ops": [
+        {
+          "now": 0,
+          "cost": 7,
+          "expect": {
+            "allowed": true,
+            "limit": 7,
+            "remaining": 0,
+            "resetAt": 2334,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 7,
+            "remaining": 0,
+            "resetAt": 2334,
+            "retryAfterMs": 334
+          }
+        },
+        {
+          "now": 333,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 7,
+            "remaining": 0,
+            "resetAt": 2334,
+            "retryAfterMs": 1
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 3,
+          "expect": {
+            "allowed": true,
+            "limit": 7,
+            "remaining": 0,
+            "resetAt": 3334,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "rateLimit",
+      "name": "fixedWindow/limit5-1s",
+      "strategy": {
+        "kind": "fixedWindow",
+        "options": {
+          "limit": 5,
+          "windowMs": 1000
+        }
+      },
+      "key": "k",
+      "ops": [
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 4,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 100,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 3,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 200,
+          "cost": 3,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 300,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 1000,
+            "retryAfterMs": 700
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 4,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1999,
+          "cost": 4,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 2000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 4,
+            "resetAt": 3000,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "rateLimit",
+      "name": "slidingWindow/limit10-1s-10buckets",
+      "strategy": {
+        "kind": "slidingWindow",
+        "options": {
+          "limit": 10,
+          "windowMs": 1000,
+          "buckets": 10
+        }
+      },
+      "key": "k",
+      "ops": [
+        {
+          "now": 0,
+          "cost": 6,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 4,
+            "resetAt": 1100,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 500,
+          "cost": 4,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 1600,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 500,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 1600,
+            "retryAfterMs": 100
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 5,
+          "expect": {
+            "allowed": false,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 2100,
+            "retryAfterMs": 84
+          }
+        },
+        {
+          "now": 1500,
+          "cost": 5,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 1,
+            "resetAt": 2600,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "rateLimit",
+      "name": "slidingWindowLog/limit5-1s",
+      "strategy": {
+        "kind": "slidingWindowLog",
+        "options": {
+          "limit": 5,
+          "windowMs": 1000
+        }
+      },
+      "key": "k",
+      "ops": [
+        {
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 4,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 100,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 3,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 200,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 2,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 300,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 1,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 400,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 500,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 1000,
+            "retryAfterMs": 500
+          }
+        },
+        {
+          "now": 1100,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 1,
+            "resetAt": 1200,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "tokenBudget",
+      "name": "tokenBudget/per-token-to-L",
+      "options": {
+        "budget": 5,
+        "windowMs": 60000
+      },
+      "ops": [
+        {
+          "now": 0,
+          "tokens": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 4,
+            "resetAt": 60000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "tokens": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 3,
+            "resetAt": 60000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "tokens": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 2,
+            "resetAt": 60000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "tokens": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 1,
+            "resetAt": 60000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "tokens": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 60000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "tokens": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 60000,
+            "retryAfterMs": 60000
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "tokenBudget",
+      "name": "tokenBudget/crossing-debit",
+      "options": {
+        "budget": 100,
+        "windowMs": 60000
+      },
+      "ops": [
+        {
+          "now": 0,
+          "tokens": 80,
+          "expect": {
+            "allowed": true,
+            "limit": 100,
+            "remaining": 20,
+            "resetAt": 60000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "tokens": 50,
+          "expect": {
+            "allowed": true,
+            "limit": 100,
+            "remaining": 0,
+            "resetAt": 60000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 0,
+          "tokens": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 100,
+            "remaining": 0,
+            "resetAt": 60000,
+            "retryAfterMs": 60000
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "tokenBudget",
+      "name": "tokenBudget/window-roll",
+      "options": {
+        "budget": 10,
+        "windowMs": 1000
+      },
+      "ops": [
+        {
+          "now": 0,
+          "tokens": 10,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 1000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 500,
+          "tokens": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 1000,
+            "retryAfterMs": 500
+          }
+        },
+        {
+          "now": 1000,
+          "tokens": 6,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 4,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1999,
+          "tokens": 4,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 2000,
+          "tokens": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 9,
+            "resetAt": 3000,
+            "retryAfterMs": 0
+          }
+        }
+      ]
+    }
+  ]
+}
