@@ -25,6 +25,14 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
     starts at a tiny `batch` converges to far fewer round trips within a handful of windows.
   - **`predictiveLeaseSizer` (Pillar 3)** stays a manual tool — it needs a per-window demand hint the
     in-loop wiring can't supply; wrap it in a `() => LeaseSizer` factory to have it driven per key.
+- **Envoy-style forced minRTT recalibration for `adaptiveConcurrency` (opt-in, TK-1406, #178).** The
+  no-load RTT baseline is a windowed rolling minimum, which can stay inflated under *sustained* load —
+  every sample in the window carries queuing delay, so the guard never observes a true no-load RTT.
+  Set `recalibration: { intervalMs?, probeLimit?, probeSamples? }` and the guard periodically *drains*
+  by clamping its effective ceiling to `probeLimit`, re-measures the true no-load RTT from the
+  resulting low-concurrency samples, and adopts it. Off by default (today's Netflix-style windowed
+  min, byte-for-byte unchanged). The probe only *reduces* concurrency, so it can never over-admit; it
+  costs a brief throughput dip while draining. Pinned by `test/concurrency/adaptive-recalibration.test.ts`.
 
 ## [0.12.0] — 2026-05-30
 

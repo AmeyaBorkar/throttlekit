@@ -20,8 +20,33 @@ export interface AdaptiveConcurrencyOptions {
   tolerance?: number;
   /** AIMD multiplicative decrease, in `[0.5, 1)`. Default 0.9. */
   backoffRatio?: number;
+  /**
+   * **Opt-in Envoy-style forced minRTT recalibration.** The windowed rolling-min no-load baseline
+   * can stay inflated under *sustained* load — every sample in the window carries queuing delay, so
+   * the system never observes a true no-load RTT. When set, the guard periodically *drains* by
+   * clamping its effective ceiling to `probeLimit`, measures the true no-load RTT from the resulting
+   * low-concurrency samples, and adopts it as the fresh baseline. Off by default (today's
+   * Netflix-style windowed min, which only re-baselines if load happens to let up). The probe is
+   * disruptive (throughput dips while it drains), so it runs infrequently. See
+   * `research/bigger-bets/unified/DESIGN.md` §11.
+   */
+  recalibration?: {
+    /** Re-probe the no-load RTT at most this often (ms). Default `60_000` (Envoy's 60s). Must be > 0. */
+    intervalMs?: number;
+    /** Effective ceiling to clamp to during a probe so queues drain. Default `minLimit`. Must be ≥ 1. */
+    probeLimit?: number;
+    /** Clean low-concurrency samples to collect before adopting the fresh baseline. Default 5. Must be ≥ 1. */
+    probeSamples?: number;
+  };
   /** Injectable time source. Default {@link systemClock}. */
   clock?: Clock;
+}
+
+/** Internal, fully-defaulted recalibration config (undefined when the feature is off). */
+interface RecalibrationConfig {
+  intervalMs: number;
+  probeLimit: number;
+  probeSamples: number;
 }
 
 /**
@@ -157,6 +182,20 @@ class AdaptiveGuard implements ConcurrencyGuard {
   #dqHead = 0; // index of the current minimum (inclusive)
   #dqTail = 0; // one past the last retained entry (exclusive); empty when head === tail
 
+  // Envoy-style forced minRTT recalibration (off unless `recalibration` is configured).
+  readonly #recalEnabled: boolean;
+  readonly #recalIntervalMs: number;
+  readonly #probeLimit: number;
+  readonly #probeSamples: number;
+  /** True while draining + re-measuring the no-load baseline. */
+  #probing = false;
+  /** Min RTT seen among clean (low-concurrency) samples in the current probe. */
+  #probeMin = Number.POSITIVE_INFINITY;
+  /** Clean samples collected in the current probe. */
+  #probeCount = 0;
+  /** Clock time the last probe finished (probes start `intervalMs` after this). */
+  #lastRecalEnd: number;
+
   constructor(cfg: {
     minLimit: number;
     maxLimit: number;
@@ -166,6 +205,7 @@ class AdaptiveGuard implements ConcurrencyGuard {
     smoothing: number;
     tolerance: number;
     backoffRatio: number;
+    recal: RecalibrationConfig | undefined;
     clock: Clock;
   }) {
     this.#minLimit = cfg.minLimit;
@@ -180,6 +220,11 @@ class AdaptiveGuard implements ConcurrencyGuard {
     this.#estimate = cfg.initialLimit;
     this.#dqSeq = new Float64Array(this.#cap);
     this.#dqVal = new Float64Array(this.#cap);
+    this.#recalEnabled = cfg.recal !== undefined;
+    this.#recalIntervalMs = cfg.recal?.intervalMs ?? 0;
+    this.#probeLimit = cfg.recal?.probeLimit ?? cfg.minLimit;
+    this.#probeSamples = cfg.recal?.probeSamples ?? 0;
+    this.#lastRecalEnd = cfg.recal !== undefined ? cfg.clock.now() : 0;
   }
 
   get limit(): number {
@@ -191,7 +236,9 @@ class AdaptiveGuard implements ConcurrencyGuard {
   }
 
   acquire(): Lease {
-    const ceiling = Math.floor(this.#estimate);
+    let ceiling = Math.floor(this.#estimate);
+    // While re-probing the no-load baseline, hold the effective ceiling down so queues drain.
+    if (this.#probing && this.#probeLimit < ceiling) ceiling = this.#probeLimit;
     if (this.#inflightCount >= ceiling) {
       // Over the inferred ceiling: hand back the shared rejected lease (no slot, no alloc).
       return REJECTED_LEASE;
@@ -210,15 +257,54 @@ class AdaptiveGuard implements ConcurrencyGuard {
   settle(startTime: number, inflightAtAcquire: number, dropped: boolean): void {
     this.#inflightCount--;
 
-    const rtt = Math.max(0, this.#clock.now() - startTime);
-    this.#recordRtt(rtt);
+    const now = this.#clock.now();
+    const rtt = Math.max(0, now - startTime);
     this.#lastRtt = rtt;
 
+    if (this.#probing) {
+      // Probe samples re-measure the no-load RTT; they don't feed the windowed min or the inference
+      // law (the learned estimate is preserved across the probe). Only clean low-concurrency samples
+      // count — a request that overlapped the not-yet-drained queue still carries queuing delay.
+      if (!dropped && inflightAtAcquire <= this.#probeLimit) {
+        if (rtt < this.#probeMin) this.#probeMin = rtt;
+        if (++this.#probeCount >= this.#probeSamples) this.#finishProbe(now);
+      }
+      return;
+    }
+
+    this.#recordRtt(rtt);
     if (this.#algorithm === "gradient2") {
       this.#updateGradient2(rtt, dropped, inflightAtAcquire);
     } else {
       this.#updateAimd(rtt, dropped, inflightAtAcquire);
     }
+
+    // Re-probe the no-load baseline once the interval has elapsed (sustained load otherwise keeps the
+    // windowed minimum inflated). Checked here, on a real sample, so there is no background timer.
+    if (this.#recalEnabled && now - this.#lastRecalEnd >= this.#recalIntervalMs) this.#startProbe();
+  }
+
+  /** Begin draining to re-measure the no-load RTT (see {@link AdaptiveConcurrencyOptions.recalibration}). */
+  #startProbe(): void {
+    this.#probing = true;
+    this.#probeMin = Number.POSITIVE_INFINITY;
+    this.#probeCount = 0;
+  }
+
+  /** Adopt the freshly-measured no-load RTT and resume normal operation with the preserved estimate. */
+  #finishProbe(now: number): void {
+    const fresh = Number.isFinite(this.#probeMin) ? this.#probeMin : this.#rttNoload;
+    // Re-seed the windowed-min deque around the fresh baseline so it takes effect immediately
+    // (otherwise the pre-probe inflated samples would dominate the min for up to `window` more).
+    this.#dqHead = 0;
+    this.#dqTail = 0;
+    const seq = this.#nextSeq++;
+    this.#dqVal[0] = fresh;
+    this.#dqSeq[0] = seq;
+    this.#dqTail = 1;
+    this.#rttNoload = fresh;
+    this.#probing = false;
+    this.#lastRecalEnd = now;
   }
 
   stats(): { limit: number; inflight: number; rttNoload: number; lastRtt: number } {
@@ -331,6 +417,22 @@ export function adaptiveConcurrency(options: AdaptiveConcurrencyOptions = {}): C
     );
   }
 
+  let recal: RecalibrationConfig | undefined;
+  if (options.recalibration !== undefined) {
+    const intervalMs = options.recalibration.intervalMs ?? 60_000;
+    const probeLimit = options.recalibration.probeLimit ?? minLimit;
+    const probeSamples = Math.floor(options.recalibration.probeSamples ?? 5);
+    requirePositive("adaptiveConcurrency.recalibration.intervalMs", intervalMs);
+    requireAtLeast("adaptiveConcurrency.recalibration.probeLimit", probeLimit, 1);
+    if (probeLimit > maxLimit) {
+      throw new RangeError(
+        `adaptiveConcurrency.recalibration.probeLimit must be <= maxLimit (${maxLimit}), got ${probeLimit}`,
+      );
+    }
+    requireAtLeast("adaptiveConcurrency.recalibration.probeSamples", probeSamples, 1);
+    recal = { intervalMs, probeLimit, probeSamples };
+  }
+
   return new AdaptiveGuard({
     minLimit,
     maxLimit,
@@ -340,6 +442,7 @@ export function adaptiveConcurrency(options: AdaptiveConcurrencyOptions = {}): C
     smoothing,
     tolerance,
     backoffRatio,
+    recal,
     clock,
   });
 }
