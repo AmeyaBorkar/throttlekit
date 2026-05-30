@@ -15,6 +15,7 @@
  * from the injected `now` so the output is deterministic in tests.
  */
 
+import { systemClock } from "../core/clock";
 import type { Decision } from "../core/types";
 
 /** Which header families to emit. Unset flags default to off; the overall default is `{ draft: true }`. */
@@ -28,8 +29,12 @@ export interface HeaderEmit {
 }
 
 export interface BuildRateLimitHeadersOptions {
-  /** Current time in epoch-ms (from the injected clock), used for delta-seconds math. */
-  now: number;
+  /**
+   * Current time in epoch-ms, used for the delta-seconds (`Reset` / `Retry-After`) math. Optional:
+   * defaults to the system clock. Pass it (e.g. from a {@link ManualClock}) to keep output
+   * deterministic in tests.
+   */
+  now?: number;
   /** Policy name surfaced in the structured fields. Defaults to `"default"`. */
   policyName?: string;
   /** Window length in seconds, surfaced as `;w=` of `RateLimit-Policy` when provided. */
@@ -63,25 +68,30 @@ function sanitizePolicyName(name: string): string {
 /**
  * Build the rate-limit response headers for one {@link Decision}.
  *
+ * `opts` is optional — called as `buildRateLimitHeaders(decision)` it emits the default `draft`
+ * triple against the system clock. Pass `opts.now` (and the other fields) for deterministic output
+ * or to select header families.
+ *
  * @returns a plain `Record<string,string>` ready to be set on a response. Header names use their
  * canonical casing; values are always strings.
  */
 export function buildRateLimitHeaders(
   decision: Decision,
-  opts: BuildRateLimitHeadersOptions,
+  opts: BuildRateLimitHeadersOptions = {},
 ): Record<string, string> {
   const emit = opts.emit ?? { draft: true };
+  const now = opts.now ?? systemClock.now();
   const headers: Record<string, string> = {};
 
   if (emit.draft === true) {
     headers["RateLimit-Limit"] = String(decision.limit);
     headers["RateLimit-Remaining"] = String(decision.remaining);
-    headers["RateLimit-Reset"] = String(resetDeltaSeconds(decision, opts.now));
+    headers["RateLimit-Reset"] = String(resetDeltaSeconds(decision, now));
   }
 
   if (emit.structured === true) {
     const policy = sanitizePolicyName(opts.policyName ?? "default");
-    const t = resetDeltaSeconds(decision, opts.now);
+    const t = resetDeltaSeconds(decision, now);
     headers.RateLimit = `"${policy}";r=${decision.remaining};t=${t}`;
     let policyValue = `"${policy}";q=${decision.limit}`;
     if (opts.windowSeconds !== undefined) {

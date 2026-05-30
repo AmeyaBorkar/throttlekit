@@ -642,7 +642,15 @@ export interface TokenBudgetOptions {
  * tokens a stream produces as they are produced; see {@link tokenBudget}.
  */
 export interface TokenBudgetMeter {
-  /** Atomically debit `tokens` (default 1, a positive integer) against the current window. */
+  /**
+   * Atomically debit `tokens` (default 1, a positive integer) against the current window.
+   *
+   * **Stop-at-boundary / partial-admit:** a debit is admitted iff budget remains *before* it
+   * (`served < L`), counting post-hoc cost honestly — so the debit that crosses `L` is admitted in
+   * full and only the *next* debit is refused. Debit per token (`tokens = 1`) for zero overshoot; a
+   * larger chunk can carry `served` past `L` by up to `tokens − 1`. To reject a chunk that would
+   * exceed the budget instead, gate on {@link TokenBudgetMeter.remaining} first. See {@link tokenBudget}.
+   */
   debitSync(tokens?: number): Decision;
   /** Promise-returning form of {@link TokenBudgetMeter.debitSync}; resolves synchronously. */
   debit(tokens?: number): Promise<Decision>;

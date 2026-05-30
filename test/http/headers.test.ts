@@ -28,6 +28,20 @@ describe("buildRateLimitHeaders", () => {
     });
   });
 
+  it("works with no opts — defaults to the draft triple against the system clock (regression)", () => {
+    // buildRateLimitHeaders(decision) with no second arg must not throw: `opts` defaults to `{}`
+    // and `now` falls back to the system clock (previously threw TypeError reading `opts.emit`).
+    expect(() => buildRateLimitHeaders(allowed)).not.toThrow();
+    const h = buildRateLimitHeaders(allowed);
+    expect(h["RateLimit-Limit"]).toBe("100");
+    expect(h["RateLimit-Remaining"]).toBe("50");
+    // resetAt (30_000ms) is far in the past vs the real clock → delta clamps to 0, never NaN.
+    expect(h["RateLimit-Reset"]).toBe("0");
+    expect(h["RateLimit-Reset"]).not.toBe("NaN");
+    // a denial still attaches Retry-After (derived from the decision, not the clock).
+    expect(buildRateLimitHeaders(denied)["Retry-After"]).toBe("3");
+  });
+
   it("draft reset is delta-seconds from now (clamped at 0)", () => {
     expect(
       buildRateLimitHeaders(allowed, { now: 10_000, emit: { draft: true } })["RateLimit-Reset"],
