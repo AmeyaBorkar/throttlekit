@@ -6,7 +6,30 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Federated Weighted Fair Escrow — Pillar 4 lifted across regions (TK-1404, #176).** New
+  `federatedWeightedFairEscrow({ region, pool, weightOf })` + `regionFairPool({ limit, windowMs })`
+  (exported from `throttlekit`). Per-region tenant WFE composed (via a shared cross-region `regionFairPool`
+  — itself a WFE whose "tenants" are regions, weighted by each region's active aggregate tenant weight)
+  into a **global weighted-max-min guarantee**: a tenant's total admitted across all its regions equals
+  what a single flat WFE over the global budget `L` would give. Regions are plumbing, not a fairness
+  boundary. Additive and opt-in; existing `weightedFairEscrow` is byte-for-byte unchanged.
+  - **Why it's not automatic:** hierarchical max-min ≠ flat max-min in general (a plain shared counter
+    gives per-region *isolation*, HLS/Saeed et al. 2021). The collapse condition is the Parekh–Gallager
+    GPS decomposition — region weight = Σ child weights + reservation — realised as two composed WFEs.
+  - **Guarantees:** `Σ admitted ≤ L` globally, independent of region count (T-FED-1); per-tenant total
+    equals the flat oracle exactly in the all-backlogged fluid limit (T-FED-2) and within a two-level
+    DRR residual `span(t)·(2·q_R+1)` discretely (T-FED-3). Machine-checked gate + four-cell failure
+    boundary (F1–F4): `research/bigger-bets/federation/federated-wfe-gate.ts`. Proof:
+    `research/gale/PILLAR4-fairness.md` §"Federated composition".
+  - **Region-spanning tenants** need a demand-proportional weight split `w_t·d_{t,r}/d_t` (the full
+    `w_t` in every region double-counts the tenant); `weightOf` returns the region-local split weight.
+  - **Honest scope:** under *mixed saturation* the streaming code inherits in-region WFE's T3 reserve
+    gap (an active participant keeps its guarantee until the window rolls; reclamation is between
+    truly-absent regions) — the same behaviour as a flat streaming WFE. The in-process `regionFairPool`
+    is the shipped substrate (single arbiter process); a store-backed pool for separate region
+    processes is the documented next layer (DR-FWFE-1), staged like WFE's L1→L2.
 
 ## [0.11.3] — 2026-05-30
 

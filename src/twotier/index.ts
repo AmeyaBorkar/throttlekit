@@ -26,6 +26,21 @@ export type {
   WeightedFairEscrowStats,
 } from "./weighted-fair-escrow";
 
+/**
+ * Federated WFE (TK-1404, #176) — Pillar 4 lifted across regions: per-region tenant WFE composed
+ * (via a shared cross-region `regionFairPool` — a WFE over regions) into a GLOBAL weighted-max-min
+ * guarantee. Design + composition theorem (T-FED-1..3): `research/gale/PILLAR4-fairness.md`.
+ */
+export { federatedWeightedFairEscrow, regionFairPool } from "./federated-weighted-fair-escrow";
+export type {
+  FederatedWeightedFairEscrowLimiter,
+  FederatedWeightedFairEscrowOptions,
+  FederatedWeightedFairEscrowStats,
+  RegionFairPool,
+  RegionFairPoolOptions,
+  RegionFairPoolStats,
+} from "./federated-weighted-fair-escrow";
+
 /** L1/L2 coordination mode. See docs and THROTTLEKIT.md §8. */
 export type TwoTierMode = "strict" | "cached-deny" | "leased";
 

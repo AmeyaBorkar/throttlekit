@@ -109,6 +109,25 @@ matches the `windowCoupled` twoTier safety story one layer up — the
 formal `Roll` rule guarantees regional escrow forfeits at the window
 boundary, so a coordinator outage cannot leak un-leased capacity.
 
+## Federated Weighted Fair Escrow (`federatedWeightedFairEscrow` + `regionFairPool`)
+
+Pillar 4 lifted across regions (TK-1404): per-region tenant WFE composed via a shared
+`regionFairPool` (a WFE over regions, region weight = active aggregate tenant weight) into a global
+weighted-max-min split. Theorems + gate: `research/gale/PILLAR4-fairness.md` §"Federated composition".
+
+| Condition | Behavior | Bound |
+|---|---|---|
+| **Steady state, all tenants backlogged** | Per-tenant global total matches the flat global WFE within a two-level DRR residual `span(t)·(2·q_R+1)`. | `Σ admitted ≤ L`, exact fluid split. |
+| **Mixed saturation** (a region has a demand-bottlenecked co-tenant) | The saturated participant's in-region guarantee is reserved until the window rolls — utilisation drops below `L` and the split follows the hierarchical weighted shares rather than the fully-reclaimed flat oracle. Same as a flat streaming `weightedFairEscrow` (T3); reclamation is between **truly-absent** regions, not paused ones. | `Σ admitted ≤ L`; deviation ≤ the saturated weight fraction (a utilisation, not a safety, cost). |
+| **Unique-tenant flood with `l1.maxKeys` set** | Evicted tenants' served credits are folded into `evictedUsed`, so they keep counting against the region budget — eviction cannot re-lease past the cap. | `Σ used ≤ L` preserved (no over-admit). |
+| **Wrong weight for a region-spanning tenant** (full `w_t` in every region instead of the demand-proportional split `w_t·d_{t,r}/d_t`) | The tenant is counted once per region and over-served ≈k×. Misconfiguration, not a runtime fault — `weightOf` must return the region-local split weight. | `Σ ≤ L` still holds; the *tenant's* fairness is wrong, not the global bound. |
+| **Topology** | The in-process `regionFairPool` is the shipped substrate: correct + complete for a single arbiter process all regions consult (e.g. a central rate-limit service). Distributing the pool across separate region processes needs a store-backed pool (a Redis hash of region→{weight,used}, the weighted analog of `RegionalEscrow`'s Lua) — the documented next layer (DR-FWFE-1), staged like WFE's L1→L2. | — |
+
+**Safety is unconditional.** `Σ admitted ≤ L` holds across every shape above — mixed saturation,
+eviction floods, misconfigured weights, any region count — verified at 854K randomized trials. The
+only honest costs are *utilisation* (the T3 reserve gap under saturation) and *per-tenant fairness*
+(only if you misconfigure the weight split), never the global budget.
+
 **Optional softer mode**: `onCoordinatorOutage: "regional-only"` (shipped
 0.8.5; requires a `regionalEscrow`) keeps serving from the L2 balance
 during a coordinator outage. The engine re-probes `coordinator.isHealthy()`

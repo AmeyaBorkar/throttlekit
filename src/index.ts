@@ -75,18 +75,26 @@ export { PostgresConcurrencyCoordinator } from "./concurrency/postgres-concurren
 export type { PostgresConcurrencyCoordinatorOptions } from "./concurrency/postgres-concurrency-coordinator";
 export {
   eoqOptimum,
+  federatedWeightedFairEscrow,
   leaseSizer,
   predictiveLeaseSizer,
+  regionFairPool,
   twoTier,
   weightedFairEscrow,
 } from "./twotier";
 export type {
+  FederatedWeightedFairEscrowLimiter,
+  FederatedWeightedFairEscrowOptions,
+  FederatedWeightedFairEscrowStats,
   L1Options,
   LeaseOptions,
   LeaseSizer,
   LeaseSizerOptions,
   PredictiveLeaseSizer,
   PredictiveLeaseSizerOptions,
+  RegionFairPool,
+  RegionFairPoolOptions,
+  RegionFairPoolStats,
   TwoTierMode,
   TwoTierOptions,
   WeightedFairEscrowLimiter,

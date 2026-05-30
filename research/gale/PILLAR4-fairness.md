@@ -104,8 +104,68 @@ coordination to reach.
 - WFE is a **research module + simulator scheme** (like Pillars 2–3), not yet shipped in `src/twotier`
   (Pillar 1's `windowCoupled` is the only shipped piece). Promoting WFE to the store — a weighted
   variant of the lease grant — is noted as future work.
-- Single global pool; hierarchical/nested weights (tenants-within-regions) are a clean extension, not
-  modelled here.
+- ~~Single global pool; hierarchical/nested weights (tenants-within-regions) are a clean extension,
+  not modelled here.~~ → **modelled + shipped** as Federated WFE (TK-1404); see below.
+
+## Federated composition — hierarchical weights across regions (TK-1404, #176)
+
+The open extension above: tenants distributed across **regions**, drawing from one global budget `L`,
+where each tenant's **global** total (summed over its regions) should be the weighted-max-min split a
+single flat WFE over `L` would give — the regions being plumbing, not a fairness boundary. Shipped as
+`federatedWeightedFairEscrow` + `regionFairPool` in `src/twotier`; the machine-checked gate is
+`research/bigger-bets/federation/federated-wfe-gate.ts`.
+
+**Why it is not automatic.** Hierarchical max-min fairness is in general **not** flat max-min fairness:
+running WFE per region over a budget shared by a plain FCFS counter gives per-region *isolation* (HLS,
+Saeed et al., arXiv:2108.09864) — a tenant penalised for *which* region it lives in. The collapse
+condition is the Parekh–Gallager GPS decomposition: an internal node weighted by the **sum of its
+children's weights** reproduces the flat allocation. The mechanism realises it as **two composed WFEs**:
+
+1. **Cross-region WFE** (`regionFairPool`): a weighted-fair *reservation* layer whose "tenants" are
+   regions; region `r`'s weight is its **dynamic active aggregate** tenant weight `W_r = Σ w_{t,r}`. It
+   guarantees region `r` at least `⌊W_r/ΣW·L⌋` (reserved — a plain counter cannot reserve, the root of
+   the isolation gap) and lets it borrow idle regions' surplus.
+2. **In-region WFE** (per tenant): the same `decide` arithmetic splits each region's granted budget.
+3. **Demand-proportional weight-split** for a region-spanning tenant: `w_{t,r} = w_t·d_{t,r}/d_t` (so
+   `Σ_r w_{t,r} = w_t`); the full `w_t` in every region double-counts it (over-served ≈k×).
+
+**Theorems** (let `q_R` = the region-level lease quantum, `span(t)` = #regions `t` is active in):
+
+- **T-FED-1 — Safety.** The pool grants `Σ_r (region budget) ≤ L` and in-region WFE serves
+  `Σ_t used ≤` the region budget, so `Σ admitted ≤ L` globally, independent of region count
+  (`Δ = 0`, inherited). Mutual reservation `granted_r ≤ L − Σ_{j≠r} max(granted_j, g_j)` makes the
+  cross-region sum bound inductive; `l1.maxKeys` eviction folds evicted credits into `evictedUsed`
+  so the bound survives unbounded unique-tenant input.
+- **T-FED-2 — Fluid exactness.** Under the three conditions, the per-tenant global total equals the
+  flat global weighted-max-min ideal **exactly in the fluid limit**. *Proof:* the streaming mechanism's
+  fluid limit is a single water-fill over the leaves `(t,r)` (region rate ∝ backlogged leaf weight ⟹
+  one global level `λ*`); demand-proportional split makes the flat per-tenant service distribute as
+  `s_{t,r}=min(d_{t,r},w_{t,r}λ*)`, summing to `a*_t`. ∎ (Machine-checked: 0 deviation on 4 structured
+  + 400 random worlds.)
+- **T-FED-3 — Bounded discrete error.** With discrete granting, `|a_t − a*_t| ≤ span(t)·(2·q_R+1)` —
+  a two-level DRR residual (per-leaf: ≤ `q_R` region-scheduling overshoot + ≤ `q_R` budget-boundary
+  slack + 1 in-region drip; `w_leaf ≤ W_r` ⟹ ≤ `2q_R+1` per leaf, ×span). Verified `q_R`-linear
+  (worst 2→12→22 at `q_R=1→8→16`), ≈0.02% relative — the two-level analog of H-PFQ's per-level
+  deficit (Bennett–Zhang, ToN'97; HLS Lemma 5).
+
+**The failure boundary** (each lit up materially in the gate, proving the conditions are necessary):
+**F1** fixed/equal region weights → HLS isolation (dev 268); **F2** full-weight replication →
+double-count (2×); **F3** static batch (constant `W_r`, `D_r`) → fails on mixed-bottleneck regions
+(min-of-sums ≠ sum-of-mins, dev 14); **F4** no reclamation → idle surplus stranded (dev 145).
+
+**Scope / honesty (the streaming gap, inherited from in-region T3).** The fluid exactness assumes full
+reclamation. The shipped *streaming* code reserves an **active** participant's guarantee until the
+window rolls, reclaiming only from **truly-absent** regions — so under **mixed saturation** (a region
+with a demand-bottlenecked co-tenant) the realised split follows the hierarchical weighted shares and
+strands the saturated participant's reserve, deviating from the *clairvoyant* fluid oracle by the
+saturated weight fraction. This is **identical to in-region WFE T3** (realised between truly-absent,
+not paused, participants) — and it equals what a **flat streaming WFE** does, the realizable target. No
+streaming limiter can match the clairvoyant oracle without a demand oracle. Exactness holds in the
+all-backlogged regime (the common overload case); the gate's Part 5 confirms the shipped code matches
+the flat oracle there within a few credits and never over-admits. Decision records: **DR-P4-7**
+(federate WFE) and **DR-P4-8** (hierarchical weights) — both flipped to *shipped*; **DR-FWFE-1** the
+store-backed multi-process pool (the weighted analog of `RegionalEscrow`'s Lua) as the production path,
+staged like WFE's L1→L2.
 
 ## Anchors
 

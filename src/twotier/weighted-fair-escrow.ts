@@ -73,10 +73,11 @@
  *   sharing-incentive, work-conserving, AND strategy-proof at once. WFE takes the first two and
  *   concedes the third honestly. A tenant *can* over-declare demand to claim surplus; window-
  *   coupling bounds the gain to one window.
- * - **Not federated.** Cross-region pooling is the 0.10.x track (DR-P4-7); compose WFE with
- *   `federate(...)` via the `l2: federated` slot once shipped.
- * - **Not hierarchical.** Flat tenant set, single weight per tenant. Nested weights (teams-within-
- *   orgs, etc.) are deliberately out of scope at 0.9.1 (DR-P4-8).
+ * - **Single-region.** This primitive splits one budget across tenants in one region. For
+ *   cross-region pooling that composes to a GLOBAL weighted-max-min guarantee, use
+ *   {@link federatedWeightedFairEscrow} + `regionFairPool` (TK-1404 — DR-P4-7/DR-P4-8 shipped): a
+ *   weighted-fair reservation layer over regions (region weight = Σ active tenant weights) composed
+ *   with this in-region split. Proof: `research/gale/PILLAR4-fairness.md` §"Federated composition".
  *
  * ## When to use this vs `weightedFairShare`
  *
