@@ -28,6 +28,9 @@ const d = url ? describe : describe.skip;
  * the per-window budget refresh mid-run — over-admitting against the ≤-budget assertion. Waiting for a
  * clean boundary gives the body a full `windowMs` of headroom, so the test is deterministic no matter
  * how busy/slow the run is. (Fixes a pre-existing release-gate flake that only surfaces under load.)
+ *
+ * NOTE: this deliberately sleeps up to ~10s (the `< 10_000` guard below), which exceeds vitest's 5s
+ * default — every caller MUST pass an `it()` timeout above that (we use 20s).
  */
 async function alignToFreshWindow(
   c: ReturnType<typeof createClient>,
@@ -236,7 +239,9 @@ d("RedisCoordinator + federate (TK-906)", () => {
       // but the headline Δ = 0 holds for both.
       const gap = Math.abs(testAdmitted - redisAdmitted);
       expect(gap).toBeLessThanOrEqual(regions.length * batch);
-    });
+      // 20s timeout: alignToFreshWindow may sleep up to ~10s for a clean boundary, which alone
+      // exceeds vitest's 5s default; the body adds ~1–2s of Redis round trips under a loaded gate.
+    }, 20_000);
   });
 
   describe("end-to-end: K=3 federation against real Redis", () => {
@@ -268,6 +273,8 @@ d("RedisCoordinator + federate (TK-906)", () => {
       }
       expect(total).toBeLessThanOrEqual(500); // Δ = 0
       expect(total).toBeGreaterThan(500 - regions.length * 16); // bounded loss
-    });
+      // 20s timeout: see the dual-path test above — alignToFreshWindow's boundary wait can exceed
+      // vitest's 5s default on its own.
+    }, 20_000);
   });
 });
