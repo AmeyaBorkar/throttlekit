@@ -14,18 +14,22 @@ export interface Clock {
  *
  * All numeric fields are integers so the JavaScript and Redis-Lua execution paths can
  * produce bit-identical values (Redis truncates Lua numbers to integers on reply).
+ *
+ * **Frozen + evolvable (SemVer 1.x).** The fields below are stable. As a *producer* type, `Decision`
+ * grows only by appending **optional readonly** fields — so consumers must not reject unknown keys
+ * (e.g. don't `zod.strict()` a Decision). See STABILITY.md.
  */
 export interface Decision {
   /** Whether the request is permitted. */
-  allowed: boolean;
+  readonly allowed: boolean;
   /** Effective ceiling: burst capacity (GCRA/token bucket) or window quota. */
-  limit: number;
+  readonly limit: number;
   /** Whole units remaining before the next rejection. Never negative. */
-  remaining: number;
+  readonly remaining: number;
   /** Epoch-ms at which the limiter is fully replenished. */
-  resetAt: number;
+  readonly resetAt: number;
   /** Milliseconds to wait before retrying. `0` when {@link Decision.allowed}. */
-  retryAfterMs: number;
+  readonly retryAfterMs: number;
 }
 
 /**
@@ -80,11 +84,11 @@ export interface Strategy<S = unknown> {
 /** A non-consuming projection of a key's near-future capacity (see {@link Limiter.forecast}). */
 export interface Forecast {
   /** Whole units of the given `cost` admissible **right now** before the next denial. */
-  spendableNow: number;
+  readonly spendableNow: number;
   /** Epoch-ms when capacity next increases by at least one unit (a window reset, or the next token). */
-  nextReplenishAt: number;
+  readonly nextReplenishAt: number;
   /** Epoch-ms when the limiter is **fully** replenished to its ceiling from the current state. */
-  fullAt: number;
+  readonly fullAt: number;
 }
 
 /** How a {@link Strategy} exposes its stored state to a Lua-capable store for a read-only peek. */

@@ -260,7 +260,9 @@ export function recordDecisionOnSpan(
 }
 
 /** The lastDecisions snapshot shape from {@link UnifiedAdmitter.lastDecisions}. */
-type UnifiedLastDecisions = Readonly<Record<"rate" | "concurrency" | "cost", Decision | undefined>>;
+type UnifiedLastDecisions = Readonly<
+  Partial<Record<"rate" | "concurrency" | "cost", Decision | undefined>>
+>;
 
 /**
  * Identify the **binding axis** for a unified admission — the first

@@ -35,9 +35,6 @@ export type { CommonAdapterOptions, LimiterOrStrategy } from "./core";
 /** A Web-`fetch` style handler: receives a `Request` (plus any runtime args) and returns a `Response`. */
 export type FetchHandler = (request: Request, ...args: unknown[]) => Response | Promise<Response>;
 
-/** @deprecated Use {@link LimiterOrStrategy}. Kept as an alias for source compatibility. */
-export type FetchLimiterOrStrategy = LimiterOrStrategy;
-
 export type FetchRateLimitOptions = LimiterOrStrategy &
   CommonAdapterOptions & {
     /** Cost of a request in limiter units. A function computes it per request. Default 1. */
@@ -131,7 +128,7 @@ export function withRateLimit(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Per-axis Decision snapshot from `admitter.lastDecisions()`. */
-type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+type AxisSnapshot = Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 
 /** Options for {@link withUnifiedAdmission}. */
 export type WithUnifiedAdmissionOptions = Pick<

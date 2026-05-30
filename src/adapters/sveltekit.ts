@@ -122,7 +122,7 @@ export function sveltekitRateLimit(options: SvelteKitRateLimitOptions): SvelteKi
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Per-axis Decision snapshot from `admitter.lastDecisions()`. */
-type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+type AxisSnapshot = Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 
 /** Options for {@link sveltekitUnifiedAdmission}. */
 export type SvelteKitUnifiedAdmissionOptions = Pick<

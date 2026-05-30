@@ -151,7 +151,7 @@ export function nextRateLimit(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Per-axis Decision snapshot from `admitter.lastDecisions()`. */
-type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+type AxisSnapshot = Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 
 /** A Next-style handler: `(Request, ...args) => Response`. */
 export type NextHandler = (request: Request, ...args: unknown[]) => Response | Promise<Response>;

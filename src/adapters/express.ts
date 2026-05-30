@@ -110,7 +110,7 @@ export function expressRateLimit(options: ExpressRateLimitOptions): RequestHandl
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Per-axis Decision snapshot from `admitter.lastDecisions()`. */
-type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+type AxisSnapshot = Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 
 /** Options for {@link expressUnifiedAdmission}. */
 export type ExpressUnifiedAdmissionOptions = Pick<

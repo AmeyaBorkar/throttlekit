@@ -100,7 +100,7 @@ export function fastifyRateLimit(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Per-axis Decision snapshot from `admitter.lastDecisions()`. */
-type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+type AxisSnapshot = Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 
 /** Options for {@link fastifyUnifiedAdmission}. */
 export type FastifyUnifiedAdmissionOptions = Pick<

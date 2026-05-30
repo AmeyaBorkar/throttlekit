@@ -102,7 +102,7 @@ export function remixRateLimit(options: RemixRateLimitOptions): RemixRateLimitGu
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Per-axis Decision snapshot. */
-type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+type AxisSnapshot = Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 
 /** A Remix-style loader/action — receives `{request, ...}` and returns a Response. */
 export type RemixLoaderHandler = (args: { request: Request; [k: string]: unknown }) =>

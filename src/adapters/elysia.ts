@@ -116,7 +116,7 @@ export function elysiaRateLimit(options: ElysiaRateLimitOptions): ElysiaRateLimi
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Per-axis Decision snapshot. */
-type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+type AxisSnapshot = Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 
 /** Options for {@link elysiaUnifiedAdmission}. */
 export type ElysiaUnifiedAdmissionOptions = Pick<

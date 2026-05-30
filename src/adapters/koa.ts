@@ -103,7 +103,7 @@ export function koaRateLimit(options: KoaRateLimitOptions): Middleware {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Per-axis Decision snapshot from `admitter.lastDecisions()`. */
-type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+type AxisSnapshot = Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 
 /** Options for {@link koaUnifiedAdmission}. */
 export type KoaUnifiedAdmissionOptions = Pick<

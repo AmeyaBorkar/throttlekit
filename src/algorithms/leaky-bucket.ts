@@ -41,7 +41,7 @@ export interface Reservation {
 export class QueueFullError extends ThrottleKitError {
   readonly retryAfterMs: number;
   constructor(retryAfterMs: number) {
-    super(`leaky-bucket queue is full; retry after ${retryAfterMs}ms`);
+    super(`leaky-bucket queue is full; retry after ${retryAfterMs}ms`, { code: "queue_full" });
     this.name = "QueueFullError";
     this.retryAfterMs = retryAfterMs;
   }

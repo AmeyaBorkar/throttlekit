@@ -346,7 +346,7 @@ export function createRateLimitGuard(options: RateLimitGuardOptions = {}): NestC
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Per-axis Decision snapshot from `admitter.lastDecisions()`. */
-type AxisSnapshot = Readonly<Record<UnifiedAxis, Decision | undefined>>;
+type AxisSnapshot = Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 
 /** The slice of an Express-style response the Nest middleware writes through. */
 interface NestMiddlewareResLike extends LifecycleResponseLike {

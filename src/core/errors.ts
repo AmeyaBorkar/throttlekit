@@ -1,10 +1,28 @@
 import type { Decision } from "./types";
 
+/**
+ * Stable, machine-readable discriminant carried by every {@link ThrottleKitError}. Prefer it over
+ * `instanceof` when robustness matters across realms or a dependency tree that bundled ThrottleKit
+ * twice (`instanceof` fails across two copies of the class; the `code` string does not). Frozen at
+ * 1.0 — the value set grows only additively.
+ */
+export type ThrottleKitErrorCode =
+  | "throttlekit_error"
+  | "store_unavailable"
+  | "not_implemented"
+  | "rate_limit_exceeded"
+  | "queue_full"
+  | "config_invalid";
+
 /** Base class for all errors thrown by ThrottleKit. */
 export class ThrottleKitError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+  /** Machine-readable discriminant — see {@link ThrottleKitErrorCode}. Robust to cross-realm `instanceof`. */
+  readonly code: ThrottleKitErrorCode;
+
+  constructor(message: string, options?: ErrorOptions & { code?: ThrottleKitErrorCode }) {
     super(message, options);
     this.name = "ThrottleKitError";
+    this.code = options?.code ?? "throttlekit_error";
   }
 }
 
@@ -14,7 +32,7 @@ export class ThrottleKitError extends Error {
  */
 export class StoreUnavailableError extends ThrottleKitError {
   constructor(message = "rate-limit store is unavailable", options?: ErrorOptions) {
-    super(message, options);
+    super(message, { ...options, code: "store_unavailable" });
     this.name = "StoreUnavailableError";
   }
 }
@@ -28,7 +46,7 @@ export class StoreUnavailableError extends ThrottleKitError {
  */
 export class NotImplementedError extends ThrottleKitError {
   constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
+    super(message, { ...options, code: "not_implemented" });
     this.name = "NotImplementedError";
   }
 }
@@ -42,7 +60,9 @@ export class RateLimitExceededError extends ThrottleKitError {
   readonly decision: Decision;
 
   constructor(decision: Decision, message?: string) {
-    super(message ?? `rate limit exceeded; retry after ${decision.retryAfterMs}ms`);
+    super(message ?? `rate limit exceeded; retry after ${decision.retryAfterMs}ms`, {
+      code: "rate_limit_exceeded",
+    });
     this.name = "RateLimitExceededError";
     this.retryAfterMs = decision.retryAfterMs;
     this.decision = decision;

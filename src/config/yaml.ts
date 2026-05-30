@@ -10,10 +10,12 @@
  * number — the config format is intentionally constrained so its meaning is unambiguous.
  */
 
-export class YamlParseError extends Error {
+import { ThrottleKitError } from "../core/errors";
+
+export class YamlParseError extends ThrottleKitError {
   readonly line: number;
   constructor(message: string, line: number) {
-    super(`YAML parse error at line ${line + 1}: ${message}`);
+    super(`YAML parse error at line ${line + 1}: ${message}`, { code: "config_invalid" });
     this.name = "YamlParseError";
     this.line = line;
   }

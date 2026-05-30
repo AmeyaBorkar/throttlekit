@@ -131,10 +131,17 @@ export interface UnifiedAdmission {
    */
   release(opts?: { dropped?: boolean }): void;
   /**
+   * The axis whose denial bound this admission (`"rate"` / `"concurrency"` / `"cost"`), or `undefined`
+   * when admitted, or when the joint-LP policy filter bound (see {@link UnifiedAdmission.policyDenied}).
+   * The ergonomic form of {@link UnifiedAdmitter.lastDecisions} for the common "why was this denied?"
+   * case; equal to the OTel `throttlekit.binding_axis` attribute. Append-only-optional (SemVer).
+   */
+  readonly bindingAxis?: UnifiedAxis;
+  /**
    * True iff this admission was denied specifically by the joint-LP bid-price
    * filter (every per-axis budget had slack, but `value < p_R + p_C·cost`).
    * Absent/falsy under `policy: "marginal"` or any axis-bound denial. Lets the
-   * TK-1008 OTel `tk.binding_axis` attribute report `"policy"`.
+   * TK-1008 OTel `throttlekit.binding_axis` attribute report `"policy"`.
    */
   policyDenied?: boolean;
 }
@@ -149,7 +156,7 @@ export interface UnifiedAdmission {
  *   `applySync`).
  *
  * Plus per-axis introspection via {@link UnifiedAdmitter.lastDecisions} (used by
- * TK-1008's `tk.binding_axis` OTel attribute).
+ * TK-1008's `throttlekit.binding_axis` OTel attribute).
  */
 export interface UnifiedAdmitter {
   admit(opts?: UnifiedAdmitOptions): Promise<UnifiedAdmission>;
@@ -160,7 +167,7 @@ export interface UnifiedAdmitter {
    * (so the caller can see *which* axis bound). Each call returns a fresh frozen
    * object — safe to leak into telemetry.
    */
-  lastDecisions(): Readonly<Record<UnifiedAxis, Decision | undefined>>;
+  lastDecisions(): Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>;
 }
 
 /** Shared no-op release — used by denied admissions where no slot is held. */
@@ -467,6 +474,29 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
   }
 
   /**
+   * The axis that bound the most recent admit — concurrency → rate → cost, first denial wins (the
+   * evaluation order; mirrors `bindingAxisOf` in the OTel layer). `undefined` when admitted or when the
+   * joint-LP policy filter bound (no axis denied). Read synchronously at each deny return so it agrees
+   * with the `combineSnapshot()` decision built from the same per-axis state.
+   */
+  const deriveBindingAxis = (): UnifiedAxis | undefined =>
+    lastConc?.allowed === false
+      ? "concurrency"
+      : lastRate?.allowed === false
+        ? "rate"
+        : lastCost?.allowed === false
+          ? "cost"
+          : undefined;
+
+  /** Build a denied admission, attaching the binding axis (omitted when undefined — e.g. a policy deny). */
+  const denyResult = (decision: Decision): UnifiedAdmission => {
+    const axis = deriveBindingAxis();
+    return axis === undefined
+      ? { decision, release: NOOP_RELEASE }
+      : { decision, release: NOOP_RELEASE, bindingAxis: axis };
+  };
+
+  /**
    * One online warm-up step (D-JLP-8). Tally an observed `(cost, value)` arrival
    * and, once the sample window fills, re-solve the fluid LP from observations and
    * adopt the learned duals into `st.active` iff they STRICTLY beat the prior on the
@@ -572,7 +602,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       // Step 1 — concurrency (synchronous, both backends).
       const concStep = startWithConcurrency();
       if (concStep.decision !== undefined) {
-        return { decision: concStep.decision, release: NOOP_RELEASE };
+        return denyResult(concStep.decision);
       }
       const leaseRelease = concStep.leaseRelease;
 
@@ -592,7 +622,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
           if (!result.combined.allowed) {
             leaseRelease?.({ dropped: false });
             // Combined Decision still folds in concurrency (which allowed; ALLOW_FULL-ish).
-            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+            return denyResult(combineSnapshot());
           }
           return finalize(leaseRelease);
         }
@@ -604,7 +634,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
           if (!d.allowed) {
             // Release the held concurrency slot (deny is upstream, not an overload).
             leaseRelease?.({ dropped: false });
-            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+            return denyResult(combineSnapshot());
           }
         }
 
@@ -614,7 +644,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
           lastCost = d;
           if (!d.allowed) {
             leaseRelease?.({ dropped: false });
-            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+            return denyResult(combineSnapshot());
           }
         }
 
@@ -643,7 +673,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       // Step 1 — concurrency.
       const concStep = startWithConcurrency();
       if (concStep.decision !== undefined) {
-        return { decision: concStep.decision, release: NOOP_RELEASE };
+        return denyResult(concStep.decision);
       }
       const leaseRelease = concStep.leaseRelease;
 
@@ -661,7 +691,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
           lastRate = d;
           if (!d.allowed) {
             leaseRelease?.({ dropped: false });
-            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+            return denyResult(combineSnapshot());
           }
         }
 
@@ -671,7 +701,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
           lastCost = d;
           if (!d.allowed) {
             leaseRelease?.({ dropped: false });
-            return { decision: combineSnapshot(), release: NOOP_RELEASE };
+            return denyResult(combineSnapshot());
           }
         }
 
@@ -682,7 +712,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       }
     },
 
-    lastDecisions(): Readonly<Record<UnifiedAxis, Decision | undefined>> {
+    lastDecisions(): Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>> {
       return Object.freeze({
         rate: lastRate,
         concurrency: lastConc,
