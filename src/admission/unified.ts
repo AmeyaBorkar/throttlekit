@@ -52,7 +52,7 @@ export interface UnifiedAdmissionOptions {
    * Requires a `cost` axis (the bid-price test is over the cost budget; D-JLP-11).
    */
   jointLp?: {
-    duals?: { rate: number; cost: number };
+    duals?: { rate: number; cost: number; conc?: number };
     workload?: FluidLpInput;
     /**
      * Opt-in **online dual refinement** (D-JLP-8; Devanur–Hayes "sample-then-price").
@@ -104,6 +104,18 @@ export interface UnifiedAdmitOptions {
    * per-request value collapses joint-LP to a cost-threshold filter.
    */
   value?: number;
+  /**
+   * The request's expected HOLD (service) time for the **3-axis** joint-LP concurrency
+   * term (TK-1405): the bid test becomes `value ≥ p_R + p_C·cost + p_K·hold`. Ignored
+   * unless `policy: "joint-lp"` with a concurrency budget configured (`jointLp.workload`
+   * with `concBudget`, or `jointLp.duals.conc`). Must be in the SAME units as the workload
+   * model's `hold`. **Defaults to 0**, and a missing, non-finite (`NaN`/`Infinity`), or negative
+   * `hold` all contribute NO concurrency term (fail-open: the concurrency price only ever
+   * *rejects* when you give it a positive finite hold — a bad estimate never wrongly rejects, and
+   * a hog cannot dodge the price by reporting a negative hold). A 3-axis admitter with `hold`
+   * omitted therefore behaves exactly like 2-axis.
+   */
+  hold?: number;
 }
 
 /** The result of one admit call. `release` is the lifecycle hook for the concurrency slot (or a no-op when denied). */
@@ -291,7 +303,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
   // model via the zero-dep fluid-LP solver. `duals === undefined` ⇒ the bid-price
   // gate is inert (the `"marginal"` default path is byte-for-byte unchanged).
   const policy = options.policy ?? "marginal";
-  let duals: { rate: number; cost: number } | undefined;
+  let duals: { rate: number; cost: number; conc?: number } | undefined;
   let adaptiveState: AdaptiveState | undefined;
   if (policy === "joint-lp") {
     // The bid-price test is over the cost budget (D-JLP-11). The cost axis is the
@@ -322,6 +334,15 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
           `unifiedAdmission: jointLp.duals.${field} must be a finite number ≥ 0 (got ${String(value)})`,
         );
       }
+    }
+    // 3-axis: validate the optional concurrency shadow price (TK-1405). Same finite-≥0 guard.
+    if (
+      duals.conc !== undefined &&
+      (typeof duals.conc !== "number" || !Number.isFinite(duals.conc) || duals.conc < 0)
+    ) {
+      throw new ThrottleKitError(
+        `unifiedAdmission: jointLp.duals.conc must be a finite number ≥ 0 (got ${String(duals.conc)})`,
+      );
     }
 
     // Online dual refinement (D-JLP-8) — opt-in warm-up state. Requires the `workload`
@@ -359,6 +380,14 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
         buf: [],
         buckets: new Map(),
       };
+    }
+
+    // 3-axis × adaptive are not yet combinable: the warm-up's on-sample self-test models
+    // rate+cost only (no occupancy), so it cannot validate a learned concurrency dual. Fail loud.
+    if (adaptiveState !== undefined && duals.conc !== undefined) {
+      throw new ThrottleKitError(
+        "unifiedAdmission: jointLp.adaptive and the 3-axis concurrency budget cannot be combined yet (the online warm-up's self-test models rate+cost only). Use one or the other.",
+      );
     }
   } else if (options.policy !== "marginal" && options.policy !== undefined) {
     throw new RangeError(
@@ -512,6 +541,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
   function applyPolicyGate(
     value: number,
     requestCost: number,
+    hold: number,
     leaseRelease: ((opts?: { dropped?: boolean }) => void) | undefined,
   ): UnifiedAdmission | undefined {
     if (duals === undefined) return undefined;
@@ -520,7 +550,15 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       if (!adaptiveState.frozen) refineWarmup(adaptiveState, value, requestCost);
       active = adaptiveState.active;
     }
-    const bid = active.rate + active.cost * requestCost;
+    // 3-axis (TK-1405): the optional concurrency price adds `p_K·hold`. Applied ONLY when a conc
+    // dual is configured AND the per-request `hold` is a positive finite number — so a 2-axis bid
+    // is provably untouched (no `0 * NaN` poisoning) and a non-finite / negative `hold` is treated
+    // as 0 (fail-open): a bad hold estimate never wrongly rejects, and a hog cannot dodge the price
+    // by reporting a negative hold (which would otherwise *lower* the bid).
+    let bid = active.rate + active.cost * requestCost;
+    if (active.conc !== undefined && Number.isFinite(hold) && hold > 0) {
+      bid += active.conc * hold;
+    }
     if (value >= bid) return undefined;
     leaseRelease?.({ dropped: false });
     return { decision: denyByPolicy(combineSnapshot()), release: NOOP_RELEASE, policyDenied: true };
@@ -528,7 +566,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
 
   return {
     async admit(opts?: UnifiedAdmitOptions): Promise<UnifiedAdmission> {
-      const { key = "", cost: requestCost = 1, value = 1 } = opts ?? {};
+      const { key = "", cost: requestCost = 1, value = 1, hold = 0 } = opts ?? {};
       resetLast();
 
       // Step 1 — concurrency (synchronous, both backends).
@@ -540,7 +578,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
 
       // Step 2 — joint-LP bid-price filter, BEFORE any rate/cost debit (inert under
       // the default policy). A filtered request must not consume budget.
-      const policyDeny = applyPolicyGate(value, requestCost, leaseRelease);
+      const policyDeny = applyPolicyGate(value, requestCost, hold, leaseRelease);
       if (policyDeny !== undefined) return policyDeny;
 
       // Step 3 — rate + cost. The outer try/catch releases the held concurrency
@@ -590,7 +628,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
     },
 
     admitSync(opts?: UnifiedAdmitOptions): UnifiedAdmission {
-      const { key = "", cost: requestCost = 1, value = 1 } = opts ?? {};
+      const { key = "", cost: requestCost = 1, value = 1, hold = 0 } = opts ?? {};
       resetLast();
 
       // The lua-fused path is inherently async (Redis EVALSHA round-trip), so
@@ -611,7 +649,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
 
       // Step 2 — joint-LP bid-price filter, BEFORE any rate/cost debit (inert under
       // the default policy). A filtered request must not consume budget.
-      const policyDeny = applyPolicyGate(value, requestCost, leaseRelease);
+      const policyDeny = applyPolicyGate(value, requestCost, hold, leaseRelease);
       if (policyDeny !== undefined) return policyDeny;
 
       // Step 3 — rate + cost. The try/catch releases the held slot if a limiter

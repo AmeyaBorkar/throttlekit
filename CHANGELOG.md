@@ -23,6 +23,20 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   full-horizon — under autocorrelated arrivals an adopted dual can be slightly worse over the
   full stream (the ρ=+1 foil's cousin; bounded, +~0.8pp measured, and regression-guarded). With
   a `concurrency` axis the window counts the concurrency-passed population.
+- **3-axis joint-LP — a CONCURRENCY shadow price on top of rate + cost (TK-1405, D-JLP-15/16).**
+  Opt-in; default and 2-axis joint-LP are byte-for-byte unchanged. Via **Little's law** an
+  occupancy cap `L` over a window `T` is a third fluid budget `K = L·T` (concurrency-seconds)
+  consumed per admit by the request's **hold time**, so the bid test becomes
+  `value ≥ p_R + p_C·cost + p_K·hold`. This lets the filter reject a **hold-time hog** — a request
+  cheap-and-valuable per token but slow to release its slot — that 2-axis is structurally blind to:
+  the gate measures regret **53% → 2% (ε≈51pp)** when concurrency binds and the hog is
+  indistinguishable from good traffic on (rate, cost). Enable via `jointLp.workload` with a
+  `concBudget` + per-type `hold` (the solver runs a 3-budget dual), or `jointLp.duals.conc`, plus a
+  per-request `hold` on `admit`/`admitSync`. **No harm** when concurrency is ample (`p_K=0`).
+  **Honest limits:** like all bid-price controls it cannot ration a *marginal* hog (it strictly
+  helps only against a strictly-dominated one); a missing / non-finite / negative per-request
+  `hold` is fail-open (treated as 0 — never a wrongful reject). Not combinable with `jointLp.adaptive`
+  yet.
 
 ## [0.11.2] — 2026-05-30
 

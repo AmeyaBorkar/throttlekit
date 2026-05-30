@@ -156,3 +156,44 @@ console.log(
   "  → the guard adopted the learned duals because they beat the prior on the observed\n" +
     "    sample. The guarantee is on-sample, not full-horizon — see DESIGN.md §6 + §7.",
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4) The 3-axis filter — a CONCURRENCY shadow price (TK-1405).
+//
+// Rate and cost are FLOW budgets; concurrency is a STOCK (a held slot). Via Little's
+// law an occupancy cap L over a window T is a concurrency-seconds budget K = L·T, and
+// each admit consumes its HOLD time. The bid test gains a term:
+//     admit iff  value ≥ p_R + p_C·cost + p_K·hold
+// "short" and "long" are IDENTICAL on (cost, value) — the 2-axis filter cannot tell them
+// apart — but "long" holds its slot 13× longer. The 3-axis filter prices that and rejects it.
+const AMPLE = 1_000_000_000; // rate + cost ample ⇒ CONCURRENCY is the sole binding axis here
+const threeAxis = unifiedAdmission({
+  cost: rateLimit({
+    strategy: tokenBucket({ capacity: AMPLE, refillPerSec: 1 }),
+    clock: new ManualClock(0),
+  }),
+  policy: "joint-lp",
+  jointLp: {
+    workload: {
+      types: [
+        { cost: 100, value: 10, weight: 1800, hold: 15 }, // short — frees its slot fast
+        { cost: 100, value: 10, weight: 200, hold: 200 }, // long  — a concurrency hog
+      ],
+      rateBudget: 2000,
+      costBudget: AMPLE,
+      concBudget: 20_000, // K = L·T (e.g. L=10 slots × T=2000) — the binding axis
+    },
+  },
+});
+// pass the request's expected service time (`hold`) per call:
+const shortReq = threeAxis.admitSync({ cost: 100, value: 10, hold: 5 });
+const longReq = threeAxis.admitSync({ cost: 100, value: 10, hold: 200 });
+console.log("\n3-axis concurrency shadow price (short/long identical on cost+value, 13× hold):");
+console.log(`  short (hold=5)  : allowed=${shortReq.decision.allowed}`);
+console.log(
+  `  long  (hold=200): allowed=${longReq.decision.allowed}, policyDenied=${longReq.policyDenied}  (the hog 2-axis is blind to)`,
+);
+console.log(
+  "  → 2-axis sees identical (cost,value) and admits both; 3-axis prices the hold time and\n" +
+    "    rejects the slot-hog. Honest limits + the regime: see DESIGN.md §12.2 + D-JLP-15/16.",
+);

@@ -197,10 +197,24 @@ prefer a larger `W` on bursty/correlated traffic; the prior is always the floor,
 prior + adaptive is never much worse than the prior alone. With a `concurrency` axis the
 window counts the **concurrency-passed** population.
 
+**3-axis joint-LP — a concurrency shadow price (opt-in, Unreleased).** With a
+`jointLp.workload.concBudget` (= concurrency limit × window) + per-type `hold` (or
+`jointLp.duals.conc`), the bid test adds `p_K·hold`, rejecting a **hold-time hog** — a request
+cheap-and-valuable per token but slow to free its slot — that the 2-axis filter cannot see.
+Pass a per-request `hold` (the expected service time, same units as the model's `hold`) on
+`admit`/`admitSync`. Operational notes: (1) it earns its keep only when concurrency BINDS and
+the hog is strictly dominated AND indistinguishable on (rate, cost) — it cannot ration a
+*marginal* hog (the same bid-price limitation as the ρ=+1 foil), and when concurrency is ample
+`p_K=0` so it is a no-op. (2) A missing / non-finite / negative per-request `hold` is
+**fail-open** (no concurrency term — never a wrongful reject; a hog can't dodge the price by
+reporting a negative hold). (3) Not combinable with `jointLp.adaptive` yet. The concurrency
+*bid term* is a PROACTIVE filter that composes with (does not replace) a real `concurrency`
+ConcurrencyGuard axis; a 3-axis policy deny releases any slot it transiently held.
+
 See `research/bigger-bets/unified/DESIGN.md` for the full design,
 `examples/unified.ts` and `examples/joint-lp-admission.ts` for LLM-gateway-style
 examples, `research/bigger-bets/joint-lp-admission/DESIGN.md` for the joint-LP
-policy (D-JLP-1..12), and `research/bigger-bets/unified/THEORY.md` for the
+policy (D-JLP-1..16), and `research/bigger-bets/unified/THEORY.md` for the
 joint-vs-marginal empirical regret analysis (TK-1007 — verdict: SHIPPED as the
 opt-in joint-LP policy in 0.11.1, ε = 25.33% ≫ the 5% gate).
 

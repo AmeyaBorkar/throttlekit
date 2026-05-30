@@ -436,6 +436,24 @@ joint-LP *is* worse at ρ=+1) so we never silently "fix" the honest result.
   never silently claimed away. With a concurrency axis the window counts the concurrency-passed
   population. Headline wording everywhere is scoped to "never worse than the prior on the
   observed sample".
+- **D-JLP-15 — 3-axis joint-LP (concurrency shadow price) SHIPPED 0.11.3, opt-in (TK-1405).**
+  Little's law makes an occupancy cap `L` over a window `T` a 3rd fluid budget `K = L·T` with
+  per-request consumption = hold time `hᵢ`; the bid test gains `value ≥ p_R + p_C·cost + p_K·hold`.
+  Opt in via `jointLp.workload.concBudget` + per-type `hold` (the solver runs the 3-budget dual via
+  3D vertex enumeration), or `jointLp.duals.conc` + per-request `UnifiedAdmitOptions.hold`. WIN
+  (gate `three-axis-gate.ts`): regret 53%→2% (ε≈51pp) against a strictly-dominated hold-time hog
+  INDISTINGUISHABLE from good traffic on (rate,cost) — 2-axis is blind. NO HARM when concurrency is
+  ample (p_K=0). STRUCTURAL LIMIT (honest, like the ρ=+1 foil): a bid threshold cannot ration a
+  MARGINAL hog — it strictly helps only against a strictly-dominated one. The 2-budget path is
+  byte-unchanged; `adaptive` (D-JLP-8) and the concurrency budget are mutually exclusive for now
+  (the warm-up's on-sample self-test models rate+cost only).
+- **D-JLP-16 — Per-request `hold` is fail-open; `admitFractions` is feasible (3-skeptic fixes).**
+  The conc term is applied ONLY when `conc` is configured AND `hold` is a positive finite number,
+  so (a) a 2-axis bid is provably untouched (no `0·NaN` poisoning) and (b) a non-finite/negative
+  `hold` is treated as 0 — a bad estimate never wrongly rejects, and a hog cannot dodge the price by
+  reporting a negative hold (both were real bugs the adversarial pass caught). The 3-budget
+  `admitFractions` recovery clamps against ALL budgets (not only the tight ones), so the reported
+  plan is always feasible; `objective` is the exact dual optimum `min D`.
 - **D-JLP-9 — The ρ=+1 foil is documented everywhere and regression-tested.**
   Never silently "fixed". See §7, §9.2.
 - **D-JLP-10 — `value` defaults to 1 on `UnifiedAdmitOptions`.** A workload that
@@ -454,20 +472,18 @@ joint-LP *is* worse at ρ=+1) so we never silently "fix" the honest result.
 1. ✅ **DONE 0.11.3 — Online primal-dual dual update** (Devanur-Hayes sample-then-price):
    `jointLp.adaptive = { sampleWindow }`. Shipped as the GUARDED self-validating variant
    (§6, D-JLP-13/14) — not the naïve form, which the gate refuted.
-2. ⚖️ **GATE DONE 0.11.3 — GO (narrow but real) — 3-axis joint LP** (rate + cost + a
-   *concurrency* shadow price). The "concurrency is instantaneous, doesn't fit the fluid
-   relaxation" worry is RESOLVED by **Little's law**: an occupancy cap `L` is a 3rd fluid
-   budget `Σ wᵢ hᵢ xᵢ ≤ L·T` with per-request consumption = **hold time** `hᵢ`; the bid test
-   gains a term `value ≥ p_R + p_C·cost + p_K·hold` (gate `three-axis-gate.ts`; the 3-budget
-   dual solves cleanly by 3D vertex enumeration). **WIN:** cuts regret **53%→2% (ε≈51pp)** when
-   concurrency binds and a strictly-dominated hold-time hog is INDISTINGUISHABLE from good
-   traffic on (rate,cost) — 2-axis is structurally blind to it. **NO HARM** when concurrency is
-   ample (`p_K=0` ⇒ 3-axis ≡ 2-axis ≡ marginal). **STRUCTURAL LIMIT (honest):** a bid-price
-   threshold cannot RATION a *marginal* hog (admitted at `value = p_K·hold`; the greedy limiter
-   rations instead) — it strictly helps only against a strictly-dominated hog. **Implementation
-   (deferred pending disposition):** a 3-budget solver + per-type `hold` in the workload + a
-   per-request `hold` estimate at admit time + the `p_K·hold` bid term; expands the public
-   per-request API (experimental-frontier under STABILITY.md).
+2. ✅ **SHIPPED 0.11.3 — 3-axis joint LP** (rate + cost + a *concurrency* shadow price; D-JLP-15/16,
+   TK-1405). The "concurrency is instantaneous, doesn't fit the fluid relaxation" worry was RESOLVED
+   by **Little's law**: an occupancy cap `L` is a 3rd fluid budget `Σ wᵢ hᵢ xᵢ ≤ L·T` with per-request
+   consumption = **hold time** `hᵢ`; the bid test gains a term `value ≥ p_R + p_C·cost + p_K·hold`
+   (3-budget dual via 3D vertex enumeration in `solveFluidLp` when `concBudget` is set). **WIN** (gate
+   `three-axis-gate.ts`): cuts regret **53%→2% (ε≈51pp)** when concurrency binds and a
+   strictly-dominated hold-time hog is INDISTINGUISHABLE from good traffic on (rate,cost) — 2-axis is
+   blind. **NO HARM** when concurrency is ample (`p_K=0`). **STRUCTURAL LIMIT (honest):** a bid-price
+   threshold cannot RATION a *marginal* hog — it strictly helps only against a strictly-dominated
+   one. Opt-in via `jointLp.workload.concBudget` + per-type `hold` (or `jointLp.duals.conc`) + a
+   per-request `UnifiedAdmitOptions.hold` (fail-open: missing/non-finite/negative → no conc term).
+   Mutually exclusive with `adaptive` for now.
 3. **Per-tenant duals** (pair with Pillar 4 WFE): different bid prices per tenant
    class. Composition study.
 
