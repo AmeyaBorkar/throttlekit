@@ -8,6 +8,29 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [1.0.1] — 2026-05-31
+
+First patch on the `1.x` line — a header-builder crash fix and a docs clarification. No API or runtime
+behavior change to any limiter; the freeze holds.
+
+### Fixed
+
+- **`buildRateLimitHeaders(decision)` threw `TypeError: Cannot read properties of undefined` when called
+  without the options argument.** The second parameter now defaults to `{}`, and its `now` field is
+  optional — falling back to the system clock — so the one-argument form emits the default `draft`
+  triple instead of crashing (and never emits a `NaN` reset). Passing `now` (e.g. from a `ManualClock`)
+  still yields fully deterministic output. Both relaxations are required→optional, so every existing
+  caller is unaffected.
+
+### Documentation
+
+- **Clarified `TokenBudgetMeter.debitSync` stop-at-boundary semantics at the call site.** The meter
+  admits a debit iff budget remains *before* it (`served < L`) and refuses the *next* one, so a
+  multi-token debit that crosses `L` is admitted in full (overshoot ≤ `tokens − 1`; exactly zero when
+  debiting per token). This was documented on `tokenBudget()` but not on the method itself; the method
+  JSDoc now states it and points to `remaining()` for a pre-check. Behavior is unchanged — it is
+  property-test-pinned in `test/admission/token-budget.test.ts`.
+
 ## [1.0.0] — 2026-05-31
 
 **The API is frozen under SemVer.** ThrottleKit is feature-complete and battle-tested; `1.0` is a
