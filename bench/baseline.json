@@ -1,24 +1,28 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "recorded": {
-    "at": "2026-05-28",
+    "at": "2026-05-30",
     "node": "v24.13.1",
     "platform": "win32"
   },
   "runs": 10,
   "iters": 2000000,
+  "referenceNsPerOp": 129.3907,
   "rows": [
     {
       "label": "gcra checkSync",
-      "nsPerOp": 170.7276
+      "nsPerOp": 173.5714,
+      "relative": 1.341451897238364
     },
     {
       "label": "tokenBucket checkSync",
-      "nsPerOp": 199.5607
+      "nsPerOp": 191.68395,
+      "relative": 1.4814352963543747
     },
     {
       "label": "fixedWindow checkSync",
-      "nsPerOp": 214.5338
+      "nsPerOp": 206.63465,
+      "relative": 1.5969822406092553
     }
   ]
 }
