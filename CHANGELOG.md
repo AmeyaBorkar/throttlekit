@@ -6,6 +6,14 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.12.0] — 2026-05-30
+
+**Federated Weighted Fair Escrow — GALE Pillar 4 lifted across regions into a global
+weighted-max-min guarantee (TK-1404, #176). Additive and opt-in; `0.11.3` users upgrade
+with zero behavior change (the existing `weightedFairEscrow` is byte-for-byte unchanged).**
+
 ### Added
 
 - **Federated Weighted Fair Escrow — Pillar 4 lifted across regions (TK-1404, #176).** New
