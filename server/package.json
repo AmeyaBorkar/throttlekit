@@ -2,6 +2,13 @@
   "name": "throttlekit-server",
   "version": "0.1.0-experimental.0",
   "description": "gRPC service door for ThrottleKit — run the rate-limiting core as a network service for polyglot clients.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AmeyaBorkar/throttlekit.git",
+    "directory": "server"
+  },
+  "homepage": "https://github.com/AmeyaBorkar/throttlekit/tree/main/server#readme",
+  "bugs": "https://github.com/AmeyaBorkar/throttlekit/issues",
   "type": "module",
   "license": "MIT",
   "private": false,
