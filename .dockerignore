@@ -1,0 +1,14 @@
+# Build context excludes for `docker build -f server/Dockerfile .` (run from the repo root).
+# Only server/ + wire/throttlekit.proto are needed; keep the context small.
+.git
+node_modules
+dist
+coverage
+.venv
+**/node_modules
+**/dist
+server/node_modules
+server/dist
+research
+test
+docs

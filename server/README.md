@@ -36,9 +36,12 @@ limiters:
 
 A client sends `Check { policy: "api", key: apiKey, cost: 1 }` and reads back a `Decision`.
 
-> This first cut uses an in-process **memory** store (one per policy) — correct for a single instance. A
-> distributed fleet shares one Redis/Postgres store across instances; wire it programmatically (below)
-> until the `--redis` flag lands.
+By default each policy uses an in-process **memory** store (correct for a single instance). Point every
+instance at the **same Redis** to run a coordinated fleet enforcing one shared limit:
+
+```bash
+throttlekit-server --config .throttlekit.yaml --redis redis://redis:6379
+```
 
 ## Embed it (Node)
 
@@ -63,7 +66,44 @@ The service answers [`throttlekit.proto`](../wire/throttlekit.proto) (`throttlek
 [golden vectors](../wire/) the wire contract is built from: a live in-process server + client replays
 every suite and must reproduce the oracle's decisions field-for-field (`test/`).
 
+## Deploy
+
+```bash
+# fleet mode (shared Redis) + mTLS
+throttlekit-server --config .throttlekit.yaml \
+  --redis redis://redis:6379 --redis-prefix prod \
+  --tls-cert server.crt --tls-key server.key --tls-ca client-ca.crt \
+  --fail closed
+```
+
+| Flag | Effect |
+|---|---|
+| `--redis <url>` | share one Redis store across instances (one fleet-wide limit); omit for in-process memory |
+| `--redis-prefix <p>` | key prefix for the shared store |
+| `--tls-cert` + `--tls-key` | serve **TLS** |
+| `--tls-ca <ca>` | require + verify client certs ⇒ **mTLS** |
+| `--fail open\|closed` | store-outage policy (default `open`) |
+
+**Container** (build from the repo root so the single-source proto in `wire/` is bundled):
+
+```bash
+docker build -f server/Dockerfile -t throttlekit-server .
+docker run -p 50051:50051 -v "$PWD/.throttlekit.yaml:/etc/tk.yaml" \
+  throttlekit-server --config /etc/tk.yaml --redis redis://host.docker.internal:6379
+```
+
+## Failure modes
+
+| Condition | Behavior |
+|---|---|
+| Rate limit hit | a normal `Decision` with `allowed:false` + `retryAfterMs` — **not** an RPC error |
+| Unknown policy | gRPC `NOT_FOUND` |
+| Op unsupported by the strategy (`peek`/`forecast`) | gRPC `UNIMPLEMENTED` |
+| **Store (Redis) outage** | resolved by `--fail`: `open` admits, `closed` denies (a synthesized `Decision`) |
+| **Service unreachable** (transport) | the *client's* call to make — fail-open or fail-closed in your code; a returned `Decision` is always authoritative |
+
 ## Security
 
-The default credentials are **insecure** (loopback/dev). Front anything exposed with **mTLS or TLS** —
-pass `grpc.ServerCredentials` via `serve({ credentials })` — so nothing can poison a shared budget.
+The default credentials are **insecure** (loopback/dev only). Front anything exposed with **TLS/mTLS**
+(flags above, or pass `grpc.ServerCredentials` to `serve({ credentials })`) so nothing can poison a
+shared budget. The server warns on startup if it binds a non-loopback host without TLS.

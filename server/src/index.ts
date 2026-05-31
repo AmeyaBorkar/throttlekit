@@ -20,3 +20,5 @@ export type {
 } from "./service.js";
 export { rateLimiterHandlers, resolveProtoPath, serve } from "./grpc.js";
 export type { RunningServer, ServeOptions } from "./grpc.js";
+export { createServerCredentials, createStore, isSecure } from "./runtime.js";
+export type { ResolvedStore, StoreSpec, TlsSpec } from "./runtime.js";

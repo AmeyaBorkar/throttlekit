@@ -2,10 +2,9 @@
 /**
  * `throttlekit-server` CLI. Loads a `.throttlekit.yaml`/`.json` policy file and serves it over gRPC.
  *
- * This first cut uses the in-process **memory** store (each policy its own), which is correct for a
- * single server instance. A distributed deployment shares one Redis/Postgres store across instances —
- * that needs a store client and is wired programmatically via `serve({ service })` with a
- * `createRateLimiterServiceFromConfig(text, { store })` for now; a `--redis` flag follows.
+ * Point multiple instances at one `--redis` to run a coordinated fleet (one shared limit); omit it for a
+ * single-instance in-process memory store. Front anything non-loopback with `--tls-cert/--tls-key`
+ * (add `--tls-ca` for mTLS) so nothing can poison a shared budget.
  */
 
 import { readFileSync } from "node:fs";
@@ -13,6 +12,7 @@ import { readFileSync } from "node:fs";
 import type { FailMode } from "throttlekit";
 
 import { serve } from "./grpc.js";
+import { createServerCredentials, createStore, isSecure } from "./runtime.js";
 import { createRateLimiterServiceFromConfig } from "./service.js";
 
 interface Args {
@@ -20,6 +20,11 @@ interface Args {
   host: string;
   port: number;
   fail: FailMode;
+  redis?: string;
+  redisPrefix?: string;
+  tlsCert?: string;
+  tlsKey?: string;
+  tlsCa?: string;
   help: boolean;
 }
 
@@ -49,6 +54,21 @@ function parseArgs(argv: string[]): Args {
         args.fail = v;
         break;
       }
+      case "--redis":
+        args.redis = argv[++i];
+        break;
+      case "--redis-prefix":
+        args.redisPrefix = argv[++i];
+        break;
+      case "--tls-cert":
+        args.tlsCert = argv[++i];
+        break;
+      case "--tls-key":
+        args.tlsKey = argv[++i];
+        break;
+      case "--tls-ca":
+        args.tlsCa = argv[++i];
+        break;
       default:
         throw new Error(`unknown argument: ${arg}`);
     }
@@ -59,16 +79,23 @@ function parseArgs(argv: string[]): Args {
 const USAGE = `throttlekit-server — gRPC service door for ThrottleKit
 
 Usage:
-  throttlekit-server --config <path> [--host <host>] [--port <port>] [--fail open|closed]
+  throttlekit-server --config <path> [options]
 
 Options:
-  -c, --config <path>   .throttlekit.yaml / .throttlekit.json policy file (required)
-      --host <host>     bind host (default 0.0.0.0)
-  -p, --port <port>     bind port (default 50051)
+  -c, --config <path>     .throttlekit.yaml / .throttlekit.json policy file (required)
+      --host <host>       bind host (default 0.0.0.0)
+  -p, --port <port>       bind port (default 50051)
       --fail open|closed  store-outage policy (default open)
-  -h, --help            show this help
+      --redis <url>       share a Redis store across instances (fleet mode); omit for in-process memory
+      --redis-prefix <p>  key prefix for the shared Redis store
+      --tls-cert <path>   PEM server certificate  ┐ enable TLS
+      --tls-key <path>    PEM server private key   ┘
+      --tls-ca <path>     PEM CA bundle ⇒ require + verify client certs (mTLS)
+  -h, --help              show this help
 
-Serves throttlekit.v1.RateLimiter over (insecure) gRPC. Front with mTLS/TLS for anything exposed.`;
+Serves throttlekit.v1.RateLimiter. A denial is a normal Decision (allowed:false), not an RPC error.`;
+
+const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -86,18 +113,47 @@ async function main(): Promise<void> {
     throw new Error(`--port must be a non-negative integer, got ${args.port}`);
   }
 
-  const text = readFileSync(args.config, "utf8");
-  const service = createRateLimiterServiceFromConfig(text, { fail: args.fail });
-  const running = await serve({ service, host: args.host, port: args.port });
+  const tls = { certPath: args.tlsCert, keyPath: args.tlsKey, caPath: args.tlsCa };
+  const secure = isSecure(tls);
+  if (!secure && !LOOPBACK.has(args.host)) {
+    console.warn(
+      `warning: serving INSECURE gRPC on a non-loopback host (${args.host}). Pass --tls-cert/--tls-key (and --tls-ca for mTLS) before exposing this.`,
+    );
+  }
 
+  const text = readFileSync(args.config, "utf8");
+  const { store, distributed, dispose } = createStore({
+    redisUrl: args.redis,
+    redisPrefix: args.redisPrefix,
+  });
+  const service = createRateLimiterServiceFromConfig(text, {
+    ...(store !== undefined ? { store } : {}),
+    fail: args.fail,
+  });
+  const running = await serve({
+    service,
+    host: args.host,
+    port: args.port,
+    credentials: createServerCredentials(tls),
+  });
+
+  const mode = distributed ? "redis" : "memory";
+  const security = args.tlsCa !== undefined ? "mTLS" : secure ? "TLS" : "insecure";
   console.log(
     `throttlekit-server listening on ${args.host}:${running.port} ` +
-      `(${service.policies().length} policies: ${service.policies().join(", ")}; fail=${args.fail})`,
+      `[${mode}, ${security}, fail=${args.fail}] ` +
+      `(${service.policies().length} policies: ${service.policies().join(", ")})`,
   );
 
+  let closing = false;
   const shutdown = (signal: string): void => {
+    if (closing) return;
+    closing = true;
     console.log(`\n${signal} received, draining…`);
-    running.close().then(() => process.exit(0));
+    running
+      .close()
+      .then(() => dispose())
+      .then(() => process.exit(0));
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));

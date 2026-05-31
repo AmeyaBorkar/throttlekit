@@ -84,11 +84,13 @@ published, green 1.0 package for no benefit the standalone package doesn't alrea
 1. ✅ The gRPC binding — `RateLimiter` (`Check`/`CheckMany`/`Peek`/`Forecast`) over the service core;
    errors → status codes (`NOT_FOUND`/`UNIMPLEMENTED`/`INTERNAL`; `RESOURCE_EXHAUSTED` is *not* used — a
    denial is a normal `Decision`).
-2. 🟡 `throttlekit-server` CLI — loads `.throttlekit.yaml` and serves; **memory store done**, Redis/
-   Postgres store wiring (and `--redis`) is the next slice (needs a client dep + injection).
+2. ✅ `throttlekit-server` CLI — loads `.throttlekit.yaml` and serves; **memory + shared Redis** (`--redis`
+   via ioredis ⇒ fleet mode), `--fail`, graceful drain. (`src/runtime.ts` makes store/creds testable.)
 3. ✅ End-to-end contract test — a real in-process server + client replays the vectors, green.
-4. ⬜ **Auth** (mTLS / shared secret — table-stakes before any non-loopback exposure), **container**,
-   `docs/FAILURE-MODES.md` "service unreachable" row, an example. Optional: an Envoy RLS proto for mesh.
+4. ✅ **Auth (TLS + mTLS)** via `--tls-cert/--tls-key/--tls-ca` (insecure-on-non-loopback warning), a
+   **Dockerfile** (repo-root context, bundles the single-source proto), and a failure-modes table incl.
+   the "service unreachable" row — in the **server README** (keeps the core untouched). Remaining
+   (optional): a shared-secret auth alternative; an Envoy RLS proto for mesh reach.
 5. ⬜ Release posture: pick the npm name (`throttlekit-server` vs a `@throttlekit/*` scope), flip
    `private:false`, `prepack` bundles the proto. Independent pre-1.0 cadence from the frozen core.
 
