@@ -25,5 +25,6 @@ states/
 # evidence — only these prose documents are private. They stay on disk, just out of the repo.
 research/bigger-bets/PLAN.md
 research/paper/
+research/website/
 research/gale/*.md
 research/cost-uncertainty/*.md
