@@ -1,0 +1,43 @@
+{
+  "name": "throttlekit-server",
+  "version": "0.1.0-experimental.0",
+  "description": "gRPC service door for ThrottleKit — run the rate-limiting core as a network service for polyglot clients.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "throttlekit-server": "dist/bin.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "throttlekit.proto", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "start": "node dist/bin.js",
+    "prepack": "node -e \"require('fs').copyFileSync('../wire/throttlekit.proto','throttlekit.proto')\""
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.5",
+    "@grpc/proto-loader": "^0.7.13",
+    "throttlekit": "^1.0.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

@@ -92,8 +92,11 @@ Python value prop is weak — another reason to lead with the (network-bound) di
 1. **Contract foundation** *(this repo, reversible, Node-valuable)* — **DONE**: golden vectors + the
    behavior lock; extracted Lua to single-sourced `wire/scripts/*.lua` + the byte lock; `manifest.json`
    (sha256-pinned); `WIRE-PROTOCOL.md`; `throttlekit.proto`. `npm run wire` regenerates everything.
-2. **The service** *(this repo: `throttlekit serve` + container)* — `createEnforcer()` + gRPC over the
-   proto; policies loaded from `.throttlekit.yaml`; contract tests ≡ vectors; optional Envoy RLS.
+2. **The service** *(this repo: the `throttlekit-server` package + container)* — **mostly DONE**:
+   `createEnforcer()` + gRPC over the proto, policies from `.throttlekit.yaml`, end-to-end contract test
+   ≡ vectors (green). Standalone package depending on published `throttlekit` (core untouched, zero-dep
+   preserved). Remaining: distributed-store CLI wiring, auth (mTLS), container, optional Envoy RLS. See
+   `research/polyglot/PHASE2-SERVICE.md`.
 3. **`throttlekit-py`** *(new repo)* — scaffold + `sync_contract` + drift gate; `ServiceBackend` first
    (the cheapest real polyglot MVP); marked experimental.
 4. **`RedisBackend`** (direct Lua) + cross-client conformance — *now* the wire-freeze decision is due.

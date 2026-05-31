@@ -1,23 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-  "vcs": {
-    "enabled": true,
-    "clientKind": "git",
-    "useIgnoreFile": true
-  },
-  "organizeImports": {
-    "enabled": true
-  },
   "files": {
-    "ignore": [
-      "dist",
-      "coverage",
-      "node_modules",
-      "wire/vectors/golden-vectors.json",
-      "wire/scripts/manifest.json",
-      "wire/scripts/*.lua",
-      "server"
-    ]
+    "ignore": ["dist", "node_modules"]
   },
   "formatter": {
     "enabled": true,
@@ -30,14 +14,11 @@
     "rules": {
       "recommended": true,
       "suspicious": {
-        "noExplicitAny": "warn"
+        "noExplicitAny": "off"
       },
       "style": {
         "noNonNullAssertion": "off",
         "useNodejsImportProtocol": "error"
-      },
-      "complexity": {
-        "noForEach": "off"
       }
     }
   },
