@@ -18,8 +18,15 @@ export type {
   RateLimiterServiceConfigOptions,
   RateLimiterServiceOptions,
 } from "./service.js";
-export { buildLimitersFromConfig } from "./config.js";
-export type { ServerLimiterSpec, ServerLoadOptions, TwoTierConfig } from "./config.js";
+export { buildLimitersFromConfig, buildServiceConfig } from "./config.js";
+export type {
+  MeterPolicy,
+  ServerLimiterSpec,
+  ServerLoadOptions,
+  ServiceConfig,
+  TokenBudgetConfig,
+  TwoTierConfig,
+} from "./config.js";
 export { rateLimiterHandlers, resolveProtoPath, serve } from "./grpc.js";
 export type { RunningServer, ServeOptions } from "./grpc.js";
 export { createServerCredentials, createStore, isSecure } from "./runtime.js";

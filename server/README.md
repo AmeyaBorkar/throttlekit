@@ -68,6 +68,27 @@ Without `--redis` a `twoTier` policy falls back to a private in-process L2 (sing
 plain policy); point the fleet at one Redis to share the budget. `peek`/`forecast` aren't offered on a
 leased policy (it is consume-only) — they return `UNIMPLEMENTED`.
 
+## Token budgets (the cost axis)
+
+For post-hoc costs you only learn *after* a request runs — the LLM-gateway problem, where a completion's
+token count isn't known until it streams — a policy can be a `tokenBudget` meter, served via the `Debit`
+RPC. The client **debits** the actual tokens as they are produced; a debit is admitted while budget
+remains, and the meter stops on the token that crosses the limit (per-token debiting overshoots by 0).
+
+```yaml
+version: 1
+limiters:
+  completions:
+    tokenBudget:        # ← a block, not a strategy: this policy is a meter, served via Debit
+      budget: 100000    # tokens per window, per key
+      windowMs: 60000
+```
+
+A client calls `Debit { policy: "completions", key: tenant, tokens: n }` per chunk. The service keeps one
+meter per key (bounded by `maxKeys`, default 100k). It is **single-instance** today (the core primitive is
+per-gateway; a fleet-shared budget is a planned enhancement). `check` on a token-budget policy — and
+`debit` on a rate limiter — return `UNIMPLEMENTED`.
+
 ## Embed it (Node)
 
 ```ts

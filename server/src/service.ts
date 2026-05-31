@@ -13,8 +13,8 @@
  */
 
 import { type Enforcer, ThrottleKitError, createEnforcer } from "throttlekit";
-import type { Decision, FailMode, Forecast, Limiter } from "throttlekit";
-import { type ServerLoadOptions, buildLimitersFromConfig } from "./config.js";
+import type { Decision, FailMode, Forecast, Limiter, TokenBudgetMeter } from "throttlekit";
+import { type MeterPolicy, type ServerLoadOptions, buildServiceConfig } from "./config.js";
 
 /** Thrown when a request names a policy the service was not configured with (→ gRPC `NOT_FOUND`). */
 export class PolicyNotFoundError extends ThrottleKitError {
@@ -31,9 +31,12 @@ export class PolicyNotFoundError extends ThrottleKitError {
   }
 }
 
-/** Thrown when a policy's strategy does not support a non-consuming op (→ gRPC `UNIMPLEMENTED`). */
+/**
+ * Thrown when a policy does not support the requested op (→ gRPC `UNIMPLEMENTED`): a strategy without
+ * `peek`/`forecast`, a `check` on a token-budget meter, or a `debit` on a rate limiter.
+ */
 export class OperationNotSupportedError extends ThrottleKitError {
-  constructor(op: "peek" | "forecast", policy: string) {
+  constructor(op: string, policy: string) {
     super(`policy ${JSON.stringify(policy)} does not support ${op}`, { code: "not_implemented" });
     this.name = "OperationNotSupportedError";
   }
@@ -46,6 +49,11 @@ export interface RateLimiterServiceOptions {
    * is what a client puts in a request's `policy` field.
    */
   limiters: Record<string, Limiter>;
+  /**
+   * Token-budget (cost-axis) policies, each a {@link MeterPolicy}; the service keeps one meter per key.
+   * A policy name is a limiter **or** a meter, never both — they share one namespace.
+   */
+  meters?: Record<string, MeterPolicy>;
   /**
    * Store-outage policy applied to every policy's `check`/`checkMany`: `"open"` admits, `"closed"`
    * denies. Default `"open"`. (A returned `Decision` is always authoritative; this only governs what
@@ -79,6 +87,12 @@ export interface RateLimiterService {
   peek(policy: string, key: string): Promise<Decision>;
   /** Non-consuming capacity forecast for `key` under `policy`, for a request costing `cost` (default 1). */
   forecast(policy: string, key: string, cost?: number): Promise<Forecast>;
+  /**
+   * Debit `tokens` (default 1) of post-hoc cost against a token-budget `policy` for `key`. Throws
+   * {@link OperationNotSupportedError} if `policy` is a rate limiter (use `check`), and
+   * {@link PolicyNotFoundError} for an unknown policy.
+   */
+  debit(policy: string, key: string, tokens?: number): Promise<Decision>;
 }
 
 /** Synthesize the degenerate `Decision` returned when the store threw (no real decision exists). */
@@ -99,11 +113,40 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     order.push(name);
     enforcers.set(name, createEnforcer({ limiter, fail, policyName: name }));
   }
+  // Token-budget (cost-axis) policies: one meter per key, lazily created and FIFO-bounded by `maxKeys`.
+  const meters = new Map<string, { policy: MeterPolicy; cache: Map<string, TokenBudgetMeter> }>();
+  for (const [name, policy] of Object.entries(options.meters ?? {})) {
+    if (enforcers.has(name))
+      throw new ThrottleKitError(`policy ${JSON.stringify(name)} is both a limiter and a meter`);
+    order.push(name);
+    meters.set(name, { policy, cache: new Map() });
+  }
 
-  function resolve(policy: string): Enforcer {
+  /** Resolve a limiter for a consuming/introspection op; a token-budget policy can't serve these. */
+  function resolveLimiter(policy: string, op: string): Enforcer {
     const enforcer = enforcers.get(policy);
-    if (enforcer === undefined) throw new PolicyNotFoundError(policy, order);
-    return enforcer;
+    if (enforcer !== undefined) return enforcer;
+    if (meters.has(policy)) throw new OperationNotSupportedError(op, policy);
+    throw new PolicyNotFoundError(policy, order);
+  }
+
+  /** Resolve (lazily creating) the per-key meter for a token-budget policy. */
+  function resolveMeter(policy: string, key: string): TokenBudgetMeter {
+    const entry = meters.get(policy);
+    if (entry === undefined) {
+      if (enforcers.has(policy)) throw new OperationNotSupportedError("debit", policy);
+      throw new PolicyNotFoundError(policy, order);
+    }
+    let meter = entry.cache.get(key);
+    if (meter === undefined) {
+      if (entry.cache.size >= entry.policy.maxKeys) {
+        const oldest = entry.cache.keys().next(); // FIFO eviction by insertion order
+        if (!oldest.done) entry.cache.delete(oldest.value);
+      }
+      meter = entry.policy.create();
+      entry.cache.set(key, meter);
+    }
+    return meter;
   }
 
   return {
@@ -112,14 +155,14 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     },
 
     async check(policy, key, cost = 1): Promise<Decision> {
-      const enforcer = resolve(policy);
+      const enforcer = resolveLimiter(policy, "check");
       const r = await enforcer.enforce(key, cost);
       // `decision` is present for "ok"/"limited"; undefined only when the store threw ("error").
       return r.decision ?? storeErrorDecision(enforcer.limiter, r.allowed);
     },
 
     async checkMany(policy, keys, cost = 1): Promise<Decision[]> {
-      const enforcer = resolve(policy);
+      const enforcer = resolveLimiter(policy, "checkMany");
       try {
         // The batched path evaluates every key at one consistent instant (and pipelines on Redis).
         return await enforcer.limiter.checkMany(keys, cost);
@@ -131,7 +174,7 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     },
 
     async peek(policy, key): Promise<Decision> {
-      const enforcer = resolve(policy);
+      const enforcer = resolveLimiter(policy, "peek");
       const limiter = enforcer.limiter;
       // A store-backed limiter always exposes `peek`, but it throws unless the *strategy* implements it;
       // a composite limiter may omit the method entirely. Gate on both for a clean UNIMPLEMENTED.
@@ -141,11 +184,16 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     },
 
     async forecast(policy, key, cost = 1): Promise<Forecast> {
-      const enforcer = resolve(policy);
+      const enforcer = resolveLimiter(policy, "forecast");
       const limiter = enforcer.limiter;
       if (limiter.forecast === undefined || limiter.strategy.forecast === undefined)
         throw new OperationNotSupportedError("forecast", policy);
       return limiter.forecast(key, cost);
+    },
+
+    async debit(policy, key, tokens = 1): Promise<Decision> {
+      // The meter is the core's `tokenBudget` primitive — the debit decision is computed by the core.
+      return resolveMeter(policy, key).debitSync(tokens);
     },
   };
 }
@@ -157,13 +205,14 @@ export type RateLimiterServiceConfigOptions = ServerLoadOptions &
 /**
  * Convenience: build a service straight from `.throttlekit.yaml`/`.json` text. Inject the live `store`
  * (you can't serialise an `ioredis` client into YAML) via the loader options. A policy may carry a
- * `twoTier` block to be served as a two-tier leased limiter — see {@link buildLimitersFromConfig}.
+ * `twoTier` block (two-tier leased limiter) or a `tokenBudget` block (cost-axis meter) — see
+ * {@link buildServiceConfig}.
  */
 export function createRateLimiterServiceFromConfig(
   text: string,
   options: RateLimiterServiceConfigOptions = {},
 ): RateLimiterService {
   const { fail, ...loadOptions } = options;
-  const limiters = buildLimitersFromConfig(text, loadOptions);
-  return createRateLimiterService({ limiters, ...(fail !== undefined ? { fail } : {}) });
+  const { limiters, meters } = buildServiceConfig(text, loadOptions);
+  return createRateLimiterService({ limiters, meters, ...(fail !== undefined ? { fail } : {}) });
 }

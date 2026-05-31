@@ -31,13 +31,31 @@ export interface VectorSuite {
   ops: VectorOp[];
 }
 
+export interface TokenBudgetOp {
+  now: number;
+  tokens: number;
+  expect: DecisionVector;
+}
+
+export interface TokenBudgetSuite {
+  primitive: string;
+  name: string;
+  options: { budget: number; windowMs: number };
+  ops: TokenBudgetOp[];
+}
+
 const vectorsPath = fileURLToPath(
   new URL("../../wire/vectors/golden-vectors.json", import.meta.url),
 );
-const doc = JSON.parse(readFileSync(vectorsPath, "utf8")) as { suites: VectorSuite[] };
+const doc = JSON.parse(readFileSync(vectorsPath, "utf8")) as { suites: any[] };
 
 /** Every rateLimit suite (the decision-returning primitives the service exposes). */
 export const rateLimitSuites: VectorSuite[] = doc.suites.filter((s) => s.primitive === "rateLimit");
+
+/** Every tokenBudget suite (the cost-axis `debit` primitive). */
+export const tokenBudgetSuites: TokenBudgetSuite[] = doc.suites.filter(
+  (s) => s.primitive === "tokenBudget",
+);
 
 /** Map a golden-vector strategy spec to its public `throttlekit` factory. */
 export function buildStrategy(spec: { kind: string; options: any }): Strategy {

@@ -21,8 +21,8 @@
  * ```
  */
 
-import { MemoryStore, ThrottleKitError } from "throttlekit";
-import type { Clock, Limiter, Strategy } from "throttlekit";
+import { MemoryStore, ThrottleKitError, tokenBudget } from "throttlekit";
+import type { Clock, Limiter, Strategy, TokenBudgetMeter } from "throttlekit";
 import {
   type ConfigFile,
   type LimiterSpec,
@@ -46,8 +46,39 @@ export interface TwoTierConfig {
   returnIdleAfterMs?: number;
 }
 
-/** A policy spec, extended with the optional server-only `twoTier` block. */
-export type ServerLimiterSpec = LimiterSpec & { twoTier?: TwoTierConfig };
+/** The optional `tokenBudget` block — turns a policy into a windowed token-budget meter (the cost axis). */
+export interface TokenBudgetConfig {
+  /** Token budget enforced over each window (positive integer). */
+  budget: number;
+  /** Window width in ms (epoch-aligned). */
+  windowMs: number;
+  /** Max distinct keys to keep a live meter for; the oldest is dropped past this (default 100_000). */
+  maxKeys?: number;
+}
+
+/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` blocks. */
+export type ServerLimiterSpec = LimiterSpec & {
+  twoTier?: TwoTierConfig;
+  tokenBudget?: TokenBudgetConfig;
+};
+
+/**
+ * A token-budget (cost-axis) policy. The service keeps one {@link TokenBudgetMeter} per key (made by
+ * `create`, bounded by `maxKeys`). The meter is single-instance by nature (per the core primitive) — a
+ * fleet-shared budget is a future enhancement via the core's `DistributedTokenBudgetMeter`.
+ */
+export interface MeterPolicy {
+  /** Make a fresh meter for one key. */
+  create(): TokenBudgetMeter;
+  /** Max distinct keys to retain meters for (FIFO-evict beyond this). */
+  maxKeys: number;
+}
+
+/** The resolved policies a service serves: rate/two-tier {@link Limiter}s and token-budget {@link MeterPolicy}s. */
+export interface ServiceConfig {
+  limiters: Record<string, Limiter>;
+  meters: Record<string, MeterPolicy>;
+}
 
 /** Options for {@link buildLimitersFromConfig}: the core loader options plus an injectable clock. */
 export interface ServerLoadOptions extends LoadConfigOptions {
@@ -62,13 +93,11 @@ function parseConfigText(text: string, format: "yaml" | "json" | undefined): Con
 }
 
 /**
- * Build the named limiters from `.throttlekit.yaml`/`.json` text, honouring an optional `twoTier` block
- * per policy. Policies without a `twoTier` block are delegated to the core `loadConfig` unchanged.
+ * Build the service's policies from `.throttlekit.yaml`/`.json` text: rate-limit and `twoTier` policies as
+ * {@link Limiter}s, and `tokenBudget` policies as {@link MeterPolicy}s. Plain rate-limit policies are
+ * delegated to the core `loadConfig` unchanged.
  */
-export function buildLimitersFromConfig(
-  text: string,
-  options: ServerLoadOptions = {},
-): Record<string, Limiter> {
+export function buildServiceConfig(text: string, options: ServerLoadOptions = {}): ServiceConfig {
   const data = parseConfigText(text, options.format);
   if (data == null || typeof data !== "object" || Array.isArray(data))
     throw new ThrottleKitError("config: expected an object at the top level");
@@ -77,12 +106,15 @@ export function buildLimitersFromConfig(
     throw new ThrottleKitError("config: missing `limiters` map");
 
   const defaultPrefix = data.defaults?.prefix;
+  const meters: Record<string, MeterPolicy> = {};
   const twoTierLimiters: Record<string, Limiter> = {};
   const rateLimitOnly: Record<string, LimiterSpec> = {};
 
   for (const [name, rawSpec] of Object.entries(limitersIn)) {
     const spec = rawSpec as ServerLimiterSpec;
-    if (spec != null && typeof spec === "object" && spec.twoTier !== undefined) {
+    if (spec != null && typeof spec === "object" && spec.tokenBudget !== undefined) {
+      meters[name] = buildMeter(name, spec, options);
+    } else if (spec != null && typeof spec === "object" && spec.twoTier !== undefined) {
       twoTierLimiters[name] = buildTwoTier(name, spec, options, defaultPrefix);
     } else {
       rateLimitOnly[name] = rawSpec as LimiterSpec;
@@ -96,7 +128,18 @@ export function buildLimitersFromConfig(
   };
   const rest = loadConfigObject({ ...data, limiters: rateLimitOnly }, coreOptions).limiters;
 
-  return { ...rest, ...twoTierLimiters };
+  return { limiters: { ...rest, ...twoTierLimiters }, meters };
+}
+
+/**
+ * Build just the named limiters (rate-limit + two-tier) — a thin wrapper over {@link buildServiceConfig}
+ * for callers that don't serve token-budget policies.
+ */
+export function buildLimitersFromConfig(
+  text: string,
+  options: ServerLoadOptions = {},
+): Record<string, Limiter> {
+  return buildServiceConfig(text, options).limiters;
 }
 
 function buildTwoTier(
@@ -136,5 +179,24 @@ function buildLease(tt: TwoTierConfig): LeaseOptions {
     ...(tt.lowWater !== undefined ? { lowWater: tt.lowWater } : {}),
     ...(tt.windowCoupled !== undefined ? { windowCoupled: tt.windowCoupled } : {}),
     ...(tt.returnIdleAfterMs !== undefined ? { returnIdleAfterMs: tt.returnIdleAfterMs } : {}),
+  };
+}
+
+function buildMeter(
+  name: string,
+  spec: ServerLimiterSpec,
+  options: ServerLoadOptions,
+): MeterPolicy {
+  const tb = spec.tokenBudget as TokenBudgetConfig;
+  if (tb.budget === undefined || tb.windowMs === undefined)
+    throw new ThrottleKitError(
+      `config.limiters[${name}].tokenBudget: both \`budget\` and \`windowMs\` are required`,
+    );
+  const { budget, windowMs } = tb;
+  const clock = options.clock;
+  return {
+    create: (): TokenBudgetMeter =>
+      tokenBudget({ budget, windowMs, ...(clock !== undefined ? { clock } : {}) }),
+    maxKeys: tb.maxKeys ?? 100_000,
   };
 }

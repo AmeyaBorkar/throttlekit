@@ -114,6 +114,13 @@ export function rateLimiterHandlers(
         .then((f) => callback(null, { forecast: forecastMessage(f) }))
         .catch((err) => callback(toStatus(err)));
     },
+    debit(call: any, callback: grpc.sendUnaryData<any>): void {
+      const { policy, key, tokens } = call.request;
+      service
+        .debit(policy, key, costOf(tokens)) // 0 ⇒ 1, same proto3-default convention as `cost`
+        .then((d) => callback(null, { decision: decisionMessage(d) }))
+        .catch((err) => callback(toStatus(err)));
+    },
   };
 }
 

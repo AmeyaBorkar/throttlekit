@@ -93,6 +93,22 @@ message ForecastResponse {
   Forecast forecast = 1;
 }
 
+// Debit `tokens` of post-hoc cost against a windowed token-budget policy for `key` — the LLM-gateway
+// problem, where a request's cost is known only after it streams. A debit is admitted iff budget remains
+// before it; the crossing debit is counted in full, then the window's later debits are refused. The
+// returned Decision's `remaining` is the tokens left in the window. (Additive: tags ride alongside the
+// existing RPCs; pre-existing clients are unaffected.)
+message DebitRequest {
+  string policy = 1;
+  string key = 2;
+  // Tokens to debit. 0 (the proto3 default) is interpreted as 1.
+  int64 tokens = 3;
+}
+
+message DebitResponse {
+  Decision decision = 1;
+}
+
 // The admission service. Transport concerns are deliberately out of band:
 //   - AUTH: mTLS or a shared secret in call metadata (table-stakes so nothing can poison the budget).
 //   - FAIL-OPEN / FAIL-CLOSED applies when the SERVICE itself is unreachable (a transport error) — that
