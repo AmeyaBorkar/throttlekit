@@ -129,6 +129,16 @@ Primitives that sit *upstream* of per-key limiters — overload, fairness, and c
 
 → [Overload, fairness & DDoS](https://github.com/AmeyaBorkar/throttlekit/wiki/Overload-Fairness-and-DDoS)
 
+## Polyglot — one core, two doors (experimental)
+
+Reach the limiter from non-Node services without re-implementing a single algorithm: the Node core stays the **only** thing that computes a decision, and every other surface is a thin pipe conformance-checked against one set of language-neutral [golden vectors](./wire).
+
+- **Service door** — [`throttlekit-server`](./server) runs the core and answers a small gRPC contract (`throttlekit.proto`); any language becomes a trivial stub, and a denial is a normal decision, never an RPC error.
+- **Direct door** — a client runs the core's *own* vendored Lua against the same Redis your Node fleet uses (one hop, no extra service).
+- **[`throttlekit-py`](https://github.com/AmeyaBorkar/throttlekit-py)** is the first client (both backends). Its `RedisBackend` replays the full golden vectors through real Redis and reproduces this core **bit-for-bit**.
+
+The proto is the stable polyglot contract; the raw Lua wire is behavior-locked but deliberately **not** frozen. Design + decision records: [`research/polyglot/DESIGN.md`](./research/polyglot/DESIGN.md).
+
 ## Correctness
 
 Dual-path conformance (JS ≡ Lua over thousands of generated timelines) + shrinkable `fast-check` property passes, atomicity tests (N concurrent checks at limit K ⇒ exactly K allowed), the TLA⁺/TLC model re-checked by an exhaustive JS checker in CI, and federation BFS-twin coverage. All time-dependent tests use `ManualClock`, so the **1,300+ test** suite is deterministic; CI is green across Node 20/22/24, and a bench-regression gate blocks hot-path slowdowns.

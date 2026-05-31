@@ -66,6 +66,13 @@ The service answers [`throttlekit.proto`](../wire/throttlekit.proto) (`throttlek
 [golden vectors](../wire/) the wire contract is built from: a live in-process server + client replays
 every suite and must reproduce the oracle's decisions field-for-field (`test/`).
 
+## Clients
+
+[`throttlekit-py`](https://github.com/AmeyaBorkar/throttlekit-py) is the reference client — point its
+`ServiceBackend` at this server. (It also ships a direct `RedisBackend` that runs the same vendored Lua
+straight against Redis, for when you'd rather skip the hop — proven bit-for-bit against the same golden
+vectors.) Any language with gRPC can be a client: load `throttlekit.proto` and call `RateLimiter`.
+
 ## Deploy
 
 ```bash

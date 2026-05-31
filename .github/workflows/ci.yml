@@ -94,3 +94,26 @@ jobs:
           # it while still catching the deopts this gate exists for (hot-path megamorphism is ~3× =
           # +200%). For a tighter gate, record the baseline on this OS, or diff against the base commit.
           BENCH_REGRESSION_THRESHOLD: "1.5"
+
+  server:
+    name: Server (gRPC door)
+    runs-on: ubuntu-latest
+    # The throttlekit-server package (the polyglot service door). It builds against the PUBLISHED
+    # throttlekit — dogfooding the frozen 1.0 public API, never the core's source — and runs its gRPC
+    # e2e + runtime tests in-process (memory store + a ManualClock; no external services needed). The
+    # server versions/releases on its own pre-1.0 cadence; this job just keeps it green with the core.
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
