@@ -1,6 +1,6 @@
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
-import { ManualClock, rateLimit } from "throttlekit";
+import { ManualClock, rateLimit, tokenBudget } from "throttlekit";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type RunningServer, resolveProtoPath, serve } from "../src/grpc.js";
 import { createRateLimiterService } from "../src/service.js";
@@ -48,7 +48,13 @@ describe("gRPC service door ≡ golden vectors (over the wire)", () => {
         rateLimit({ strategy: buildStrategy(s.strategy), clock }),
       ]),
     );
-    const service = createRateLimiterService({ limiters });
+    const meters = {
+      budget: {
+        create: () => tokenBudget({ budget: 5, windowMs: 3_600_000, clock }),
+        maxKeys: 1000,
+      },
+    };
+    const service = createRateLimiterService({ limiters, meters });
     running = await serve({ service, host: "127.0.0.1", port: 0 });
     h = makeClient(running.port);
     await new Promise<void>((resolve, reject) => {
@@ -91,5 +97,15 @@ describe("gRPC service door ≡ golden vectors (over the wire)", () => {
     const a = await h.call("peek", { policy, key: "wirePeek" });
     const b = await h.call("peek", { policy, key: "wirePeek" });
     expect(a.decision.remaining).toBe(b.decision.remaining);
+  });
+
+  it("debit over the wire spends a token budget then refuses", async () => {
+    clock.set(0);
+    const allowed: boolean[] = [];
+    for (let i = 0; i < 6; i++) {
+      const resp = await h.call("debit", { policy: "budget", key: "wireBudget", tokens: 1 });
+      allowed.push(resp.decision.allowed);
+    }
+    expect(allowed).toEqual([true, true, true, true, true, false]); // budget of 5, then denied
   });
 });

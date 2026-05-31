@@ -124,4 +124,6 @@ service RateLimiter {
   rpc Peek(PeekRequest) returns (PeekResponse);
   // Non-consuming forecast.
   rpc Forecast(ForecastRequest) returns (ForecastResponse);
+  // Debit post-hoc token cost against a windowed token-budget policy (the cost axis).
+  rpc Debit(DebitRequest) returns (DebitResponse);
 }
