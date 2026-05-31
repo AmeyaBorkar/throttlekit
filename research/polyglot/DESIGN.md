@@ -87,6 +87,27 @@ Python value prop is weak — another reason to lead with the (network-bound) di
   trigger to freeze the wire.** Until then the whole hybrid (service + `ServiceBackend` client) ships
   with only the proto + vectors as commitments.
 
+### DR-78 — wire freeze evaluated and **DECLINED** (2026-05-31)
+
+With Phases 1–3 shipped (service door + `ServiceBackend`, the polyglot loop proven end-to-end with **no**
+wire commitment), the freeze was re-evaluated at the user's delegation and **deliberately declined — hold
+the wire unfrozen.** Reasoning:
+
+- **Reversibility asymmetry.** Not-freezing is free and reversible; freezing is an irreversible promise.
+  The option value of waiting dominates because the cost of waiting is ~zero (the service door already
+  serves every polyglot client).
+- **No consumer.** No `RedisBackend` exists yet, so freezing would pin a contract nothing uses — *before*
+  the trigger the strategy itself defined (a shipped client proving demand).
+- **Preserves core freedom.** The Lua is the core's *internal implementation* (1.0 freezes the API, not
+  the scripts). Freezing the wire would convert it into a public contract and forfeit future script
+  optimizations (fused scripts, tighter encodings, TTL changes).
+
+The trigger is unchanged and the guard stands: **a future freeze still needs explicit reauthorization.**
+A direct `RedisBackend` may still be built **experimentally** (vendored Lua + the sha256 drift-gate,
+shipped `frozen:false` / may-change) *without* freezing — the freeze is the support *promise*, not a
+prerequisite for the code. Building that experimental client is what would generate the real demand
+signal a future freeze should wait on.
+
 ## Phases
 
 1. **Contract foundation** *(this repo, reversible, Node-valuable)* — **DONE**: golden vectors + the
