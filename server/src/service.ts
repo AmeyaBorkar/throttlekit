@@ -14,7 +14,7 @@
 
 import { type Enforcer, ThrottleKitError, createEnforcer } from "throttlekit";
 import type { Decision, FailMode, Forecast, Limiter } from "throttlekit";
-import { type LoadConfigOptions, loadConfig } from "throttlekit/config";
+import { type ServerLoadOptions, buildLimitersFromConfig } from "./config.js";
 
 /** Thrown when a request names a policy the service was not configured with (→ gRPC `NOT_FOUND`). */
 export class PolicyNotFoundError extends ThrottleKitError {
@@ -151,18 +151,19 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
 }
 
 /** Options for {@link createRateLimiterServiceFromConfig}: the loader's options plus the fail mode. */
-export type RateLimiterServiceConfigOptions = LoadConfigOptions &
+export type RateLimiterServiceConfigOptions = ServerLoadOptions &
   Pick<RateLimiterServiceOptions, "fail">;
 
 /**
  * Convenience: build a service straight from `.throttlekit.yaml`/`.json` text. Inject the live `store`
- * (you can't serialise an `ioredis` client into YAML) via the loader options.
+ * (you can't serialise an `ioredis` client into YAML) via the loader options. A policy may carry a
+ * `twoTier` block to be served as a two-tier leased limiter — see {@link buildLimitersFromConfig}.
  */
 export function createRateLimiterServiceFromConfig(
   text: string,
   options: RateLimiterServiceConfigOptions = {},
 ): RateLimiterService {
   const { fail, ...loadOptions } = options;
-  const { limiters } = loadConfig(text, loadOptions);
+  const limiters = buildLimitersFromConfig(text, loadOptions);
   return createRateLimiterService({ limiters, ...(fail !== undefined ? { fail } : {}) });
 }

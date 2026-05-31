@@ -43,6 +43,31 @@ instance at the **same Redis** to run a coordinated fleet enforcing one shared l
 throttlekit-server --config .throttlekit.yaml --redis redis://redis:6379
 ```
 
+## Two-tier leasing (cut the per-request round trip)
+
+A policy can carry a `twoTier` block to be served as a **two-tier leased** limiter: each instance leases a
+batch of tokens from the shared L2 (Redis) and then admits locally until the batch runs low — trading one
+Redis round trip per `batch` requests for a bounded, self-healing overshoot (`≤ fleet × (batch − 1)` per
+window, or **exactly the limit** with `windowCoupled`). The client reaches it with a **plain `check`** —
+no new RPC, the core still computes every decision.
+
+```yaml
+version: 1
+limiters:
+  leased-api:
+    strategy: gcra          # the same algorithm/fields as a plain policy, enforced at L2
+    limit: 1000
+    period: 1m
+    twoTier:                # ← a nested *block* (the config parser does not accept nested flow `{…}`)
+      mode: leased          # strict | cached-deny | leased
+      batch: 50             # tokens leased from L2 per refill
+      windowCoupled: true   # tie credit lifetime to the L2 window ⇒ per-window overshoot = limit
+```
+
+Without `--redis` a `twoTier` policy falls back to a private in-process L2 (single-instance, same as a
+plain policy); point the fleet at one Redis to share the budget. `peek`/`forecast` aren't offered on a
+leased policy (it is consume-only) — they return `UNIMPLEMENTED`.
+
 ## Embed it (Node)
 
 ```ts
