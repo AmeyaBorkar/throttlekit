@@ -13,8 +13,50 @@
  */
 
 import { type Enforcer, ThrottleKitError, createEnforcer } from "throttlekit";
-import type { Decision, FailMode, Forecast, Limiter, TokenBudgetMeter } from "throttlekit";
+import type {
+  Clock,
+  Decision,
+  FailMode,
+  Forecast,
+  Limiter,
+  TokenBudgetMeter,
+  UnifiedAdmitter,
+} from "throttlekit";
 import { type MeterPolicy, type ServerLoadOptions, buildServiceConfig } from "./config.js";
+
+/** Per-call options for {@link RateLimiterService.admit} (the concurrency / unified axes). */
+export interface AdmitOptions {
+  /** Rate/cost units (default 1). */
+  cost?: number;
+  /** Expected hold/service time for the 3-axis joint-LP concurrency term (default 0; experimental). */
+  hold?: number;
+  /** Joint-LP bid value (default 1; experimental). */
+  value?: number;
+}
+
+/** The outcome of an {@link RateLimiterService.admit}: the decision plus the lease lifecycle handle. */
+export interface AdmitResult {
+  /** The combined decision across the policy's configured axes. */
+  decision: Decision;
+  /** Opaque, server-minted lease id; `""` when no slot is held (a deny, or a no-concurrency policy). */
+  leaseId: string;
+  /** Epoch-ms after which the server reclaims the slot (Release `dropped`) if unheart-beaten; 0 if no lease. */
+  leaseExpiresAt: number;
+  /** `"rate"`/`"concurrency"`/`"cost"` axis that bound a deny, or `""`. On the wrapper (core 1.0 D1). */
+  bindingAxis: string;
+  /** True iff a joint-LP bid-price filter denied while every per-axis budget had slack. */
+  policyDenied: boolean;
+}
+
+/** The outcome of a {@link RateLimiterService.heartbeat}: which leases survived and the next deadline. */
+export interface HeartbeatResult {
+  /** Lease ids still held; their deadline was extended. */
+  liveIds: string[];
+  /** Lease ids already reclaimed (the client was too slow) — the caller should treat them as dropped. */
+  reclaimedIds: string[];
+  /** Epoch-ms by which the next beat must arrive to keep the live leases. */
+  nextDeadline: number;
+}
 
 /** Thrown when a request names a policy the service was not configured with (→ gRPC `NOT_FOUND`). */
 export class PolicyNotFoundError extends ThrottleKitError {
@@ -55,11 +97,25 @@ export interface RateLimiterServiceOptions {
    */
   meters?: Record<string, MeterPolicy>;
   /**
+   * Concurrency / unified admission policies, each a prebuilt {@link UnifiedAdmitter}, served by the
+   * stateful `admit`/`release`/`heartbeat` lifecycle. A policy name is a limiter, a meter, **or** an
+   * admitter — the three share one namespace.
+   */
+  admitters?: Record<string, UnifiedAdmitter>;
+  /**
    * Store-outage policy applied to every policy's `check`/`checkMany`: `"open"` admits, `"closed"`
    * denies. Default `"open"`. (A returned `Decision` is always authoritative; this only governs what
    * happens when the backing store throws.)
    */
   fail?: FailMode;
+  /** Time source for lease expiry + {@link RateLimiterService.sweep} (mainly tests). Default system clock. */
+  clock?: Clock;
+  /**
+   * How long a held lease survives without a heartbeat before the {@link RateLimiterService.sweep}
+   * reclaims it (ms). Default 2000 — twice the core node↔coordinator heartbeat default, so one missed
+   * beat is tolerated.
+   */
+  leaseTtlMs?: number;
 }
 
 /**
@@ -93,6 +149,22 @@ export interface RateLimiterService {
    * {@link PolicyNotFoundError} for an unknown policy.
    */
   debit(policy: string, key: string, tokens?: number): Promise<Decision>;
+  /**
+   * Admit one unit of work against a concurrency / unified `policy`. When the admission holds a slot the
+   * result carries a non-empty `leaseId` the caller MUST {@link RateLimiterService.release} (the service
+   * reclaims it on lease expiry if the caller crashes). Throws {@link OperationNotSupportedError} if
+   * `policy` is a rate limiter / meter (use `check`/`debit`) and {@link PolicyNotFoundError} if unknown.
+   */
+  admit(policy: string, key: string, opts?: AdmitOptions): Promise<AdmitResult>;
+  /** Return a held slot. `dropped: true` signals an overload (timeout/error). Idempotent on an unknown id. */
+  release(leaseId: string, dropped?: boolean): void;
+  /** Renew the given leases in one beat; reports which survived vs were already reclaimed. */
+  heartbeat(leaseIds: readonly string[]): HeartbeatResult;
+  /**
+   * Reclaim every lease whose deadline has passed (release with `dropped: true`). Called periodically by
+   * the transport (e.g. {@link serve}); exposed so tests can drive reclaim deterministically with a clock.
+   */
+  sweep(): void;
 }
 
 /** Synthesize the degenerate `Decision` returned when the store threw (no real decision exists). */
@@ -121,12 +193,40 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     order.push(name);
     meters.set(name, { policy, cache: new Map() });
   }
+  // Concurrency / unified admission policies — and the lease table they need (the first stateful surface).
+  const admitters = new Map<string, UnifiedAdmitter>();
+  for (const [name, admitter] of Object.entries(options.admitters ?? {})) {
+    if (enforcers.has(name) || meters.has(name))
+      throw new ThrottleKitError(
+        `policy ${JSON.stringify(name)} is declared as more than one of limiter / meter / admitter`,
+      );
+    order.push(name);
+    admitters.set(name, admitter);
+  }
+  const clock: Clock = options.clock ?? { now: () => Date.now() };
+  const leaseTtlMs = options.leaseTtlMs ?? 2000;
+  /** Held concurrency slots keyed by opaque lease id; `release` is the core admission's lifecycle hook. */
+  const leases = new Map<
+    string,
+    { release(opts?: { dropped?: boolean }): void; expiresAt: number }
+  >();
+  let nextLeaseId = 0;
 
-  /** Resolve a limiter for a consuming/introspection op; a token-budget policy can't serve these. */
+  /** Resolve a limiter for a consuming/introspection op; a meter/admitter policy can't serve these. */
   function resolveLimiter(policy: string, op: string): Enforcer {
     const enforcer = enforcers.get(policy);
     if (enforcer !== undefined) return enforcer;
-    if (meters.has(policy)) throw new OperationNotSupportedError(op, policy);
+    if (meters.has(policy) || admitters.has(policy))
+      throw new OperationNotSupportedError(op, policy);
+    throw new PolicyNotFoundError(policy, order);
+  }
+
+  /** Resolve the admitter for an `admit`; a limiter/meter policy can't serve it. */
+  function resolveAdmitter(policy: string): UnifiedAdmitter {
+    const admitter = admitters.get(policy);
+    if (admitter !== undefined) return admitter;
+    if (enforcers.has(policy) || meters.has(policy))
+      throw new OperationNotSupportedError("admit", policy);
     throw new PolicyNotFoundError(policy, order);
   }
 
@@ -134,7 +234,8 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
   function resolveMeter(policy: string, key: string): TokenBudgetMeter {
     const entry = meters.get(policy);
     if (entry === undefined) {
-      if (enforcers.has(policy)) throw new OperationNotSupportedError("debit", policy);
+      if (enforcers.has(policy) || admitters.has(policy))
+        throw new OperationNotSupportedError("debit", policy);
       throw new PolicyNotFoundError(policy, order);
     }
     let meter = entry.cache.get(key);
@@ -195,24 +296,95 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
       // The meter is the core's `tokenBudget` primitive — the debit decision is computed by the core.
       return resolveMeter(policy, key).debitSync(tokens);
     },
+
+    async admit(policy, key, opts): Promise<AdmitResult> {
+      const admitter = resolveAdmitter(policy);
+      // The decision (and binding axis / policy-denial) is the core's unifiedAdmission — one oracle.
+      const a = await admitter.admit({
+        key,
+        ...(opts?.cost !== undefined ? { cost: opts.cost } : {}),
+        ...(opts?.hold !== undefined ? { hold: opts.hold } : {}),
+        ...(opts?.value !== undefined ? { value: opts.value } : {}),
+      });
+      const bindingAxis = a.bindingAxis ?? "";
+      const policyDenied = a.policyDenied ?? false;
+      if (a.decision.allowed) {
+        // A granted admission holds the concurrency slot: mint a lease and keep its release closure so
+        // a later Release (or the reclaim sweep) can free it. lease id is a server-local opaque counter.
+        const leaseId = String(++nextLeaseId);
+        const leaseExpiresAt = clock.now() + leaseTtlMs;
+        leases.set(leaseId, { release: a.release, expiresAt: leaseExpiresAt });
+        return { decision: a.decision, leaseId, leaseExpiresAt, bindingAxis, policyDenied };
+      }
+      // Denied: no slot is held (unifiedAdmission already released any transiently-acquired one). The
+      // returned release is a no-op; call it for symmetry, mint no lease.
+      a.release();
+      return { decision: a.decision, leaseId: "", leaseExpiresAt: 0, bindingAxis, policyDenied };
+    },
+
+    release(leaseId, dropped = false): void {
+      const lease = leases.get(leaseId);
+      if (lease !== undefined) {
+        lease.release({ dropped }); // the core lease release is idempotent
+        leases.delete(leaseId);
+      }
+      // Unknown id (already released or reclaimed) ⇒ no-op: Release is idempotent.
+    },
+
+    heartbeat(leaseIds): HeartbeatResult {
+      const now = clock.now();
+      const liveIds: string[] = [];
+      const reclaimedIds: string[] = [];
+      for (const id of leaseIds) {
+        const lease = leases.get(id);
+        if (lease !== undefined) {
+          lease.expiresAt = now + leaseTtlMs; // renew
+          liveIds.push(id);
+        } else {
+          reclaimedIds.push(id); // already swept/released — the client must treat it as dropped
+        }
+      }
+      return { liveIds, reclaimedIds, nextDeadline: now + leaseTtlMs };
+    },
+
+    sweep(): void {
+      const now = clock.now();
+      // Deleting the current entry during Map iteration is well-defined; a crashed client's slot is
+      // released as `dropped` (the overload signal), exactly as a lost node is to the core coordinator.
+      for (const [id, lease] of leases) {
+        if (lease.expiresAt <= now) {
+          lease.release({ dropped: true });
+          leases.delete(id);
+        }
+      }
+    },
   };
 }
 
-/** Options for {@link createRateLimiterServiceFromConfig}: the loader's options plus the fail mode. */
+/** Options for {@link createRateLimiterServiceFromConfig}: the loader's options plus the fail mode + lease TTL. */
 export type RateLimiterServiceConfigOptions = ServerLoadOptions &
-  Pick<RateLimiterServiceOptions, "fail">;
+  Pick<RateLimiterServiceOptions, "fail" | "leaseTtlMs">;
 
 /**
  * Convenience: build a service straight from `.throttlekit.yaml`/`.json` text. Inject the live `store`
  * (you can't serialise an `ioredis` client into YAML) via the loader options. A policy may carry a
- * `twoTier` block (two-tier leased limiter) or a `tokenBudget` block (cost-axis meter) — see
- * {@link buildServiceConfig}.
+ * `twoTier` block (two-tier leased limiter), a `tokenBudget` block (cost-axis meter), or a `concurrency`
+ * block (concurrency / unified admission) — see {@link buildServiceConfig}.
  */
 export function createRateLimiterServiceFromConfig(
   text: string,
   options: RateLimiterServiceConfigOptions = {},
 ): RateLimiterService {
-  const { fail, ...loadOptions } = options;
-  const { limiters, meters } = buildServiceConfig(text, loadOptions);
-  return createRateLimiterService({ limiters, meters, ...(fail !== undefined ? { fail } : {}) });
+  const { fail, leaseTtlMs, ...loadOptions } = options;
+  const { limiters, meters, admitters } = buildServiceConfig(text, loadOptions);
+  return createRateLimiterService({
+    limiters,
+    meters,
+    admitters,
+    ...(fail !== undefined ? { fail } : {}),
+    // The admitters' guards already got `clock` via loadOptions; the lease table needs it too so a
+    // test's ManualClock drives both the admission decision and the reclaim sweep.
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+    ...(leaseTtlMs !== undefined ? { leaseTtlMs } : {}),
+  });
 }

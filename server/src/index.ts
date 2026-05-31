@@ -14,12 +14,16 @@ export {
   createRateLimiterServiceFromConfig,
 } from "./service.js";
 export type {
+  AdmitOptions,
+  AdmitResult,
+  HeartbeatResult,
   RateLimiterService,
   RateLimiterServiceConfigOptions,
   RateLimiterServiceOptions,
 } from "./service.js";
 export { buildLimitersFromConfig, buildServiceConfig } from "./config.js";
 export type {
+  ConcurrencyConfig,
   MeterPolicy,
   ServerLimiterSpec,
   ServerLoadOptions,

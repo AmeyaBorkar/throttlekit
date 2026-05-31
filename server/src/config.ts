@@ -21,8 +21,21 @@
  * ```
  */
 
-import { MemoryStore, ThrottleKitError, tokenBudget } from "throttlekit";
-import type { Clock, Limiter, Strategy, TokenBudgetMeter } from "throttlekit";
+import {
+  MemoryStore,
+  ThrottleKitError,
+  adaptiveConcurrency,
+  tokenBudget,
+  unifiedAdmission,
+} from "throttlekit";
+import type {
+  AdaptiveConcurrencyOptions,
+  Clock,
+  Limiter,
+  Strategy,
+  TokenBudgetMeter,
+  UnifiedAdmitter,
+} from "throttlekit";
 import {
   type ConfigFile,
   type LimiterSpec,
@@ -56,10 +69,37 @@ export interface TokenBudgetConfig {
   maxKeys?: number;
 }
 
-/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` blocks. */
+/**
+ * The optional `concurrency` block — turns a policy into an **admission** policy served by the stateful
+ * `Admit`/`Release`/`Heartbeat` lifecycle (the GALE concurrency axis). On its own it is a concurrency-only
+ * admitter; alongside the policy's `strategy`/`limit`/`period` it is a **unified** rate×concurrency
+ * admitter. The decision is the core's `adaptiveConcurrency`/`unifiedAdmission` (one oracle); this only
+ * wires the config so a polyglot client's `admit` reaches it. A subset of `AdaptiveConcurrencyOptions`.
+ */
+export interface ConcurrencyConfig {
+  /** Hard floor on the inferred ceiling. Default 4. Set `minLimit === maxLimit` to pin a fixed limit. */
+  minLimit?: number;
+  /** Hard ceiling on the inferred ceiling. Default 512. */
+  maxLimit?: number;
+  /** Where the estimate starts. Default `minLimit`. */
+  initialLimit?: number;
+  /** Inference law: `"gradient2"` (default) or `"aimd"`. */
+  algorithm?: "gradient2" | "aimd";
+  /** Sample count for the rolling-min no-load RTT. Default 100. */
+  rttWindow?: number;
+  /** Gradient2 EMA factor in (0,1]. Default 0.2. */
+  smoothing?: number;
+  /** Headroom factor on the no-load RTT. Default 2.0. */
+  tolerance?: number;
+  /** AIMD multiplicative decrease in [0.5,1). Default 0.9. */
+  backoffRatio?: number;
+}
+
+/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `concurrency` blocks. */
 export type ServerLimiterSpec = LimiterSpec & {
   twoTier?: TwoTierConfig;
   tokenBudget?: TokenBudgetConfig;
+  concurrency?: ConcurrencyConfig;
 };
 
 /**
@@ -74,10 +114,14 @@ export interface MeterPolicy {
   maxKeys: number;
 }
 
-/** The resolved policies a service serves: rate/two-tier {@link Limiter}s and token-budget {@link MeterPolicy}s. */
+/**
+ * The resolved policies a service serves: rate/two-tier {@link Limiter}s, token-budget
+ * {@link MeterPolicy}s, and concurrency/unified {@link UnifiedAdmitter}s (the stateful admission axis).
+ */
 export interface ServiceConfig {
   limiters: Record<string, Limiter>;
   meters: Record<string, MeterPolicy>;
+  admitters: Record<string, UnifiedAdmitter>;
 }
 
 /** Options for {@link buildLimitersFromConfig}: the core loader options plus an injectable clock. */
@@ -108,12 +152,15 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   const defaultPrefix = data.defaults?.prefix;
   const meters: Record<string, MeterPolicy> = {};
   const twoTierLimiters: Record<string, Limiter> = {};
+  const admitters: Record<string, UnifiedAdmitter> = {};
   const rateLimitOnly: Record<string, LimiterSpec> = {};
 
   for (const [name, rawSpec] of Object.entries(limitersIn)) {
     const spec = rawSpec as ServerLimiterSpec;
     if (spec != null && typeof spec === "object" && spec.tokenBudget !== undefined) {
       meters[name] = buildMeter(name, spec, options);
+    } else if (spec != null && typeof spec === "object" && spec.concurrency !== undefined) {
+      admitters[name] = buildAdmitter(name, spec, options, data);
     } else if (spec != null && typeof spec === "object" && spec.twoTier !== undefined) {
       twoTierLimiters[name] = buildTwoTier(name, spec, options, defaultPrefix);
     } else {
@@ -128,7 +175,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   };
   const rest = loadConfigObject({ ...data, limiters: rateLimitOnly }, coreOptions).limiters;
 
-  return { limiters: { ...rest, ...twoTierLimiters }, meters };
+  return { limiters: { ...rest, ...twoTierLimiters }, meters, admitters };
 }
 
 /**
@@ -199,4 +246,46 @@ function buildMeter(
       tokenBudget({ budget, windowMs, ...(clock !== undefined ? { clock } : {}) }),
     maxKeys: tb.maxKeys ?? 100_000,
   };
+}
+
+/**
+ * Build a concurrency / unified admitter. The `concurrency` block configures the core's
+ * `adaptiveConcurrency` guard; if the policy also names a rate `strategy`, that limiter (built by the core
+ * loader, so it shares the injected store + prefix defaults) becomes the rate axis of a `unifiedAdmission`.
+ * The decision is the core's — this only assembles the axes the policy declared.
+ */
+function buildAdmitter(
+  name: string,
+  spec: ServerLimiterSpec,
+  options: ServerLoadOptions,
+  data: ConfigFile,
+): UnifiedAdmitter {
+  const cc = spec.concurrency ?? {};
+  const clock = options.clock;
+  const concurrency = adaptiveConcurrency({ ...cc, ...(clock !== undefined ? { clock } : {}) });
+
+  // Optional rate axis (→ unified). Built like a plain policy so it gets the store + prefix defaults;
+  // the core loader ignores the extra `concurrency` field (as it does `twoTier`).
+  let rate: Limiter | undefined;
+  if (spec.strategy !== undefined) {
+    const coreOptions: LoadConfigOptions = {
+      ...(options.store !== undefined ? { store: options.store } : {}),
+    };
+    const built = loadConfigObject(
+      {
+        ...(data.defaults !== undefined ? { defaults: data.defaults } : {}),
+        limiters: { [name]: spec },
+      },
+      coreOptions,
+    ).limiters[name];
+    if (built === undefined)
+      throw new ThrottleKitError(`config.limiters[${name}]: could not build the rate axis`);
+    rate = built;
+  }
+
+  return unifiedAdmission({
+    concurrency,
+    ...(rate !== undefined ? { rate } : {}),
+    ...(clock !== undefined ? { clock } : {}),
+  });
 }

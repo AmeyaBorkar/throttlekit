@@ -109,6 +109,41 @@ message DebitResponse {
   Decision decision = 1;
 }
 
+// ── Stateful admission lifecycle (concurrency + unified rate×concurrency). Additive: new RPCs + new
+// messages, all unary like the existing door. Unlike Check (single-shot rate/cost), Admit may HOLD an
+// in-flight concurrency slot that MUST be returned via Release — or the server reclaims it once the
+// lease expires. The client↔server lease deliberately mirrors the core's node↔coordinator
+// TTL+heartbeat+reclaim-on-crash contract, one layer out (see PHASE7-LIFECYCLE-RPCS.md §5). ──
+
+// Admit one unit of work against a concurrency-only or unified (rate×concurrency) policy.
+message AdmitRequest {
+  string policy = 1;
+  string key    = 2;   // passed to the rate/cost axes; the concurrency axis is keyless
+  int64  cost   = 3;   // rate/cost units; 0 ⇒ 1
+  int64  hold   = 4;   // 3-axis concurrency term for the joint-LP policy (default 0; experimental)
+  int64  value  = 5;   // joint-LP bid value (default 0 ⇒ 1; experimental)
+}
+
+message AdmitResponse {
+  Decision decision         = 1;   // combined decision across the policy's configured axes
+  string   lease_id         = 2;   // opaque, server-minted; "" ⇒ no slot held (nothing to Release)
+  int64    lease_expires_at = 3;   // epoch-ms; the server reclaims (Release dropped:true) if not renewed by then
+  string   binding_axis     = 4;   // "rate"|"concurrency"|"cost"|"" — on the WRAPPER, matching core 1.0 (D1)
+  bool     policy_denied    = 5;   // joint-LP bid-price denial (every per-axis budget had slack)
+}
+
+// Return a held slot. dropped:true signals overload (timeout/error) so the adaptive limit contracts.
+message ReleaseRequest  { string lease_id = 1; bool dropped = 2; }
+message ReleaseResponse {}                       // empty; Release is idempotent
+
+// Renew ALL of a client's open leases in one beat (mirrors the core's one-node-beat-covers-all-permits).
+message HeartbeatRequest  { repeated string lease_ids = 1; }
+message HeartbeatResponse {
+  repeated string live_ids      = 1;   // still held; deadline extended
+  repeated string reclaimed_ids = 2;   // already reclaimed (client too slow) — treat as dropped
+  int64           next_deadline = 3;   // epoch-ms by which the next beat must arrive
+}
+
 // The admission service. Transport concerns are deliberately out of band:
 //   - AUTH: mTLS or a shared secret in call metadata (table-stakes so nothing can poison the budget).
 //   - FAIL-OPEN / FAIL-CLOSED applies when the SERVICE itself is unreachable (a transport error) — that
@@ -126,4 +161,11 @@ service RateLimiter {
   rpc Forecast(ForecastRequest) returns (ForecastResponse);
   // Debit post-hoc token cost against a windowed token-budget policy (the cost axis).
   rpc Debit(DebitRequest) returns (DebitResponse);
+
+  // Stateful admission lifecycle for concurrency / unified policies. A granted admission that holds a
+  // slot returns a non-empty lease_id that MUST be returned via Release (the server reclaims it on
+  // lease expiry if a client crashes). Heartbeat renews all of a client's open leases.
+  rpc Admit(AdmitRequest)         returns (AdmitResponse);
+  rpc Release(ReleaseRequest)     returns (ReleaseResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }

@@ -17,6 +17,7 @@ import * as protoLoader from "@grpc/proto-loader";
 import type { Decision, Forecast } from "throttlekit";
 
 import {
+  type AdmitResult,
   OperationNotSupportedError,
   PolicyNotFoundError,
   type RateLimiterService,
@@ -65,6 +66,16 @@ function forecastMessage(f: Forecast) {
   return { spendableNow: f.spendableNow, nextReplenishAt: f.nextReplenishAt, fullAt: f.fullAt };
 }
 
+function admitMessage(r: AdmitResult) {
+  return {
+    decision: decisionMessage(r.decision),
+    leaseId: r.leaseId,
+    leaseExpiresAt: r.leaseExpiresAt,
+    bindingAxis: r.bindingAxis,
+    policyDenied: r.policyDenied,
+  };
+}
+
 /** Map a thrown error to a gRPC status. Operational faults only — a denial is never an error. */
 function toStatus(err: unknown): grpc.ServerErrorResponse {
   if (err instanceof PolicyNotFoundError)
@@ -75,10 +86,16 @@ function toStatus(err: unknown): grpc.ServerErrorResponse {
   return { name: "Internal", message, code: grpc.status.INTERNAL };
 }
 
-/** Cost of 0 (proto3 default for an unset int) means "1". */
+/** Cost of 0 (proto3 default for an unset int) means "1". Also used for the joint-LP `value` (0 ⇒ 1). */
 function costOf(raw: unknown): number {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+/** A non-negative count; 0 (proto3 default) stays 0 — used for the joint-LP `hold` term (0 = no hold). */
+function nonNegOf(raw: unknown): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 /** Build the unary handler map binding the proto RPCs onto the service core. */
@@ -121,6 +138,35 @@ export function rateLimiterHandlers(
         .then((d) => callback(null, { decision: decisionMessage(d) }))
         .catch((err) => callback(toStatus(err)));
     },
+    admit(call: any, callback: grpc.sendUnaryData<any>): void {
+      const { policy, key, cost, hold, value } = call.request;
+      service
+        .admit(policy, key, { cost: costOf(cost), hold: nonNegOf(hold), value: costOf(value) })
+        .then((r) => callback(null, admitMessage(r)))
+        .catch((err) => callback(toStatus(err)));
+    },
+    release(call: any, callback: grpc.sendUnaryData<any>): void {
+      const { leaseId, dropped } = call.request;
+      try {
+        service.release(leaseId, Boolean(dropped)); // synchronous + idempotent
+        callback(null, {});
+      } catch (err) {
+        callback(toStatus(err));
+      }
+    },
+    heartbeat(call: any, callback: grpc.sendUnaryData<any>): void {
+      const leaseIds: string[] = call.request.leaseIds ?? [];
+      try {
+        const r = service.heartbeat(leaseIds);
+        callback(null, {
+          liveIds: r.liveIds,
+          reclaimedIds: r.reclaimedIds,
+          nextDeadline: r.nextDeadline,
+        });
+      } catch (err) {
+        callback(toStatus(err));
+      }
+    },
   };
 }
 
@@ -136,6 +182,11 @@ export interface ServeOptions {
   protoPath?: string;
   /** Server credentials. Default **insecure** — set mTLS/TLS creds for anything exposed. */
   credentials?: grpc.ServerCredentials;
+  /**
+   * How often to run the admission-lease reclaim sweep (ms). Default 1000 (the core heartbeat cadence);
+   * the interval is `unref`'d so it never keeps the process alive, and is cleared on {@link RunningServer.close}.
+   */
+  sweepIntervalMs?: number;
 }
 
 /** A bound, serving gRPC server. */
@@ -177,11 +228,17 @@ export async function serve(options: ServeOptions): Promise<RunningServer> {
   });
   // grpc-js >= 1.10 begins serving on a successful bindAsync; the old explicit start() is a no-op.
 
+  // Reclaim admission leases whose client stopped heart-beating (a no-op when no admitters/leases). The
+  // interval is unref'd so it never holds the event loop open on its own; it's cleared on close.
+  const sweeper = setInterval(() => options.service.sweep(), options.sweepIntervalMs ?? 1000);
+  sweeper.unref();
+
   return {
     port: boundPort,
     server,
     close: () =>
       new Promise<void>((resolveClose) => {
+        clearInterval(sweeper);
         server.tryShutdown(() => resolveClose());
       }),
   };

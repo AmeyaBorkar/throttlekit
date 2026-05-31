@@ -89,6 +89,36 @@ meter per key (bounded by `maxKeys`, default 100k). It is **single-instance** to
 per-gateway; a fleet-shared budget is a planned enhancement). `check` on a token-budget policy — and
 `debit` on a rate limiter — return `UNIMPLEMENTED`.
 
+## Concurrency & unified admission (the in-flight axis)
+
+For limiting *concurrent* work — not a rate, but how many requests are in flight at once — a policy can
+carry a `concurrency` block. It is served by a stateful lifecycle: **`Admit`** takes a slot, **`Release`**
+returns it, **`Heartbeat`** renews long holds. The ceiling is the core's adaptive `adaptiveConcurrency`
+(it grows while latency stays low and contracts under load); pin it with `minLimit === maxLimit` for a
+fixed cap. Add a `strategy` alongside and the policy becomes a **unified** rate × concurrency admitter —
+the core composes the axes and reports which one bound a denial.
+
+```yaml
+version: 1
+limiters:
+  checkout:                 # concurrency-only: at most `maxLimit` requests in flight
+    concurrency: { minLimit: 4, maxLimit: 200 }
+  api:                      # unified: rate (gcra) AND concurrency, whichever binds first
+    strategy: gcra
+    limit: 1000
+    period: 1m
+    burst: 100
+    concurrency: { maxLimit: 64 }
+```
+
+A granted `Admit` returns a `lease_id` the caller **must** `Release` when the work finishes (pass
+`dropped: true` on a timeout/error so the adaptive limit contracts). If a client crashes without
+releasing, the server reclaims the slot once the lease TTL (default 2s) lapses without a heartbeat —
+the same crash-safety contract the core uses node↔coordinator, one layer out. `check`/`debit` on an
+admitter (and `admit` on a rate limiter / meter) return `UNIMPLEMENTED`. Single-instance today (each
+server is the concurrency authority for its own clients); a fleet-coordinated ceiling via the core's
+`distributedAdaptiveConcurrency` is the planned next step, reachable by the **same** client lifecycle.
+
 ## Embed it (Node)
 
 ```ts

@@ -1,6 +1,13 @@
 # Phase 7 — Completing the polyglot surface: the stateful axes over the wire
 
-Status: **SPEC / proposal.** Nothing here is built. Gated on explicit go-ahead per axis.
+Status: **BUILT (2026-05-31).** All three doors are implemented, tested, and green end-to-end (Python →
+Node server). Door A (two-tier, config-only) + Door B (cost-axis `Debit`) shipped as
+`throttlekit-server@0.1.0-experimental.{1,2}` + `throttlekit-py 0.2.x`. Door C (the stateful
+`Admit`/`Release`/`Heartbeat` lifecycle) is built on the recommended cut below — unary heartbeat,
+core-mirrored lease defaults (1s beat / 2s TTL), concurrency-only **and** unified rate×concurrency,
+joint-LP terms carried but experimental, service-door-only — and is committed but **not yet released**
+(version bump + tag are gated on explicit go-ahead). Distributed (fleet-coordinated) concurrency is the
+planned follow-up, reachable by the same client lifecycle.
 Companion to `DESIGN.md` (the polyglot arc), `PHASE2-SERVICE.md` (the service door), and
 `PHASE4-REDIS-BACKEND.md` (the direct door).
 
