@@ -9,7 +9,14 @@
     "enabled": true
   },
   "files": {
-    "ignore": ["dist", "coverage", "node_modules", "wire/vectors/golden-vectors.json"]
+    "ignore": [
+      "dist",
+      "coverage",
+      "node_modules",
+      "wire/vectors/golden-vectors.json",
+      "wire/scripts/manifest.json",
+      "wire/scripts/*.lua"
+    ]
   },
   "formatter": {
     "enabled": true,

@@ -1,0 +1,1 @@
+return redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')

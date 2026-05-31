@@ -1,0 +1,1 @@
+return redis.call('HMGET', KEYS[1], 's', 'c')

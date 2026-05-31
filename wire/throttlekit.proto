@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+// ThrottleKit service door — the supported, language-neutral way to reach the core from any language.
+//
+// A client (e.g. throttlekit-py's ServiceBackend) sends a request naming a *policy* configured in the
+// service; the service runs `createEnforcer()` — the same Node core, the same Lua-in-Redis — and returns
+// a Decision. The client never touches the raw Lua wire (see WIRE-PROTOCOL.md); this proto is the only
+// contract it depends on, which is exactly why the service door can ship while the raw wire stays
+// unfrozen (bet #78).
+//
+// EVOLUTION (this proto is the "comfortable freeze"): proto3 is additive-evolvable. Add new fields with
+// NEW tag numbers; never renumber, never change a field's type, never reuse a retired tag (use
+// `reserved`). New RPCs and new message fields are backward-compatible by construction. The decision
+// fields below mirror the five frozen `Decision` fields of the core 1.0 API; new optional decision
+// attributes (e.g. a binding axis) arrive as new tags, never by reshaping existing ones.
+package throttlekit.v1;
+
+// The result of one admission check — the five frozen fields of the core `Decision`, on the wire.
+// Field numbers are pinned; integers are int64 (epoch-ms and counts comfortably exceed int32).
+message Decision {
+  // Whether the request is permitted.
+  bool allowed = 1;
+  // Effective ceiling: burst capacity (GCRA / token bucket) or window quota.
+  int64 limit = 2;
+  // Whole units remaining before the next rejection. Never negative.
+  int64 remaining = 3;
+  // Epoch-ms at which the limiter is fully replenished.
+  int64 reset_at = 4;
+  // Milliseconds to wait before retrying. 0 when `allowed`.
+  int64 retry_after_ms = 5;
+
+  // Tags 6+ reserved for additive optional attributes (e.g. binding_axis, policy_denied) so they can
+  // arrive as a minor without reshaping the five above.
+  reserved 6 to 15;
+}
+
+// Consume `cost` units against a named policy/limiter for `key`.
+message CheckRequest {
+  // The name of a policy/limiter configured in the service (e.g. from `.throttlekit.yaml`).
+  string policy = 1;
+  // The identity being limited (the API key, user id, IP, …). The service applies its own key prefix.
+  string key = 2;
+  // Units to consume. 0 (the proto3 default) is interpreted as 1.
+  int64 cost = 3;
+}
+
+message CheckResponse {
+  Decision decision = 1;
+}
+
+// Consume `cost` units against `policy` for many independent keys, evaluated at a single consistent
+// instant. Decisions are returned in input order — `decisions[i]` corresponds to `keys[i]`.
+message CheckManyRequest {
+  string policy = 1;
+  repeated string keys = 2;
+  int64 cost = 3;
+}
+
+message CheckManyResponse {
+  repeated Decision decisions = 1;
+}
+
+// Non-consuming introspection: the current Decision for `key` WITHOUT spending — `remaining` is what is
+// left now, `reset_at` when it refills. The basis of good client retry/UX.
+message PeekRequest {
+  string policy = 1;
+  string key = 2;
+}
+
+message PeekResponse {
+  Decision decision = 1;
+}
+
+// Non-consuming capacity forecast: how many `cost`-sized requests are spendable now, when capacity next
+// returns, and when it is fully replenished. Mirrors the core `Forecast`.
+message ForecastRequest {
+  string policy = 1;
+  string key = 2;
+  // Request size to forecast against. 0 is interpreted as 1.
+  int64 cost = 3;
+}
+
+message Forecast {
+  // Whole units of the given cost admissible right now before the next denial.
+  int64 spendable_now = 1;
+  // Epoch-ms when capacity next increases by at least one unit.
+  int64 next_replenish_at = 2;
+  // Epoch-ms when the limiter is fully replenished to its ceiling from the current state.
+  int64 full_at = 3;
+}
+
+message ForecastResponse {
+  Forecast forecast = 1;
+}
+
+// The admission service. Transport concerns are deliberately out of band:
+//   - AUTH: mTLS or a shared secret in call metadata (table-stakes so nothing can poison the budget).
+//   - FAIL-OPEN / FAIL-CLOSED applies when the SERVICE itself is unreachable (a transport error) — that
+//     is the client's policy, not a field here; a returned Decision is always authoritative.
+//   - A server-side store outage is surfaced per the service's configured fail mode inside the returned
+//     Decision (fail-open ⇒ allowed), matching the library's `fail: open|closed` semantics.
+service RateLimiter {
+  // Consume cost units; the returned Decision is authoritative.
+  rpc Check(CheckRequest) returns (CheckResponse);
+  // Batch of independent keys at one consistent instant.
+  rpc CheckMany(CheckManyRequest) returns (CheckManyResponse);
+  // Non-consuming peek.
+  rpc Peek(PeekRequest) returns (PeekResponse);
+  // Non-consuming forecast.
+  rpc Forecast(ForecastRequest) returns (ForecastResponse);
+}

@@ -1,8 +1,12 @@
 # Polyglot expansion — design & wiring
 
-**Status:** Phase 1 in progress (the golden-vector conformance foundation has landed). The wire freeze
-(#78) remains **deferred** pending explicit reauthorization; no new repo and no PyPI/proto has been
-created. This doc records the decided architecture so it survives across sessions.
+**Status:** Phase 1 essentially complete — the contract foundation has landed in this repo: the
+golden-vector behavioral lock (`wire/vectors/`), the extracted-Lua byte lock (`wire/scripts/*.lua` +
+`manifest.json`, sha256-pinned), the human spec (`wire/WIRE-PROTOCOL.md`), and the service-door gRPC
+contract (`wire/throttlekit.proto`, `throttlekit.v1`). All reversible and Node-valuable; nothing is
+frozen. The wire freeze (#78) remains **deferred** pending explicit reauthorization. Next: Phase 2 (the
+`throttlekit serve` gRPC service in this repo). This doc records the decided architecture so it survives
+across sessions.
 
 ## The decision: a layered hybrid, not a second library
 
@@ -58,10 +62,10 @@ Python value prop is weak — another reason to lead with the (network-bound) di
 | Artifact | Produced by | Consumed by | Freeze posture |
 |---|---|---|---|
 | `golden-vectors.json` | core oracle (`wire/`) | every surface's CI | **append-only** behavioral contract (**done**) |
-| `*.lua` (extracted) | single-sourced from the lib | lib, service, `RedisBackend` | frozen only when `RedisBackend` goes public |
-| `WIRE-PROTOCOL.md` | hand-written | humans, `RedisBackend` | documented, not frozen |
-| `throttlekit.proto` (`throttlekit.v1`) | hand-written | service, `ServiceBackend` | versioned + additive — the comfortable freeze |
-| `manifest.sha256` + `contractVersion` | build step | the drift gate | pinned per release |
+| `*.lua` (extracted) | single-sourced from the lib (`wire/scripts/extract.ts`) | lib, service, `RedisBackend` | **done** — byte-locked, not frozen (frozen only when `RedisBackend` goes public) |
+| `WIRE-PROTOCOL.md` | hand-written (`wire/`) | humans, `RedisBackend` | **done** — documented, not frozen |
+| `throttlekit.proto` (`throttlekit.v1`) | hand-written (`wire/`) | service, `ServiceBackend` | **done** — versioned + additive, the comfortable freeze |
+| `manifest.json` sha256 + `contractVersion` | `npm run wire:scripts` | the drift gate (`test/wire/`) | **done** — pinned, regen-checked in CI |
 
 ## Runtime flows
 
@@ -85,9 +89,9 @@ Python value prop is weak — another reason to lead with the (network-bound) di
 
 ## Phases
 
-1. **Contract foundation** *(this repo, reversible, Node-valuable)* — extract Lua to single-sourced
-   files; **golden vectors + the lock test (DONE)**; `WIRE-PROTOCOL.md`; `throttlekit.proto`; the
-   pinned bundle + manifest.
+1. **Contract foundation** *(this repo, reversible, Node-valuable)* — **DONE**: golden vectors + the
+   behavior lock; extracted Lua to single-sourced `wire/scripts/*.lua` + the byte lock; `manifest.json`
+   (sha256-pinned); `WIRE-PROTOCOL.md`; `throttlekit.proto`. `npm run wire` regenerates everything.
 2. **The service** *(this repo: `throttlekit serve` + container)* — `createEnforcer()` + gRPC over the
    proto; policies loaded from `.throttlekit.yaml`; contract tests ≡ vectors; optional Envoy RLS.
 3. **`throttlekit-py`** *(new repo)* — scaffold + `sync_contract` + drift gate; `ServiceBackend` first

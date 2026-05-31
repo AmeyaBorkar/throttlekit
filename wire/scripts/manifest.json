@@ -1,0 +1,152 @@
+{
+  "contractVersion": "1",
+  "generatedFrom": "throttlekit@1.0.1",
+  "frozen": false,
+  "replyTuple": [
+    "allowed",
+    "limit",
+    "remaining",
+    "resetAt",
+    "retryAfterMs"
+  ],
+  "nowArgv": "ARGV[1] = now (epoch-ms); the sentinel 0 means use the Redis server TIME clock",
+  "scripts": [
+    {
+      "name": "gcra.check",
+      "strategy": "gcra",
+      "role": "check",
+      "file": "gcra.check.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [
+        "now",
+        "periodMs",
+        "limit",
+        "burst",
+        "cost"
+      ],
+      "sha256": "53d10fddc07382be33764015d50461c25bbcf6d3e8611fd3309307a4b7b7110d"
+    },
+    {
+      "name": "gcra.read",
+      "strategy": "gcra",
+      "role": "read",
+      "file": "gcra.read.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [],
+      "sha256": "6029ea04e805cdfcf433cb1e6bab5df2e740e0f0d1e9b340d56f59e92baee884"
+    },
+    {
+      "name": "tokenBucket.check",
+      "strategy": "tokenBucket",
+      "role": "check",
+      "file": "tokenBucket.check.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [
+        "now",
+        "capacity",
+        "refillPerSec",
+        "cost"
+      ],
+      "sha256": "c29b2ab807ea8665f0b4765929b79f8924563293b385d7736e95aa224e652711"
+    },
+    {
+      "name": "tokenBucket.read",
+      "strategy": "tokenBucket",
+      "role": "read",
+      "file": "tokenBucket.read.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [],
+      "sha256": "b6a70f2889204dbabdc3fed61dd525ddc3527f9331f9016dfa10d6d8737d3017"
+    },
+    {
+      "name": "fixedWindow.check",
+      "strategy": "fixedWindow",
+      "role": "check",
+      "file": "fixedWindow.check.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [
+        "now",
+        "limit",
+        "windowMs",
+        "cost"
+      ],
+      "sha256": "4344c40ef876f144477bd78483f372f20adfe4a068b236407d638adda7cb1890"
+    },
+    {
+      "name": "fixedWindow.read",
+      "strategy": "fixedWindow",
+      "role": "read",
+      "file": "fixedWindow.read.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [],
+      "sha256": "e071b127ae7859d696132cbd55dc848c6a02f97f92e73abc9b65588226de1eab"
+    },
+    {
+      "name": "slidingWindow.check",
+      "strategy": "slidingWindow",
+      "role": "check",
+      "file": "slidingWindow.check.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [
+        "now",
+        "windowMs",
+        "limit",
+        "cost",
+        "buckets"
+      ],
+      "sha256": "09944475ccf648f20e4a772337225deabfa946fbcd9a16d286c069e9e32c1d05"
+    },
+    {
+      "name": "slidingWindow.read",
+      "strategy": "slidingWindow",
+      "role": "read",
+      "file": "slidingWindow.read.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [],
+      "sha256": "417aa8f59e6fad78d1c05f71864fef6cbeb1d96347e7f4a6568c3154d860bbcd"
+    },
+    {
+      "name": "slidingWindowLog.check",
+      "strategy": "slidingWindowLog",
+      "role": "check",
+      "file": "slidingWindowLog.check.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [
+        "now",
+        "windowMs",
+        "limit",
+        "cost"
+      ],
+      "sha256": "9345973de84b2a575b8fb1c78afb04c27af894226c83a717c15ca3d50e1f730f"
+    },
+    {
+      "name": "slidingWindowLog.read",
+      "strategy": "slidingWindowLog",
+      "role": "read",
+      "file": "slidingWindowLog.read.lua",
+      "keys": [
+        "key"
+      ],
+      "argv": [],
+      "sha256": "ff6b7d1f22ee540d3ca560803e6f42f5ceb42da0f08a93dcf12dfa101f35b2c2"
+    }
+  ]
+}
