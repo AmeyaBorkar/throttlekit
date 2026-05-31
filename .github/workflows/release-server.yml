@@ -1,0 +1,47 @@
+name: Release server
+
+# Publishes the throttlekit-server package to npm when a `server-v*` tag is pushed, e.g.
+#   git tag server-v0.1.0-experimental.0 && git push origin server-v0.1.0-experimental.0
+# It reuses the repo's NPM_TOKEN secret (the same automation token the core release uses). Without
+# the token the job still builds + tests, then skips the publish with a notice — so tagging is always
+# safe. The core release (`v*` tags) and this one (`server-v*` tags) never collide.
+
+on:
+  push:
+    tags:
+      - "server-v*"
+
+permissions:
+  contents: read
+  id-token: write # npm provenance attestations
+
+jobs:
+  publish:
+    name: Build & publish (server)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    env:
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+          registry-url: "https://registry.npmjs.org"
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - name: Publish to npm (with provenance)
+        if: ${{ env.HAS_NPM_TOKEN == 'true' }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish skipped (no NPM_TOKEN)
+        if: ${{ env.HAS_NPM_TOKEN != 'true' }}
+        run: echo "::notice title=npm publish skipped::Set the NPM_TOKEN repository secret, then re-push the server-v* tag to publish throttlekit-server."
