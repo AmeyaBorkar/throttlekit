@@ -1,12 +1,14 @@
 # Polyglot expansion — design & wiring
 
-**Status:** Phase 1 essentially complete — the contract foundation has landed in this repo: the
-golden-vector behavioral lock (`wire/vectors/`), the extracted-Lua byte lock (`wire/scripts/*.lua` +
-`manifest.json`, sha256-pinned), the human spec (`wire/WIRE-PROTOCOL.md`), and the service-door gRPC
-contract (`wire/throttlekit.proto`, `throttlekit.v1`). All reversible and Node-valuable; nothing is
-frozen. The wire freeze (#78) remains **deferred** pending explicit reauthorization. Next: Phase 2 (the
-`throttlekit serve` gRPC service in this repo). This doc records the decided architecture so it survives
-across sessions.
+**Status:** Phases 1–4 landed. Phase 1 = the contract foundation in this repo (the golden-vector
+behavioral lock `wire/vectors/`, the extracted-Lua byte lock `wire/scripts/*.lua` + `manifest.json`
+sha256-pinned, the human spec `wire/WIRE-PROTOCOL.md`, the service-door gRPC contract
+`wire/throttlekit.proto`). Phase 2 = the **service door** (`server/`, the `throttlekit-server` package;
+see `PHASE2-SERVICE.md`). Phase 3 = the **`throttlekit-py`** client with `ServiceBackend`. Phase 4 = the
+direct **`RedisBackend`** (experimental), proven bit-for-bit against the full golden vectors via real
+Redis (see `PHASE4-REDIS-BACKEND.md`). Both doors now serve a polyglot client. **Nothing is frozen** —
+the wire freeze (#78) remains **deferred** pending explicit reauthorization (DR-78). This doc records the
+decided architecture so it survives across sessions.
 
 ## The decision: a layered hybrid, not a second library
 
@@ -118,9 +120,14 @@ signal a future freeze should wait on.
    ≡ vectors (green). Standalone package depending on published `throttlekit` (core untouched, zero-dep
    preserved). Remaining: distributed-store CLI wiring, auth (mTLS), container, optional Envoy RLS. See
    `research/polyglot/PHASE2-SERVICE.md`.
-3. **`throttlekit-py`** *(new repo)* — scaffold + `sync_contract` + drift gate; `ServiceBackend` first
+3. **`throttlekit-py`** *(new repo)* — **DONE**: scaffold + `sync_contract` + drift gate; `ServiceBackend`
    (the cheapest real polyglot MVP); marked experimental.
-4. **`RedisBackend`** (direct Lua) + cross-client conformance — *now* the wire-freeze decision is due.
+4. **`RedisBackend`** (direct Lua) + cross-client conformance — **DONE** (experimental, in `throttlekit-py`).
+   The full, time-parametrized golden vectors replay through Python → vendored Lua → real Redis and match
+   the Node oracle **bit-for-bit on all five reply fields** (`check`-only; `peek`/`forecast` stay on the
+   service door to preserve the one-oracle invariant). This shipped the demand signal a freeze should wait
+   on, but per **DR-78 the wire stays unfrozen** — experimental shipping is not the trigger (promotion to a
+   *supported* surface is), and a future freeze still needs reauthorization. See `PHASE4-REDIS-BACKEND.md`.
 5. **L1 lease loop** over either backend; more languages on demand (same vectors).
 
 ## Details that bite if skipped
