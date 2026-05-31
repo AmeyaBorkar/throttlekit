@@ -17,7 +17,7 @@ The shipped behaviour is additionally pinned by the public test suite under [`te
 
 **Kept LOCAL (not in this public repo):** the strategic roadmap and the unpublished paper drafts —
 `bigger-bets/PLAN.md`, `gale/*.md` (the GALE proposal + paper sections), `cost-uncertainty/*.md` (the
-TALE proposal + analysis), and `hotnets2026/` (the HotNets draft). They live on the maintainer's disk
+TALE proposal + analysis), and `paper/` (the manuscript prepared for arXiv + a journal). They live on the maintainer's disk
 and are git-ignored. Some design records and changelog notes reference them by path; those pointers
 resolve for the maintainer, and the public claims they support are reproduced by the public gates,
 eval data, and tests listed above.

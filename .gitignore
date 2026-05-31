@@ -24,6 +24,6 @@ states/
 # The DESIGN docs, verification gates, and eval data (.ts/.json/.csv/.svg) stay tracked as PUBLIC
 # evidence — only these prose documents are private. They stay on disk, just out of the repo.
 research/bigger-bets/PLAN.md
-research/hotnets2026/
+research/paper/
 research/gale/*.md
 research/cost-uncertainty/*.md

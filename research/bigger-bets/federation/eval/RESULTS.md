@@ -141,4 +141,4 @@ docker compose -f research/bigger-bets/federation/eval/docker-compose.yml down
 
 All JSON results land in `results/`. The aggregator at the bottom of
 `results-3-region.json` is the canonical artifact for downstream docs
-(SCOREBOARD, README, HotNets writeup).
+(SCOREBOARD, README, the paper writeup).
