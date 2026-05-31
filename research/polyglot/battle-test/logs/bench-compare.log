@@ -1,0 +1,29 @@
+
+> throttlekit@1.0.1 bench:compare
+> tsx bench/compare.ts
+
+ThrottleKit comparative benchmarks (vs rate-limiter-flexible, express-rate-limit)
+node v24.13.1  (no --expose-gc — allocations not measured)
+Excluded: @upstash/ratelimit — requires the Upstash cloud REST endpoint and cannot be benchmarked locally on equal footing.
+
+== MEMORY (in-process, single hot key, ALLOW path) ==
+   High limits so every request passes; same warmup + iteration count for all rows.
+  contender              algorithm     kind      ops/s    ns/op
+  ---------------------  ------------  -----  --------  -------
+  throttlekit checkSync  GCRA          sync      5.66M      177
+  throttlekit check      GCRA          async     3.35M      298
+  throttlekit check      fixed-window  async     3.03M      331
+  rate-limiter-flexible  fixed-window  async     2.85M      351
+  express-rate-limit     fixed-window  async     4.94M      203
+   Note: sync vs async is not directly comparable — ThrottleKit's checkSync has no Promise/microtask
+   overhead; the incumbents expose only async APIs. The async GCRA / fixed-window rows are the fair head-to-head.
+
+== REDIS (redis://localhost:6380, db 11) — single hot key, ALLOW path ==
+   Same ioredis client settings, same server, same DB, same warmup + iteration count for both.
+  contender               algorithm        ops/s       p50       p99      p999
+  ----------------------  ------------  --------  --------  --------  --------
+  throttlekit RedisStore  GCRA               722  1389.3µs  1939.9µs  2760.8µs
+  rate-limiter-flexible   fixed-window       723  1388.1µs  1921.6µs  3261.1µs
+   Both do one atomic Lua round trip per request (EVALSHA/EVAL). Serial awaits ⇒ latency-bound, not pipelined.
+
+== POSTGRES == skipped (set THROTTLEKIT_TEST_POSTGRES=postgres://user:pass@localhost:5433/db to enable)

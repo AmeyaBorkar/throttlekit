@@ -1,0 +1,2 @@
+# The battle-test run logs are committed evidence — re-include them past the repo-wide *.log ignore.
+!*.log

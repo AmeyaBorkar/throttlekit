@@ -1,0 +1,58 @@
+ThrottleKit battle test — runid=blt17696
+Redis: redis://localhost:6380  |  fleet: 3 servers  |  config: C:\Users\ameya\Documents\GreenfeildProject\research\polyglot\battle-test\config.yaml
+Server bin: C:\Users\ameya\Documents\GreenfeildProject\server\dist\bin.js
+
+Starting fleet on ports [50171, 50172, 50173] (shared Redis, prefix=blt17696) ...
+Fleet is up.
+
+=== A. distributed rate cap (3 servers, one limit, exact count) ===
+  [PASS] A. distributed rate cap (3 servers, one limit, exact count): 3 servers / shared Redis, 1200 reqs over 3 keys -> allowed/key=[200, 200, 200] (each must == 200; a naive per-instance limiter would leak up to 600/key)  (1.2s)
+
+=== A2. read surface (peek / forecast / check_many) ===
+  [PASS] A2. read surface (peek / forecast / check_many): peek non-consuming=True (rem 200==200), peek-after-check decrements=True (200->198), forecast.spendable_now=200, check_many=[True, True, True]  (0.0s)
+
+=== A3. operational faults (UNIMPLEMENTED / NOT_FOUND) ===
+  [PASS] A3. operational faults (UNIMPLEMENTED / NOT_FOUND): operational faults map correctly: {'admit_on_rate': True, 'debit_on_rate': True, 'check_on_admitter': True, 'unknown_policy': True}  (0.0s)
+
+=== B. direct door — all 5 strategies + Lua atomicity ===
+  [PASS] B. direct door — all 5 strategies + Lua atomicity: gcra=100/100; tokenBucket=80/80; fixedWindow=90/90; slidingWindow=70/70; slidingWindowLog=60/60; atomic(16 threads,300 reqs)=100/100  (0.9s)
+
+=== C. one oracle, two doors, one shared bucket ===
+  [PASS] C. one oracle, two doors, one shared bucket: key='blt17696:api:xdoor-probe-blt17696' reached by both doors; combined allowed=200 (service=100+direct=100); two separate buckets would give 400  (0.8s)
+
+=== D. cost axis — per-tenant token budgets (LLM gateway) ===
+  [PASS] D. cost axis — per-tenant token budgets (LLM gateway): 4 tenants stream in 1000-token debits; each admits tenant0=100000, tenant1=100000, tenant2=100000, tenant3=100000 (budget=100000; stops in [100000,101000); none admitted after deny; isolated per key)  (0.2s)
+
+=== E. concurrency axis — in-flight never exceeds the cap ===
+  [PASS] E. concurrency axis — in-flight never exceeds the cap: 40 workers vs cap=8 for 3.0s -> max concurrent in-flight=8 (must be <= 8 and reach 8); granted=596, denied=8035  (3.0s)
+
+=== F. unified rate x concurrency — correct binding axis ===
+  [PASS] F. unified rate x concurrency — correct binding axis: (i) concurrency-bound: max in-flight=4<= 4, concurrency-denials=2410; (ii) rate-bound: allowed=50~=50, rate-denials=70, concurrency-denials=0  (2.3s)
+
+=== G. crash safety — orphaned leases reclaimed on TTL ===
+  [PASS] G. crash safety — orphaned leases reclaimed on TTL: child held 8/8 (9th blocked=True); after SIGKILL the orphaned slots were reclaimed on TTL expiry (admit succeeded again=True)  (3.3s)
+
+=== H. heartbeat — long hold survives past the TTL ===
+  [PASS] H. heartbeat — long hold survives past the TTL: heartbeated cap-1 hold survived 3.5s > 2s TTL (2nd admit blocked=True, not reclaimed); after release the slot freed (3rd admit=True)  (3.5s)
+
+=== I. two-tier leased — windowCoupled overshoot bound ===
+  [PASS] I. two-tier leased — windowCoupled overshoot bound: 3-server fleet, 1500 reqs (3x budget) on one leased key -> total allowed=500 (windowCoupled bound: <= 500; a naive per-instance limiter would admit up to 1500)  (0.6s)
+
+Tearing down fleet ...
+Cleaned 19 Redis keys under blt17696:*
+
+================================================================================================
+BATTLE TEST REPORT — 11/11 phases passed
+================================================================================================
+  PASS  A. distributed rate cap (3 servers, one limit, exact count)
+  PASS  A2. read surface (peek / forecast / check_many)
+  PASS  A3. operational faults (UNIMPLEMENTED / NOT_FOUND)
+  PASS  B. direct door — all 5 strategies + Lua atomicity
+  PASS  C. one oracle, two doors, one shared bucket
+  PASS  D. cost axis — per-tenant token budgets (LLM gateway)
+  PASS  E. concurrency axis — in-flight never exceeds the cap
+  PASS  F. unified rate x concurrency — correct binding axis
+  PASS  G. crash safety — orphaned leases reclaimed on TTL
+  PASS  H. heartbeat — long hold survives past the TTL
+  PASS  I. two-tier leased — windowCoupled overshoot bound
+================================================================================================

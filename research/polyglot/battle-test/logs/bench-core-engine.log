@@ -1,0 +1,22 @@
+
+> throttlekit@1.0.1 bench
+> tsx bench/run.ts --redis redis://localhost:6380
+
+ThrottleKit benchmarks
+node v24.13.1  (no --expose-gc — allocations not measured)
+
+In-process (MemoryStore) — single hot key:
+  gcra checkSync                        5.68M ops/s      176 ns/op   n/a (run with --expose-gc)
+  tokenBucket checkSync                 4.98M ops/s      201 ns/op   n/a (run with --expose-gc)
+  fixedWindow checkSync                 4.17M ops/s      240 ns/op   n/a (run with --expose-gc)
+
+In-process (MemoryStore) — async check:
+  gcra check (async)                    2.70M ops/s      370 ns/op   n/a (run with --expose-gc)
+
+Concurrency — acquire + release (per request, healthy):
+  adaptiveConcurrency acq+release       3.43M ops/s      291 ns/op   n/a (run with --expose-gc)
+  distributed acq+release               2.98M ops/s      335 ns/op   n/a (run with --expose-gc)
+
+Redis (redis://localhost:6380, db 9):
+  strict gcra (1 EVALSHA / req)           717 ops/s   p50 1413.3µs  p99 1874.0µs  p999 2152.6µs
+  leased gcra (batch 100)               65.8k ops/s   100.0 reqs / round trip (100 trips for 10000 reqs)

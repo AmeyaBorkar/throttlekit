@@ -1,0 +1,45 @@
+version: 1
+limiters:
+  # --- rate axis (distributed across the fleet via shared Redis) ---
+  api: { strategy: gcra, limit: 200, period: 1h, burst: 200 }
+  uploads: { strategy: fixedWindow, limit: 150, period: 1h }
+  search: { strategy: slidingWindow, limit: 120, period: 1h, buckets: 12 }
+
+  # --- two-tier leased (distributed; windowCoupled ⇒ per-window overshoot = limit) ---
+  leased-api:
+    strategy: gcra
+    limit: 500
+    period: 1h
+    burst: 500
+    twoTier:
+      mode: leased
+      batch: 25
+      windowCoupled: true
+
+  # --- cost axis (single-instance token-budget meter) ---
+  completions:
+    tokenBudget:
+      budget: 100000
+      windowMs: 3600000
+
+  # --- concurrency axis (single-instance, pinned cap) ---
+  checkout:
+    concurrency:
+      minLimit: 8
+      maxLimit: 8
+
+  # cap=1, for the heartbeat keep-alive test
+  single:
+    concurrency:
+      minLimit: 1
+      maxLimit: 1
+
+  # --- unified rate x concurrency (single-instance) ---
+  unified-api:
+    strategy: gcra
+    limit: 50
+    period: 1h
+    burst: 50
+    concurrency:
+      minLimit: 4
+      maxLimit: 4
