@@ -10,6 +10,8 @@ Rate limiting for Node and the web with **zero runtime dependencies**, a **169 n
 
 Most distributed limiters are a shared counter and a hope: fine in one process, "probably fine" across a fleet, with no stated bound on how far past the limit they drift. ThrottleKit states the bound — and proves it.
 
+That bound isn't a one-off trick — it's the visible edge of two formal research programs, **GALE** (provable distributed leasing) and **TALE** (token-budget escrow for LLM gateways), that ship as real, byte-identically-verified features. **The research *is* the product:** window-coupled leasing, weighted-fair escrow, adaptive lease sizing, unified admission, distributed adaptive concurrency, and an LLM cost-control stack — each a checked guarantee, not a heuristic. [The research, shipped →](https://github.com/AmeyaBorkar/throttlekit/wiki/Research)
+
 **Docs:** [Wiki](https://github.com/AmeyaBorkar/throttlekit/wiki) · [Benchmarks](./BENCH.md) · [Stability](./STABILITY.md) · [Design](./THROTTLEKIT.md) · [Formal model](./docs/FORMAL-MODEL.md) · [Scoreboard](./SCOREBOARD.md) · [Changelog](./CHANGELOG.md)
 
 ## Install
@@ -61,6 +63,25 @@ const limiter = twoTier({
 - **Research that ships as features.** Two formal programs underpin it — **GALE** (provable distributed leasing) and **TALE** (token-budget escrow for LLMs) — landing as real, byte-identically-verified APIs: window-coupled leasing, weighted-fair escrow, adaptive lease sizing, unified admission, distributed adaptive concurrency.
 - **Batteries included, dependencies not.** **24 entry points** — 8 strategies, 6 storage backends, 13 framework/transport adapters — and **zero runtime dependencies**. First-class types, ESM + CJS, tree-shakeable subpaths.
 - **Honest about where it loses.** Every benchmark is reproducible on your hardware, including the cases an incumbent wins. See [BENCH.md](./BENCH.md) and [SCOREBOARD.md](./SCOREBOARD.md).
+
+## How it compares
+
+The incumbents are good at what they do — this is what ThrottleKit adds on top. Every row is a shipped, tested ThrottleKit feature; the comparison reflects each library's documented capabilities.
+
+| | `express-rate-limit` | `rate-limiter-flexible` | `@upstash/ratelimit` | **ThrottleKit** |
+|---|:--:|:--:|:--:|:--:|
+| Provable, **fleet-size-independent** overshoot bound (TLA⁺-checked) | – | – | – | **✓** |
+| Synchronous, allocation-free check | – | – | – | **✓ 169 ns** |
+| One algorithm, proven **bit-identical** across backends | – | – | – | **✓ (6 stores)** |
+| Two-tier leasing — amortized round trips, *bounded* overshoot | – | – | – | **✓** |
+| LLM **token-budget escrow** (post-hoc cost axis) | – | – | – | **✓ (TALE)** |
+| Unified **rate × concurrency × cost** in one decision | – | – | – | **✓** |
+| Weighted-fair share · overload shedding · fixed-memory DDoS sketch | – | – | – | **✓** |
+| Polyglot from one **verified** core (Python today) | – | – | – | **✓** |
+| Framework / transport adapters | 1 (Express) | a few | – | **13** |
+| Zero runtime dependencies | – | – | – | **✓** |
+
+This table is about distributed-*correctness* guarantees and breadth — the benchmarks (incl. the rows an incumbent wins) are reproducible on your hardware: [BENCH.md](./BENCH.md).
 
 ## Benchmarks
 
