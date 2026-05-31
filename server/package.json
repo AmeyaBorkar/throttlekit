@@ -1,6 +1,6 @@
 {
   "name": "throttlekit-server",
-  "version": "0.1.0-experimental.0",
+  "version": "0.1.0-experimental.1",
   "description": "gRPC service door for ThrottleKit — run the rate-limiting core as a network service for polyglot clients.",
   "repository": {
     "type": "git",
@@ -26,7 +26,11 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "throttlekit.proto", "README.md"],
+  "files": [
+    "dist",
+    "throttlekit.proto",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
