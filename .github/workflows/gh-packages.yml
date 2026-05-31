@@ -1,0 +1,41 @@
+name: GitHub Packages mirror
+
+# Mirrors the canonical npm package `throttlekit` to GitHub Packages as the scoped
+# `@ameyaborkar/throttlekit`, so it shows in this repo's "Packages" sidebar. The npm package on
+# npmjs.com stays the canonical install (`npm i throttlekit`) — this is a visibility mirror only.
+#
+# Runs on every version tag (alongside the npm Release workflow), and on demand via the Actions tab
+# / `gh workflow run gh-packages.yml` (used to seed the current version once).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write # publish to GitHub Packages via the built-in GITHUB_TOKEN (no PAT needed)
+
+jobs:
+  mirror:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@ameyaborkar"
+      - run: npm ci
+      - run: npm run build
+      - name: Scope the name for GitHub Packages
+        # GitHub Packages requires the package name to be scoped to the owner. Rewrite it only for
+        # this publish; the committed package.json (the npm name `throttlekit`) is left untouched.
+        run: npm pkg set name="@ameyaborkar/throttlekit"
+      - name: Publish to GitHub Packages
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
