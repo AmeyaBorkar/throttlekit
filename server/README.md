@@ -138,9 +138,11 @@ await running.close();
 ## The contract
 
 The service answers [`throttlekit.proto`](../wire/throttlekit.proto) (`throttlekit.v1.RateLimiter`:
-`Check` / `CheckMany` / `Peek` / `Forecast`). It is conformance-tested end-to-end against the same
-[golden vectors](../wire/) the wire contract is built from: a live in-process server + client replays
-every suite and must reproduce the oracle's decisions field-for-field (`test/`).
+`Check` / `CheckMany` / `Peek` / `Forecast` for rate, `Debit` for the cost axis, and the stateful
+`Admit` / `Release` / `Heartbeat` lifecycle for concurrency / unified admission). It is conformance-tested
+end-to-end against the same [golden vectors](../wire/) the wire contract is built from: a live in-process
+server + client replays every suite and must reproduce the oracle's decisions field-for-field (`test/`),
+and the admission lifecycle is driven over real gRPC (admit / release / heartbeat / crash-reclaim).
 
 ## Clients
 

@@ -135,9 +135,9 @@ Reach the limiter from non-Node services without re-implementing a single algori
 
 - **Service door** — [`throttlekit-server`](./server) runs the core and answers a small gRPC contract (`throttlekit.proto`); any language becomes a trivial stub, and a denial is a normal decision, never an RPC error.
 - **Direct door** — a client runs the core's *own* vendored Lua against the same Redis your Node fleet uses (one hop, no extra service).
-- **[`throttlekit-py`](https://github.com/AmeyaBorkar/throttlekit-py)** is the first client (both backends). Its `RedisBackend` replays the full golden vectors through real Redis and reproduces this core **bit-for-bit**.
+- **[`throttlekit-py`](https://github.com/AmeyaBorkar/throttlekit-py)** reaches **every axis** from Python — rate (`check`), cost (`debit`), two-tier leased (`check`, transparently), and concurrency + unified admission (`admit`, with crash-safe leases) — and its `RedisBackend` replays the full golden vectors through real Redis to reproduce this core **bit-for-bit**.
 
-The proto is the stable polyglot contract; the raw Lua wire is behavior-locked but deliberately **not** frozen. Design + decision records: [`research/polyglot/DESIGN.md`](./research/polyglot/DESIGN.md).
+The proto is the stable polyglot contract; the raw Lua wire is behavior-locked but deliberately **not** frozen. The full walkthrough is the [**Polyglot & Python**](https://github.com/AmeyaBorkar/throttlekit/wiki/Polyglot-and-Python) wiki page; design + decision records live in [`research/polyglot/DESIGN.md`](./research/polyglot/DESIGN.md).
 
 ## Correctness
 
