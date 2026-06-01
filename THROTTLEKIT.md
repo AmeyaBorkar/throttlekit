@@ -1,9 +1,10 @@
 # ThrottleKit — Design & Architecture
 
-> **Rate limiting you can prove.** A pluggable, framework-agnostic toolkit for Node and the
-> web, correct by construction — with a *machine-checked*, fleet-size-independent overshoot
-> bound on its distributed path, no network call on the hot path, and the fastest option in
-> its class, without sacrificing accuracy or developer ergonomics.
+> **Rate limiting you can prove — built on GALE and TALE.** A pluggable, framework-agnostic
+> toolkit for Node and the web, correct by construction: **GALE** gives a *machine-checked*,
+> fleet-size-independent overshoot bound on distributed leasing, and **TALE** a `max_tokens`-independent
+> bound on LLM token budgets — with no network call on the hot path, and the fastest option in its
+> class, without sacrificing accuracy or developer ergonomics.
 
 ThrottleKit treats rate limiting as three cleanly separated concerns: **algorithms** (pure
 functions of time), **storage** (one atomic primitive), and **adapters** (thin glue to your

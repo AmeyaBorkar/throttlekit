@@ -6,11 +6,11 @@
 [![node: >=18](https://img.shields.io/node/v/throttlekit.svg)](https://www.npmjs.com/package/throttlekit)
 [![license: MIT](https://img.shields.io/npm/l/throttlekit.svg)](./LICENSE)
 
-**Rate limiting you can prove.** A distributed overshoot bound that's **machine-checked in TLA⁺ and independent of fleet size** — behind a **169 ns** synchronous check, with **zero runtime dependencies**. One small core — pure-function algorithms, one atomic store proven bit-identical across six backends, thin adapters — so the *same* config runs as an allocation-free in-process check or atomically across a global cluster.
+**Rate limiting you can prove — built on GALE and TALE.** **GALE** (provable distributed leasing) holds global overshoot to a bound that's **machine-checked in TLA⁺ and independent of fleet size**; **TALE** (token-budget escrow) caps LLM token spend with a bound independent of `max_tokens`. Both run behind a **169 ns** synchronous check, with **zero runtime dependencies**, on one small core proven bit-identical across six stores — the *same* config from an allocation-free in-process check to a global cluster.
 
 Most distributed limiters are a shared counter and a hope: fine in one process, "probably fine" across a fleet, with no stated bound on how far past the limit they drift. ThrottleKit states the bound — and proves it.
 
-And the bound is only the start. The same machinery powers **window-coupled leasing**, **weighted-fair escrow**, **adaptive lease sizing**, **unified rate × concurrency × cost** admission, **distributed adaptive concurrency**, and a **token-budget escrow built for LLM gateways** — each a checked guarantee, not a heuristic, every one shipping as a byte-identically-verified feature. (Internally these two engines are **GALE** — provable distributed leasing — and **TALE** — token-budget escrow.) [How the guarantees work →](https://github.com/AmeyaBorkar/throttlekit/wiki/Research)
+And the bound is only the start. **GALE** and **TALE** ship as real features, not heuristics — **window-coupled leasing**, **adaptive lease sizing**, **weighted-fair escrow**, **distributed adaptive concurrency**, **unified rate × concurrency × cost** admission, and an **LLM token-budget stack** — each a checked guarantee, every one byte-identically verified. [See how GALE & TALE work →](https://github.com/AmeyaBorkar/throttlekit/wiki/Research)
 
 **Docs:** [Wiki](https://github.com/AmeyaBorkar/throttlekit/wiki) · [Benchmarks](./BENCH.md) · [Stability](./STABILITY.md) · [Design](./THROTTLEKIT.md) · [Component design](./docs/design/) · [Formal model](./docs/FORMAL-MODEL.md) · [Scoreboard](./SCOREBOARD.md) · [Changelog](./CHANGELOG.md)
 
