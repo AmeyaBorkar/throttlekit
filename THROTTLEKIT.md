@@ -106,13 +106,12 @@ that primitive — not a different library.
 8. **Deterministic and fully testable.** Time is injected everywhere. No `Date.now()` hides inside an
    algorithm. Every limit is reproducible in a unit test down to the millisecond.
 
-9. **Provable distributed leasing (research track).** The leasing bound anchors an ongoing research
-   program — *GALE* — that makes overshoot **independent of fleet size** (shipped as
-   `lease.windowCoupled`), sizes leases online with an `O(√T)`-regret guarantee (online EOQ, shipped as
-   `lease.adaptive`), adds **weighted work-conserving fairness** across tenants (`weightedFairEscrow`,
-   `federatedWeightedFairEscrow`), and proves a **trilemma** lower bound tying overshoot, coordination,
-   and utilization. Each result is machine-checked (`test/gale/`) or measured. Pillars graduate into the
-   public API as they harden; the remainder stays in the research track.
+9. **Provable distributed leasing.** The leasing bound anchors an engine we call *GALE* that makes
+   overshoot **independent of fleet size** (shipped as `lease.windowCoupled`), sizes leases online with
+   an `O(√T)`-regret guarantee (online EOQ, shipped as `lease.adaptive`), adds **weighted
+   work-conserving fairness** across tenants (`weightedFairEscrow`, `federatedWeightedFairEscrow`), and
+   proves a **trilemma** lower bound tying overshoot, coordination, and utilization. Each result is
+   machine-checked (`test/gale/`) or measured. Pieces graduate into the public API as they harden.
 
 ---
 

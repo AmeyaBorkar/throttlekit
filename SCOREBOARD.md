@@ -129,12 +129,12 @@ latency here is Docker-Desktop-on-Windows.
 | Store conformance testkit | ✅ |
 | TypeScript-first, ESM + CJS, 23 entry points (+ a `throttlekit` CLI) | ✅ |
 
-## Research track — GALE (provable distributed leasing)
+## Provable distributed leasing — GALE
 
-A research program built on the `leased` two-tier path (target venue SIGMETRICS/POMACS): the first
-distributed limiter with a hard, tight overshoot bound **independent of fleet size**, plus learned
-lease sizing and weighted fairness. Proven/measured and gated under `test/gale/`; write-up in
-`research/gale/`. Research modules unless marked shipped. Reproduce with `npx vitest run test/gale`.
+The guarantees behind the `leased` two-tier path: the first distributed limiter with a hard, tight
+overshoot bound **independent of fleet size**, plus learned lease sizing and weighted fairness.
+Proven/measured and gated under `test/gale/`. Modules are internal unless marked shipped. Reproduce
+with `npx vitest run test/gale`.
 
 | Result | How established | Status |
 |---|---|---|
@@ -148,13 +148,13 @@ lease sizing and weighted fairness. Proven/measured and gated under `test/gale/`
 | Capstone — partial-coordination interpolation `Δ + (N−C)·U ≥ (N−C−1)L` (static-partition) | proven (reduction lemma) + machine-checked (linear floor decay) | ✅ |
 | Capstone — dynamic `≤C`-message leasing bound `Δ + N·U ≥ (N−1)(L − C·B)` | proven (single-hot adversary) + machine-checked; **tight at B=1**; batched `B>1` strand-gap closed form open | ✅ |
 
-## Research track — TALE (escrow under cost uncertainty)
+## Token-budget escrow for LLM gateways — TALE
 
-The cost-axis sibling of GALE (target venue SIGMETRICS/NSDI): token-budget rate limiting for LLMs,
-where a request's cost — its *output* tokens — is revealed only as it streams. Reserve-then-reconcile
-escrow in three layers, the streaming meter being **window-coupling on the cost axis**. Proven/measured
-and gated under `test/cost/`; write-up in `research/cost-uncertainty/`. Research modules unless marked
-shipped (Layers 1–3 now ship). Reproduce with `npx vitest run test/cost`.
+The cost-axis sibling of GALE: token-budget rate limiting for LLMs, where a request's cost — its
+*output* tokens — is revealed only as it streams. Reserve-then-reconcile escrow in three layers, the
+streaming meter being **window-coupling on the cost axis**. Proven/measured and gated under
+`test/cost/`. Modules are internal unless marked shipped (Layers 1–3 now ship). Reproduce with
+`npx vitest run test/cost`.
 
 | Result | How established | Status |
 |---|---|---|

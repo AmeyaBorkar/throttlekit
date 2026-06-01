@@ -25,8 +25,8 @@ in the proven core changed — these are purely additive.
 Source-of-truth discipline: rather than duplicate-and-hope, each shipped primitive's test
 **cross-checks it byte-identically against the research kernel** it was ported from (many seeds, every
 step, reservations/sizes *and* Hedge weights). That both proves the shipped code inherits the kernel's
-guarantees and makes drift impossible — any divergence turns CI red. The research artifacts stay
-pristine (good for the papers); the equivalence test is the bridge. 460 → 490 tests; full
+guarantees and makes drift impossible — any divergence turns CI red. The reference kernels stay
+pristine; the equivalence test is the bridge. 460 → 490 tests; full
 lint+typecheck+suite green at every one of the four feature commits.
 
 One self-caught slip worth recording: `tsc` flagged an unused research import in the Pillar-3 test that
