@@ -1,9 +1,9 @@
 # throttlekit-server
 
-The **gRPC service door** for [ThrottleKit](https://www.npmjs.com/package/throttlekit). Run the
-rate-limiting core as a network service so **polyglot clients** (Python, Go, …) get decisions
-**identical** to an embedded Node library — without re-implementing any algorithm or touching the raw Lua
-wire.
+**The rate limiter you can prove — over the wire.** The **gRPC service door** for
+[ThrottleKit](https://www.npmjs.com/package/throttlekit): run the proven rate-limiting core as a network
+service so **polyglot clients** (Python, Go, …) get decisions **identical** to an embedded Node library —
+the same machine-checked guarantees, without re-implementing any algorithm or touching the raw Lua wire.
 
 > **Status: experimental (pre-1.0).** The core `throttlekit` package is 1.0 and frozen; this server
 > evolves independently. It depends only on `throttlekit`'s **public, frozen API** — it adds no surface

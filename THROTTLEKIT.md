@@ -1,15 +1,19 @@
 # ThrottleKit — Design & Architecture
 
-> A pluggable, framework-agnostic rate-limiting toolkit for Node and the web that is
-> correct by construction — with a *formally-verified*, fleet-size-independent overshoot
-> bound on its distributed path — distributed without a network call on the hot path, and
-> the fastest option in its class, without sacrificing accuracy or developer ergonomics.
+> **Rate limiting you can prove.** A pluggable, framework-agnostic toolkit for Node and the
+> web, correct by construction — with a *machine-checked*, fleet-size-independent overshoot
+> bound on its distributed path, no network call on the hot path, and the fastest option in
+> its class, without sacrificing accuracy or developer ergonomics.
 
 ThrottleKit treats rate limiting as three cleanly separated concerns: **algorithms** (pure
 functions of time), **storage** (one atomic primitive), and **adapters** (thin glue to your
 framework). That separation is what lets the same limit run as a sub-microsecond in-process
 check, as a single atomic Redis round trip, or as a near-zero-network leased budget across a
 fleet — all from one configuration, with one set of conformance tests proving every path agrees.
+
+> **Going deeper?** This page is the single-page overview. Each component has a dedicated, in-depth
+> design document — architecture, the math, and *why every non-obvious choice was made* — under
+> [`docs/design/`](docs/design/).
 
 ---
 

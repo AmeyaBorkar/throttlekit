@@ -12,7 +12,7 @@ Most distributed limiters are a shared counter and a hope: fine in one process, 
 
 And the bound is only the start. The same machinery powers **window-coupled leasing**, **weighted-fair escrow**, **adaptive lease sizing**, **unified rate × concurrency × cost** admission, **distributed adaptive concurrency**, and a **token-budget escrow built for LLM gateways** — each a checked guarantee, not a heuristic, every one shipping as a byte-identically-verified feature. (Internally these two engines are **GALE** — provable distributed leasing — and **TALE** — token-budget escrow.) [How the guarantees work →](https://github.com/AmeyaBorkar/throttlekit/wiki/Research)
 
-**Docs:** [Wiki](https://github.com/AmeyaBorkar/throttlekit/wiki) · [Benchmarks](./BENCH.md) · [Stability](./STABILITY.md) · [Design](./THROTTLEKIT.md) · [Formal model](./docs/FORMAL-MODEL.md) · [Scoreboard](./SCOREBOARD.md) · [Changelog](./CHANGELOG.md)
+**Docs:** [Wiki](https://github.com/AmeyaBorkar/throttlekit/wiki) · [Benchmarks](./BENCH.md) · [Stability](./STABILITY.md) · [Design](./THROTTLEKIT.md) · [Component design](./docs/design/) · [Formal model](./docs/FORMAL-MODEL.md) · [Scoreboard](./SCOREBOARD.md) · [Changelog](./CHANGELOG.md)
 
 ## Install
 
