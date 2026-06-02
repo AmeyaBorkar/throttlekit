@@ -6,13 +6,15 @@
 [![node: >=18](https://img.shields.io/node/v/throttlekit.svg)](https://www.npmjs.com/package/throttlekit)
 [![license: MIT](https://img.shields.io/npm/l/throttlekit.svg)](./LICENSE)
 
-**Rate limiting you can prove — built on GALE and TALE.** **GALE** (provable distributed leasing) holds global overshoot to a bound that's **machine-checked in TLA⁺ and independent of fleet size**; **TALE** (token-budget escrow) caps LLM token spend with a bound independent of `max_tokens`. Both run behind a **169 ns** synchronous check, with **zero runtime dependencies**, on one small core proven bit-identical across six stores — the *same* config from an allocation-free in-process check to a global cluster.
+**Beyond rate limiting — govern rate, concurrency, and cost, _provably_.** *Meter what your LLM spends. Prove what your fleet admits.* Counting requests is the easy 10%; ThrottleKit governs the three axes a real request must clear — **rate**, **concurrency**, and **cost** — each behind a bound you can prove.
 
-Most distributed limiters are a shared counter and a hope: fine in one process, "probably fine" across a fleet, with no stated bound on how far past the limit they drift. ThrottleKit states the bound — and proves it.
+Two engines do the hard part. **GALE** (provable distributed leasing) holds global overshoot to a **fleet-size-independent** bound, **machine-checked in TLA⁺**. **TALE** (token-budget escrow) meters an LLM's output tokens — known only as they stream — and bounds them anyway. All on one small core: a **169 ns** in-process check (5.9M ops/s, effectively allocation-free), **zero runtime dependencies**, proven bit-identical across six stores.
+
+Most limiters just count requests — fine in one process, "probably fine" across a fleet, and silent on the two axes that actually cost you money: concurrency and tokens. ThrottleKit states its bounds, and proves them.
 
 And the bound is only the start. **GALE** and **TALE** ship as real features, not heuristics — **window-coupled leasing**, **adaptive lease sizing**, **weighted-fair escrow**, **distributed adaptive concurrency**, **unified rate × concurrency × cost** admission, and an **LLM token-budget stack** — each a checked guarantee, every one byte-identically verified. [See how GALE & TALE work →](https://github.com/AmeyaBorkar/throttlekit/wiki/Research)
 
-**Docs:** [Wiki](https://github.com/AmeyaBorkar/throttlekit/wiki) · [Benchmarks](./BENCH.md) · [Stability](./STABILITY.md) · [Design](./THROTTLEKIT.md) · [Component design](./docs/design/) · [Formal model](./docs/FORMAL-MODEL.md) · [Scoreboard](./SCOREBOARD.md) · [Changelog](./CHANGELOG.md)
+**Site:** [throttlekit.in](https://throttlekit.in) · **Docs:** [Wiki](https://github.com/AmeyaBorkar/throttlekit/wiki) · [Benchmarks](./BENCH.md) · [Stability](./STABILITY.md) · [Design](./THROTTLEKIT.md) · [Component design](./docs/design/) · [Formal model](./docs/FORMAL-MODEL.md) · [Scoreboard](./SCOREBOARD.md) · [Changelog](./CHANGELOG.md)
 
 ## Install
 
@@ -60,7 +62,7 @@ const limiter = twoTier({
 - **A proven overshoot bound, independent of fleet size.** Two-tier leasing is model-checked in TLA⁺/TLC: worst-case global admissions are *exactly* `Limit + N·(Batch−1)` (tight by counterexample), and `windowCoupled` collapses that to *exactly* `Limit` — **no matter how many nodes**, and across regions too (`federate(...)`, bound independent of region count `K`). The checker re-runs in CI. Most limiters can't state a bound at all.
 - **Sub-microsecond synchronous checks.** `checkSync` returns a complete decision in **169 ns/op (5.9M ops/s), effectively allocation-free** — a true sync API, uncommon among JS limiters, for hot paths that shouldn't pay for an `await`. [Benchmarks →](./BENCH.md)
 - **One algorithm, six backends, proven bit-identical.** The *same* GCRA (or token-bucket, sliding-window, …) runs in memory, on Redis (one atomic `EVALSHA`), and on Postgres (advisory-lock transaction — no Redis needed). A dual-path conformance suite — including a 200-way concurrent read-modify-write — proves the JavaScript and Lua decisions agree, so local and distributed limiters can't silently drift.
-- **Research that ships as features.** Two formal programs underpin it — **GALE** (provable distributed leasing) and **TALE** (token-budget escrow for LLMs) — landing as real, byte-identically-verified APIs: window-coupled leasing, weighted-fair escrow, adaptive lease sizing, unified admission, distributed adaptive concurrency.
+- **Two engines, shipped as features — not heuristics.** **GALE** (provable distributed leasing) and **TALE** (LLM token-budget escrow) land as real, byte-identically-verified APIs: window-coupled leasing, weighted-fair escrow, adaptive lease sizing, unified rate × concurrency × cost admission, distributed adaptive concurrency, and the cost-axis token-budget stack.
 - **Batteries included, dependencies not.** **24 entry points** — 8 strategies, 6 storage backends, 13 framework/transport adapters — and **zero runtime dependencies**. First-class types, ESM + CJS, tree-shakeable subpaths.
 - **Honest about where it loses.** Every benchmark is reproducible on your hardware, including the cases an incumbent wins. See [BENCH.md](./BENCH.md) and [SCOREBOARD.md](./SCOREBOARD.md).
 

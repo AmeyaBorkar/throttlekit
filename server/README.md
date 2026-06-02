@@ -1,10 +1,10 @@
 # throttlekit-server
 
-**The rate limiter you can prove — over the wire.** The **gRPC service door** for
-[ThrottleKit](https://www.npmjs.com/package/throttlekit): run the proven rate-limiting core — including the
-**GALE** (distributed leasing) and **TALE** (LLM token-budget) engines — as a network service so **polyglot
-clients** (Python, Go, …) get decisions **identical** to an embedded Node library, without re-implementing
-any algorithm or touching the raw Lua wire.
+**Beyond rate limiting — over the wire.** The **gRPC service door** for
+[ThrottleKit](https://www.npmjs.com/package/throttlekit): run the proven core that governs **rate,
+concurrency, and cost** — its **GALE** (provable distributed leasing) and **TALE** (LLM token-budget escrow)
+engines — as a network service so **polyglot clients** (Python, Go, …) get decisions **identical** to an
+embedded Node library, without re-implementing any algorithm or touching the raw Lua wire.
 
 > **Status: experimental (pre-1.0).** The core `throttlekit` package is 1.0 and frozen; this server
 > evolves independently. It depends only on `throttlekit`'s **public, frozen API** — it adds no surface
