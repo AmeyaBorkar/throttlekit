@@ -16,6 +16,18 @@ export { lensHandler } from "./handler.js";
 export type { LensHandlerOptions, LensRequestHandler } from "./handler.js";
 export { serveLens } from "./serve.js";
 export type { LensTlsOptions, RunningLens, ServeLensOptions } from "./serve.js";
+export {
+  createLensAggregator,
+  mergeSnapshots,
+  pushSnapshots,
+  serveLensAggregator,
+} from "./aggregator.js";
+export type {
+  LensAggregator,
+  LensAggregatorOptions,
+  PushSnapshotsOptions,
+  ServeAggregatorOptions,
+} from "./aggregator.js";
 export { renderLensHtml } from "./ui.js";
 export type {
   LensDenialRow,
