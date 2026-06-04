@@ -44,6 +44,30 @@ instance at the **same Redis** to run a coordinated fleet enforcing one shared l
 throttlekit-server --config .throttlekit.yaml --redis redis://redis:6379
 ```
 
+…or back the fleet with **Postgres** instead — no Redis required, the same shared-store guarantee, and
+decisions stay bit-identical (the core's pure transform runs inside the store, server-side):
+
+```bash
+throttlekit-server --config .throttlekit.yaml --postgres-url postgres://user:pass@db:5432/app
+```
+
+## Backing stores
+
+The server can host any of the core's **exact** rate stores. The decision always runs in the core, so
+every backend yields bit-identical decisions — the store only transports state. Select one with `--store`,
+or let it infer from which URL flag you pass:
+
+| Store | How | Notes |
+|---|---|---|
+| **Memory** | default (no flag) | per-policy, in-process — single instance only |
+| **Redis** | `--redis <url>` | shared fleet store; one atomic Lua round trip |
+| **Postgres** | `--postgres-url <url>` | shared fleet store, **no Redis required**; per-key advisory-lock atomicity |
+
+> **DynamoDB** is supported by the core and is the next server backend (gated on a dynamodb-local recipe).
+> **DenoKV** and **Cloudflare** (D1 / Durable Objects / Workers KV) are *edge-runtime* stores — they bind
+> to APIs that don't exist in Node, so they can't back a Node `throttlekit-server`. Reach them by running
+> ThrottleKit *inside* those runtimes, not through this service door.
+
 ## Two-tier leasing (cut the per-request round trip)
 
 A policy can carry a `twoTier` block to be served as a **two-tier leased** limiter: each instance leases a
@@ -164,8 +188,12 @@ throttlekit-server --config .throttlekit.yaml \
 
 | Flag | Effect |
 |---|---|
+| `--store <backend>` | pick the backend explicitly: `memory` \| `redis` \| `postgres` (inferred from the URL flags if omitted) |
 | `--redis <url>` | share one Redis store across instances (one fleet-wide limit); omit for in-process memory |
-| `--redis-prefix <p>` | key prefix for the shared store |
+| `--redis-prefix <p>` | key prefix for the shared Redis store |
+| `--postgres-url <url>` | back the fleet with a shared **Postgres** store (no Redis required) |
+| `--postgres-table <t>` | table holding limiter state (default `throttlekit`) |
+| `--postgres-prefix <p>` | key prefix for the shared Postgres store |
 | `--tls-cert` + `--tls-key` | serve **TLS** |
 | `--tls-ca <ca>` | require + verify client certs ⇒ **mTLS** |
 | `--fail open\|closed` | store-outage policy (default `open`) |
@@ -185,7 +213,7 @@ docker run -p 50051:50051 -v "$PWD/.throttlekit.yaml:/etc/tk.yaml" \
 | Rate limit hit | a normal `Decision` with `allowed:false` + `retryAfterMs` — **not** an RPC error |
 | Unknown policy | gRPC `NOT_FOUND` |
 | Op unsupported by the strategy (`peek`/`forecast`) | gRPC `UNIMPLEMENTED` |
-| **Store (Redis) outage** | resolved by `--fail`: `open` admits, `closed` denies (a synthesized `Decision`) |
+| **Store (Redis/Postgres) outage** | resolved by `--fail`: `open` admits, `closed` denies (a synthesized `Decision`) |
 | **Service unreachable** (transport) | the *client's* call to make — fail-open or fail-closed in your code; a returned `Decision` is always authoritative |
 
 ## Security
