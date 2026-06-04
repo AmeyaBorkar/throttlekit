@@ -196,18 +196,24 @@ d("PostgresCoordinator (TK-1302)", () => {
       }
     });
 
-    it("window roll resets the budget (different expiresAt → fresh window)", async () => {
-      // Use a SHORT window so the test can observe a real roll without sleeping.
-      // windowMs = 200ms; sleep just over 200ms between leases.
-      const c = make({ budget: 100, prefix: "roll", windowMs: 200 });
+    it("window roll resets the budget (a fresh window restores the budget)", async () => {
+      // The coordinator anchors windows to the *server* clock in epoch-aligned `windowMs` buckets
+      // (the passed expiresAt is ignored). To exercise a real roll without flaking under load, align
+      // to just past a window boundary so both "same-window" leases land early in one bucket with a
+      // near-full-window margin — a slow round trip then can't straddle the boundary. (A 1s window on
+      // localhost: node and Postgres share the host clock, so node-side alignment lands us early in
+      // the server's window too.)
+      const windowMs = 1000;
+      const c = make({ budget: 100, prefix: "roll", windowMs });
       try {
-        const expiresAt = Date.now() + 200;
-        await c.lease("k", 100, expiresAt); // exhausts window 1
-        expect(await c.lease("k", 10, expiresAt)).toBe(0); // still in window 1; denied
-        // Wait for window 2.
-        await new Promise<void>((resolve) => setTimeout(resolve, 250));
-        // Window has rolled — budget back to 100.
-        expect(await c.lease("k", 50, Date.now() + 200)).toBe(50);
+        await new Promise<void>((r) => setTimeout(r, windowMs - (Date.now() % windowMs) + 25));
+        const inWindow = Date.now() + windowMs;
+        expect(await c.lease("k", 100, inWindow)).toBe(100); // exhaust window 1
+        expect(await c.lease("k", 10, inWindow)).toBe(0); // same window ⇒ denied
+        // Sleep past the boundary; sleeping > windowMs crosses ≥1 window, and every later window has a
+        // fresh budget, so the roll assertion holds even if the sleep overshoots under load.
+        await new Promise<void>((r) => setTimeout(r, windowMs + 50));
+        expect(await c.lease("k", 50, Date.now() + windowMs)).toBe(50); // fresh window ⇒ budget back
       } finally {
         c.close();
       }
