@@ -32,7 +32,7 @@ the package entry points: `throttlekit` (core, `sketchRateLimit`, `mergeableSket
 `adaptiveThrottle`, `fairShare`), `throttlekit/redis`, `throttlekit/postgres`, `throttlekit/express`,
 `throttlekit/fetch`, and `throttlekit/hono` (plus `/next`, `/fastify`, `/koa`).
 
-**Monitoring:** the [ThrottleKit Lens](../lens) dashboard ships as its own `@experimental` package
-(`npm i throttlekit-lens`), so it isn't a `../src` example here — see the
-[Monitoring & the Lens](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens) guide for
-runnable embedded / sidecar / fleet snippets. It's also **on by default** on [`throttlekit-server`](../server).
+**Monitoring:** run [`throttlekit-server`](../server) with `--tui` for a built-in, zero-dependency live
+**terminal dashboard** (live binding-axis attribution + the full ops board, no browser or backend) — see the
+[Monitoring](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens) guide. For headless /
+production, emit OpenTelemetry → Grafana.

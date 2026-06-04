@@ -153,19 +153,16 @@ Primitives that sit *upstream* of per-key limiters — overload, fairness, and c
 
 → [Overload, fairness & DDoS](https://github.com/AmeyaBorkar/throttlekit/wiki/Overload-Fairness-and-DDoS)
 
-## Monitoring — the Lens (experimental)
+## Monitoring — the live terminal dashboard (experimental)
 
-A built-in, **zero-dependency** monitoring dashboard — [`throttlekit-lens`](./lens) — gives *every* limiter the full ops board (throughput, deny rate, top keys, concurrency health, a live denial feed) plus the one view no other rate-limiter dashboard can render: **live binding-axis attribution**. Because `unifiedAdmission` composes rate × concurrency × cost in one decision, the Lens shows **which axis is throttling each key right now** — click a denial for the exact per-axis `Decision` — beside a first-class **Guarantee** panel (live headroom to the TLA⁺-proven overshoot line).
+`throttlekit-server --config x.yaml --tui` opens a built-in, **zero-dependency** terminal dashboard (TUI) alongside gRPC — no browser, no metrics backend. It gives *every* policy the full ops board (throughput, deny rate, top denied keys, concurrency health, a live denial feed with exact per-axis numbers) plus the one view no other rate-limiter dashboard renders: **live binding-axis attribution**. Because `unifiedAdmission` composes rate × concurrency × cost in one decision, the dashboard shows **which axis is throttling each key right now** — `rate`, `concurrency`, `cost`, or the joint-LP `policy` lane.
 
-```ts
-import { createLensHub, serveLens } from "throttlekit-lens";
-
-const hub = createLensHub();
-const api = hub.trackLimiter("api", rateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
-const lens = await serveLens(hub); // loopback :9090 — or mount lensHandler() in your app, no extra port
+```bash
+throttlekit-server --config .throttlekit.yaml --tui
+#  → gRPC on :50051  +  a live dashboard in your terminal (q quit · ↑↓ scroll · p pause)
 ```
 
-Or get it for free on the [service door](#polyglot--one-core-two-doors-experimental): `throttlekit-server` serves the Lens **on by default** (loopback) alongside gRPC. The taps are synchronous, exception-swallowing, and O(1), so the dashboard can never perturb the control path. → [Monitoring & the Lens](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens)
+It watches the *server's* decisions, so it works for Python / Go / any-language clients too. A TUI owns the terminal, so it's **opt-in** (`--tui`) and needs an interactive TTY; for **headless / production** monitoring, emit OpenTelemetry → Grafana — including `throttlekit.denies_by_axis{lane}`, the deliberate axis escape hatch added in 1.2.0. → [Monitoring](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens)
 
 ## Polyglot — one core, two doors (experimental)
 

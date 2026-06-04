@@ -4,6 +4,23 @@ All notable changes to **throttlekit-server** are documented here. The format fo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This server tracks the frozen `throttlekit` 1.0
 core's public, frozen API and versions independently of it (it is pre-1.0 / experimental).
 
+## [Unreleased]
+
+### Changed
+
+- **Monitoring moved from a browser dashboard to a built-in terminal dashboard (TUI).** `throttlekit-server
+  --config … --tui` renders a live, zero-dependency dashboard right in the terminal, alongside gRPC — the
+  binding-axis attribution hero (which of rate / concurrency / cost bound each denial), throughput, top
+  denied keys, concurrency health, and a live denial feed with exact per-axis numbers — off the same
+  in-process telemetry hub (synchronous, exception-swallowing, O(1)). `q` quits, `↑↓` scroll, `p` pauses.
+
+### Removed
+
+- **The web Lens.** The `--lens` / `--lens-host` / `--lens-port` / `--lens-token` / `--lens-aggregator`
+  flags and the `throttlekit-lens` dependency are gone. A TUI owns the terminal, so it is **opt-in** via
+  `--tui` (not on-by-default) and needs an interactive TTY — a non-TTY warns and serves without it. For
+  headless / production, emit OpenTelemetry → Grafana (including `throttlekit.denies_by_axis{lane}`).
+
 ## [0.1.0-experimental.5] — 2026-06-04
 
 ### Added
