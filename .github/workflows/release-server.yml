@@ -12,7 +12,7 @@ on:
       - "server-v*"
 
 permissions:
-  contents: read
+  contents: write # create the prerelease GitHub Release for the server-v* tag
   id-token: write # npm provenance attestations
 
 jobs:
@@ -45,3 +45,34 @@ jobs:
       - name: Publish skipped (no NPM_TOKEN)
         if: ${{ env.HAS_NPM_TOKEN != 'true' }}
         run: echo "::notice title=npm publish skipped::Set the NPM_TOKEN repository secret, then re-push the server-v* tag to publish throttlekit-server."
+      - name: Create (or update) the GitHub Release for this tag
+        # The server is experimental and versions independently of the core `throttlekit` (`v*` tags), so
+        # its Release is always a **pre-release** — it shows on the Releases page alongside the core line
+        # without ever taking the "Latest" badge from it. Idempotent: a re-pushed tag updates the Release.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#server-v}"
+          # Pull the CHANGELOG block for this version (literal prefix match, not regex — see the py repo's
+          # release.yml for why). The job's working-directory is `server/`, so CHANGELOG.md is the server's.
+          NOTES=$(awk -v hdr="## [$VERSION]" '
+            index($0, hdr) == 1               { capture=1; next }
+            capture && index($0, "## [") == 1 { exit }
+            capture                           { print }
+          ' CHANGELOG.md)
+          NOTES_FILE="$(mktemp)"
+          {
+            if printf '%s' "$NOTES" | grep -q '[^[:space:]]'; then
+              printf '%s\n\n' "$NOTES"
+            else
+              printf 'throttlekit-server %s. See [CHANGELOG.md](CHANGELOG.md).\n\n' "$VERSION"
+            fi
+            printf 'Install: `npm i throttlekit-server@%s`\n' "$VERSION"
+          } > "$NOTES_FILE"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "throttlekit-server $VERSION" --notes-file "$NOTES_FILE" --prerelease
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "throttlekit-server $VERSION" --notes-file "$NOTES_FILE" --prerelease --verify-tag
+          fi
