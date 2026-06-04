@@ -78,7 +78,9 @@ depend on their exact shape.
   `learnedReservation`, `predictiveReservation`, `tokenBudget` / `distributedTokenBudget`,
   `fairShare` / `weightedFairShare`. (The `twoTier` *modes* — `strict` / `cached-deny` / fixed-`batch`
   `leased` — are stable; the learned sizers are the experimental part.)
-- **Sketches & analytics:** `sketchRateLimit`, `mergeableSketch`, `withAnalytics`.
+- **Sketches & analytics:** `sketchRateLimit`, `mergeableSketch`, `withAnalytics`, and the admission
+  observability taps `admissionTap` / `withAdmissionAnalytics` (the in-process telemetry that powers the
+  ThrottleKit Lens dashboard — both read only state `unifiedAdmission` already computes).
 
 ## Explicitly out of scope at `1.0`
 

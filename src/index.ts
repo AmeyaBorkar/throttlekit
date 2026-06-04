@@ -136,6 +136,7 @@ export { tapDecisions } from "./observability/tap";
 export type { DecisionEvent, DecisionKind, DecisionTap } from "./observability/tap";
 export {
   adaptiveThrottle,
+  admissionTap,
   criticalFractile,
   distributedTokenBudget,
   fairShare,
@@ -150,10 +151,19 @@ export {
   unifiedAdmission,
   weightedFairShare,
   weightedMaxMin,
+  withAdmissionAnalytics,
 } from "./admission";
 export type {
   AdaptiveThrottle,
   AdaptiveThrottleOptions,
+  AdmissionAnalyticsAdmitter,
+  AdmissionAnalyticsOptions,
+  AdmissionAnalyticsSnapshot,
+  AdmissionEvent,
+  AdmissionHeavyHitter,
+  AdmissionKind,
+  AdmissionLane,
+  AdmissionTap,
   DistributedTokenBudgetMeter,
   DistributedTokenBudgetOptions,
   FairShareLimiter,

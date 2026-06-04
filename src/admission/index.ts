@@ -1079,3 +1079,21 @@ export type {
  */
 export { solveFluidLp } from "./fluid-lp";
 export type { FluidLpInput, FluidLpSolution, WorkloadType } from "./fluid-lp";
+
+// ── Primitive 10: admission observability (the ThrottleKit Lens taps, @experimental) ────────────
+
+/**
+ * The multi-axis observability taps that power the ThrottleKit Lens dashboard: {@link admissionTap}
+ * (the `tapDecisions` sibling for a `UnifiedAdmitter`) and {@link withAdmissionAnalytics} (the
+ * lane-segmented fork of `withAnalytics`). Both read only state `unifiedAdmission` already computes, so
+ * they add no hot-path store reads. @experimental — see STABILITY.md.
+ */
+export { admissionTap } from "./tap";
+export type { AdmissionEvent, AdmissionKind, AdmissionLane, AdmissionTap } from "./tap";
+export { withAdmissionAnalytics } from "./analytics";
+export type {
+  AdmissionAnalyticsAdmitter,
+  AdmissionAnalyticsOptions,
+  AdmissionAnalyticsSnapshot,
+  AdmissionHeavyHitter,
+} from "./analytics";
