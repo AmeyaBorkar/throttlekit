@@ -13,9 +13,10 @@ import { readFileSync } from "node:fs";
 import type { FailMode } from "throttlekit";
 
 import { serve } from "./grpc.js";
+import { type LensWiredServer, serveWithLens } from "./lens.js";
 import { createServerCredentials, createStore, isSecure } from "./runtime.js";
 import type { StoreType } from "./runtime.js";
-import { createRateLimiterServiceFromConfig } from "./service.js";
+import { type RateLimiterService, createRateLimiterServiceFromConfig } from "./service.js";
 
 interface Args {
   config?: string;
@@ -36,11 +37,24 @@ interface Args {
   tlsCert?: string;
   tlsKey?: string;
   tlsCa?: string;
+  lens: boolean;
+  lensHost: string;
+  lensPort: number;
+  lensToken?: string;
+  lensAggregator?: string;
   help: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { host: "0.0.0.0", port: 50051, fail: "open", help: false };
+  const args: Args = {
+    host: "0.0.0.0",
+    port: 50051,
+    fail: "open",
+    help: false,
+    lens: true,
+    lensHost: "127.0.0.1",
+    lensPort: 9090,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     switch (arg) {
@@ -112,6 +126,27 @@ function parseArgs(argv: string[]): Args {
       case "--tls-ca":
         args.tlsCa = argv[++i];
         break;
+      case "--lens": {
+        // On by default; `--lens off` disables, `--lens on` is explicit, a bare `--lens` stays on.
+        const next = argv[i + 1];
+        if (next === "off" || next === "on") {
+          args.lens = next === "on";
+          i++;
+        }
+        break;
+      }
+      case "--lens-host":
+        args.lensHost = argv[++i] ?? args.lensHost;
+        break;
+      case "--lens-port":
+        args.lensPort = Number(argv[++i]);
+        break;
+      case "--lens-token":
+        args.lensToken = argv[++i];
+        break;
+      case "--lens-aggregator":
+        args.lensAggregator = argv[++i];
+        break;
       default:
         throw new Error(`unknown argument: ${arg}`);
     }
@@ -143,6 +178,11 @@ Options:
       --tls-cert <path>   PEM server certificate  ┐ enable TLS
       --tls-key <path>    PEM server private key   ┘
       --tls-ca <path>     PEM CA bundle ⇒ require + verify client certs (mTLS)
+      --lens [on|off]     serve the read-only Lens dashboard alongside gRPC (default on, loopback)
+      --lens-host <host>  Lens bind host (default 127.0.0.1; a non-loopback host warns + wants a token)
+      --lens-port <port>  Lens bind port (default 9090)
+      --lens-token <tok>  require Authorization: Bearer <tok> on every Lens request
+      --lens-aggregator <url>  push this node's snapshot to a fleet Lens aggregator
   -h, --help              show this help
 
 Serves throttlekit.v1.RateLimiter. A denial is a normal Decision (allowed:false), not an RPC error.`;
@@ -163,6 +203,9 @@ async function main(): Promise<void> {
   }
   if (!Number.isInteger(args.port) || args.port < 0) {
     throw new Error(`--port must be a non-negative integer, got ${args.port}`);
+  }
+  if (args.lens && (!Number.isInteger(args.lensPort) || args.lensPort < 0)) {
+    throw new Error(`--lens-port must be a non-negative integer, got ${args.lensPort}`);
   }
 
   const tls = { certPath: args.tlsCert, keyPath: args.tlsKey, caPath: args.tlsCa };
@@ -187,10 +230,21 @@ async function main(): Promise<void> {
     dynamodbPrefix: args.dynamodbPrefix,
     dynamodbCreateTable: args.dynamodbCreateTable,
   });
-  const service = createRateLimiterServiceFromConfig(text, {
-    ...(store !== undefined ? { store } : {}),
-    fail: args.fail,
-  });
+  const loadOptions = store !== undefined ? { store } : {};
+  let lensWired: LensWiredServer | undefined;
+  let service: RateLimiterService;
+  if (args.lens) {
+    lensWired = await serveWithLens(text, loadOptions, args.fail, mode, {
+      host: args.lensHost,
+      port: args.lensPort,
+      ...(args.lensToken !== undefined ? { token: args.lensToken } : {}),
+      ...(args.lensAggregator !== undefined ? { aggregatorUrl: args.lensAggregator } : {}),
+      nodeId: `${args.host}:${args.port}`,
+    });
+    service = lensWired.service;
+  } else {
+    service = createRateLimiterServiceFromConfig(text, { ...loadOptions, fail: args.fail });
+  }
   const running = await serve({
     service,
     host: args.host,
@@ -204,14 +258,23 @@ async function main(): Promise<void> {
       `[${mode}, ${security}, fail=${args.fail}] ` +
       `(${service.policies().length} policies: ${service.policies().join(", ")})`,
   );
+  if (lensWired !== undefined) {
+    console.log(
+      `  ↳ Lens dashboard on ${lensWired.lens.url}${
+        args.lensAggregator !== undefined ? ` (pushing to ${args.lensAggregator})` : ""
+      }`,
+    );
+  }
 
   let closing = false;
   const shutdown = (signal: string): void => {
     if (closing) return;
     closing = true;
     console.log(`\n${signal} received, draining…`);
-    running
-      .close()
+    if (lensWired !== undefined) lensWired.stopPush();
+    Promise.resolve()
+      .then(() => (lensWired !== undefined ? lensWired.lens.close() : undefined))
+      .then(() => running.close())
       .then(() => dispose())
       .then(() => process.exit(0));
   };

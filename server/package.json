@@ -1,6 +1,6 @@
 {
   "name": "throttlekit-server",
-  "version": "0.1.0-experimental.4",
+  "version": "0.1.0-experimental.5",
   "description": "gRPC service door for ThrottleKit — run the rate-limiting core as a network service for polyglot clients.",
   "repository": {
     "type": "git",
@@ -41,7 +41,8 @@
     "@grpc/grpc-js": "^1.12.5",
     "@grpc/proto-loader": "^0.7.13",
     "ioredis": "^5.4.1",
-    "throttlekit": "^1.0.1"
+    "throttlekit": "^1.1.0",
+    "throttlekit-lens": "0.1.0-experimental.0"
   },
   "optionalDependencies": {
     "@aws-sdk/client-dynamodb": "^3.700.0",

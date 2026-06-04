@@ -4,6 +4,26 @@ All notable changes to **throttlekit-server** are documented here. The format fo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This server tracks the frozen `throttlekit` 1.0
 core's public, frozen API and versions independently of it (it is pre-1.0 / experimental).
 
+## [0.1.0-experimental.5] — 2026-06-04
+
+### Added
+
+- **Built-in `--lens` dashboard (on by default, loopback-bound).** `throttlekit-server --config …` now
+  serves the **ThrottleKit Lens** monitoring dashboard alongside the gRPC service — live binding-axis
+  attribution (which of rate / concurrency / cost is throttling each key — the one view no other
+  rate-limiter dashboard can render), the full ops board, and a proven-bound Guarantee panel. The server
+  taps each limiter + unified admitter into an in-process Lens hub (synchronous, exception-swallowing,
+  O(1) — the gRPC decisions are unchanged) and serves the read-only UI on `127.0.0.1:9090` by default.
+  - `--lens off` disables it; `--lens-host` / `--lens-port` move or expose it (a non-loopback host warns
+    and wants a `--lens-token`); `--lens-token <tok>` requires `Authorization: Bearer <tok>` on the Lens;
+    `--lens-aggregator <url>` pushes this node's snapshot to a fleet Lens aggregator.
+  - Powered by the new **`throttlekit-lens`** package; requires **`throttlekit >= 1.1.0`** (the
+    `@experimental` `admissionTap` / `withAdmissionAnalytics` telemetry primitives).
+
+### Changed
+
+- Bumped the `throttlekit` dependency to `^1.1.0` and added `throttlekit-lens`.
+
 ## [0.1.0-experimental.4] — 2026-06-04
 
 ### Added
