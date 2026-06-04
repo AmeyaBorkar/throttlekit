@@ -1,7 +1,7 @@
 /**
- * The wire shapes the Lens transport speaks (`GET /api/snapshot` + the SSE `/api/stream`). All shapes are
- * append-only (add optional fields; never remove/repurpose) — `@experimental`, outside throttlekit's 1.x
- * SemVer freeze. See `research/lens/DESIGN.md`.
+ * The snapshot shapes the in-process telemetry hub produces and the `--tui` dashboard renders. All shapes
+ * are internal to `throttlekit-server` (no wire/HTTP transport) — the hub is read by the terminal renderer
+ * in the same process. See `server/src/tui.ts`.
  */
 
 import type {
@@ -12,7 +12,7 @@ import type {
   UnifiedAxis,
 } from "throttlekit";
 
-/** Per-process (one instance) or fleet-merged (an aggregator over many instances). */
+/** Per-process (one instance) or fleet-merged (reserved; the TUI renders a single process today). */
 export type LensMode = "process" | "fleet";
 
 /** Snapshot envelope metadata. */
@@ -21,13 +21,13 @@ export interface LensMeta {
   generatedAt: number;
   /** The analytics window width (ms) the counters are aggregated over. */
   windowMs: number;
-  /** `"process"` for a single instance; `"fleet"` for an aggregator merge. */
+  /** `"process"` for a single instance. */
   mode: LensMode;
-  /** The Lens package version. */
+  /** The hub/dashboard version. */
   lensVersion: string;
-  /** A stable id for this node (set when colocated in a server or pushing to an aggregator). */
+  /** A stable id for this node (the server's host:port). */
   nodeId?: string;
-  /** Number of nodes merged (fleet mode only). */
+  /** Number of nodes merged (reserved). */
   fleetNodes?: number;
 }
 
@@ -44,9 +44,9 @@ export interface LensPolicySnapshot {
   /** Configured axes for an admitter, when known. */
   axes?: UnifiedAxis[];
   analytics: AnalyticsSnapshot | AdmissionAnalyticsSnapshot;
-  /** Most recently observed effective ceiling (drives the headroom / Guarantee panel). */
+  /** Most recently observed effective ceiling (drives the headroom / Guarantee readout). */
   limit?: number;
-  /** Recent admit-path latency over a small ring (the latency panel). */
+  /** Recent admit-path latency over a small ring (the latency readout). */
   latency?: { avgMs: number; maxMs: number; n: number };
 }
 
@@ -67,7 +67,7 @@ export interface LensGuardSnapshot {
   fenced?: boolean;
 }
 
-/** A generic stats source (e.g. weighted-fair-escrow `stats()`) the UI renders by `kind`. */
+/** A generic stats source (e.g. weighted-fair-escrow `stats()`) the dashboard renders by `kind`. */
 export interface LensStatsSnapshot {
   name: string;
   kind: string;
@@ -75,7 +75,7 @@ export interface LensStatsSnapshot {
   value: unknown;
 }
 
-/** One row in the live denial feed / click-to-snapshot drawer. */
+/** One row in the live denial feed. */
 export interface LensDenialRow {
   at: number;
   policy: string;
@@ -83,9 +83,9 @@ export interface LensDenialRow {
   /** The binding lane (admitters only); absent for a plain-limiter denial. */
   lane?: AdmissionLane;
   allowed: boolean;
-  /** The decision that produced this denial — the "why, with numbers" the drawer shows. */
+  /** The decision that produced this denial — the "why, with numbers". */
   decision: Decision;
-  /** Per-axis decisions (admitters) for the drawer's exact-numbers breakdown. */
+  /** Per-axis decisions (admitters) for the exact-numbers breakdown. */
   perAxis?: Partial<Record<UnifiedAxis, Decision>>;
 }
 
@@ -95,7 +95,7 @@ export interface LensFenceRow {
   guard: string;
 }
 
-/** Optional store/fleet health, set by the host (e.g. the server integration). */
+/** Optional store/fleet health, set by the host (the server integration). */
 export interface LensHealth {
   backend?: string;
   reachable?: boolean;
@@ -104,7 +104,7 @@ export interface LensHealth {
   reclaimCount?: number;
 }
 
-/** The full snapshot returned by `GET /api/snapshot` and pushed as the SSE `snapshot` event. */
+/** The full snapshot the hub produces each frame; the TUI renders it. */
 export interface LensSnapshot {
   meta: LensMeta;
   policies: LensPolicySnapshot[];

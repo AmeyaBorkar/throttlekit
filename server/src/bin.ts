@@ -13,10 +13,12 @@ import { readFileSync } from "node:fs";
 import type { FailMode } from "throttlekit";
 
 import { serve } from "./grpc.js";
-import { type LensWiredServer, serveWithLens } from "./lens.js";
+import type { LensHub } from "./monitor/hub.js";
+import { wireMonitor } from "./monitor/wire.js";
 import { createServerCredentials, createStore, isSecure } from "./runtime.js";
 import type { StoreType } from "./runtime.js";
 import { type RateLimiterService, createRateLimiterServiceFromConfig } from "./service.js";
+import { type RunningTui, canRunTui, runTui } from "./tui.js";
 
 interface Args {
   config?: string;
@@ -37,11 +39,7 @@ interface Args {
   tlsCert?: string;
   tlsKey?: string;
   tlsCa?: string;
-  lens: boolean;
-  lensHost: string;
-  lensPort: number;
-  lensToken?: string;
-  lensAggregator?: string;
+  tui: boolean;
   help: boolean;
 }
 
@@ -51,9 +49,7 @@ function parseArgs(argv: string[]): Args {
     port: 50051,
     fail: "open",
     help: false,
-    lens: true,
-    lensHost: "127.0.0.1",
-    lensPort: 9090,
+    tui: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -126,26 +122,8 @@ function parseArgs(argv: string[]): Args {
       case "--tls-ca":
         args.tlsCa = argv[++i];
         break;
-      case "--lens": {
-        // On by default; `--lens off` disables, `--lens on` is explicit, a bare `--lens` stays on.
-        const next = argv[i + 1];
-        if (next === "off" || next === "on") {
-          args.lens = next === "on";
-          i++;
-        }
-        break;
-      }
-      case "--lens-host":
-        args.lensHost = argv[++i] ?? args.lensHost;
-        break;
-      case "--lens-port":
-        args.lensPort = Number(argv[++i]);
-        break;
-      case "--lens-token":
-        args.lensToken = argv[++i];
-        break;
-      case "--lens-aggregator":
-        args.lensAggregator = argv[++i];
+      case "--tui":
+        args.tui = true;
         break;
       default:
         throw new Error(`unknown argument: ${arg}`);
@@ -178,11 +156,7 @@ Options:
       --tls-cert <path>   PEM server certificate  ┐ enable TLS
       --tls-key <path>    PEM server private key   ┘
       --tls-ca <path>     PEM CA bundle ⇒ require + verify client certs (mTLS)
-      --lens [on|off]     serve the read-only Lens dashboard alongside gRPC (default on, loopback)
-      --lens-host <host>  Lens bind host (default 127.0.0.1; a non-loopback host warns + wants a token)
-      --lens-port <port>  Lens bind port (default 9090)
-      --lens-token <tok>  require Authorization: Bearer <tok> on every Lens request
-      --lens-aggregator <url>  push this node's snapshot to a fleet Lens aggregator
+      --tui               live terminal dashboard alongside gRPC (interactive TTY only; q to quit)
   -h, --help              show this help
 
 Serves throttlekit.v1.RateLimiter. A denial is a normal Decision (allowed:false), not an RPC error.`;
@@ -203,9 +177,6 @@ async function main(): Promise<void> {
   }
   if (!Number.isInteger(args.port) || args.port < 0) {
     throw new Error(`--port must be a non-negative integer, got ${args.port}`);
-  }
-  if (args.lens && (!Number.isInteger(args.lensPort) || args.lensPort < 0)) {
-    throw new Error(`--lens-port must be a non-negative integer, got ${args.lensPort}`);
   }
 
   const tls = { certPath: args.tlsCert, keyPath: args.tlsKey, caPath: args.tlsCa };
@@ -231,55 +202,59 @@ async function main(): Promise<void> {
     dynamodbCreateTable: args.dynamodbCreateTable,
   });
   const loadOptions = store !== undefined ? { store } : {};
-  let lensWired: LensWiredServer | undefined;
+
+  // `--tui` taps every policy into a telemetry hub for the live dashboard. A TUI owns the terminal, so it
+  // needs an interactive TTY — fall back to the plain (untapped) service otherwise.
+  const tui = args.tui && canRunTui();
+  if (args.tui && !tui) {
+    console.warn("warning: --tui needs an interactive terminal; serving without the dashboard.");
+  }
+  let hub: LensHub | undefined;
   let service: RateLimiterService;
-  if (args.lens) {
-    lensWired = await serveWithLens(text, loadOptions, args.fail, mode, {
-      host: args.lensHost,
-      port: args.lensPort,
-      ...(args.lensToken !== undefined ? { token: args.lensToken } : {}),
-      ...(args.lensAggregator !== undefined ? { aggregatorUrl: args.lensAggregator } : {}),
-      nodeId: `${args.host}:${args.port}`,
-    });
-    service = lensWired.service;
+  if (tui) {
+    const wired = wireMonitor(text, loadOptions, args.fail, mode, `${args.host}:${args.port}`);
+    service = wired.service;
+    hub = wired.hub;
   } else {
     service = createRateLimiterServiceFromConfig(text, { ...loadOptions, fail: args.fail });
   }
+
   const running = await serve({
     service,
     host: args.host,
     port: args.port,
     credentials: createServerCredentials(tls),
   });
-
   const security = args.tlsCa !== undefined ? "mTLS" : secure ? "TLS" : "insecure";
-  console.log(
-    `throttlekit-server listening on ${args.host}:${running.port} ` +
-      `[${mode}, ${security}, fail=${args.fail}] ` +
-      `(${service.policies().length} policies: ${service.policies().join(", ")})`,
-  );
-  if (lensWired !== undefined) {
-    console.log(
-      `  ↳ Lens dashboard on ${lensWired.lens.url}${
-        args.lensAggregator !== undefined ? ` (pushing to ${args.lensAggregator})` : ""
-      }`,
-    );
-  }
 
+  let tuiHandle: RunningTui | undefined;
   let closing = false;
   const shutdown = (signal: string): void => {
     if (closing) return;
     closing = true;
-    console.log(`\n${signal} received, draining…`);
-    if (lensWired !== undefined) lensWired.stopPush();
+    if (tuiHandle !== undefined) tuiHandle.stop(); // restore the terminal before logging anything
+    if (!tui) console.log(`\n${signal} received, draining…`);
     Promise.resolve()
-      .then(() => (lensWired !== undefined ? lensWired.lens.close() : undefined))
       .then(() => running.close())
       .then(() => dispose())
       .then(() => process.exit(0));
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  if (tui && hub !== undefined) {
+    // The dashboard owns the screen; its header carries the listening status, so don't log over it.
+    tuiHandle = runTui(hub, {
+      nodeId: `${args.host}:${args.port}`,
+      onQuit: () => shutdown("quit"),
+    });
+  } else {
+    console.log(
+      `throttlekit-server listening on ${args.host}:${running.port} ` +
+        `[${mode}, ${security}, fail=${args.fail}] ` +
+        `(${service.policies().length} policies: ${service.policies().join(", ")})`,
+    );
+  }
 }
 
 main().catch((err) => {

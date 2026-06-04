@@ -1,12 +1,12 @@
 /**
- * The Lens **telemetry hub** — a zero-dependency, in-process aggregator of ThrottleKit traffic.
+ * The **telemetry hub** — a zero-dependency, in-process aggregator of ThrottleKit traffic.
  *
- * Register the limiters / unified admitters / concurrency guards your app uses and the hub returns
+ * Register the limiters / unified admitters / concurrency guards the server serves and the hub returns
  * *tapped* wrappers to use in their place; it then maintains a rolling per-window snapshot (allow/deny,
  * per-axis denials for admitters, top-K heavy hitters, observed ceiling + admit-path latency, guard
  * health) plus a bounded live feed of recent denials (each with its exact per-axis decision) and
- * self-fence events. `snapshot()` is what `GET /api/snapshot` serves; `subscribe()` is what the SSE
- * stream pushes.
+ * self-fence events. `snapshot()` is what the `--tui` dashboard renders each frame; `subscribe()` feeds
+ * the live denial / fence feed.
  *
  * Universal by design: a plain `rateLimit()` feeds the full board via {@link tapDecisions} + `withAnalytics`;
  * a `unifiedAdmission` additionally lights up the binding-axis lane via `admissionTap` +
@@ -42,10 +42,10 @@ import type {
   LensStatsSnapshot,
 } from "./types.js";
 
-/** The Lens package version, stamped into every snapshot's `meta.lensVersion`. Keep in sync with package.json. */
-export const LENS_VERSION = "0.1.0-experimental.1";
+/** The hub/dashboard version, stamped into every snapshot's `meta.lensVersion`. */
+export const MONITOR_VERSION = "0.2.0-experimental.0";
 
-/** How many recent admit-path latencies to retain per policy for the latency panel. */
+/** How many recent admit-path latencies to retain per policy for the latency readout. */
 const LATENCY_RING = 256;
 /** The unified axes, for cleaning a per-axis snapshot down to its defined entries. */
 const AXES: readonly UnifiedAxis[] = ["rate", "concurrency", "cost"];
@@ -56,15 +56,15 @@ export interface LensHubOptions {
   windowMs?: number;
   /** Heavy-hitter top-K depth per summary. Default 10. */
   topK?: number;
-  /** Max recent denial / fence rows retained for the live feed + drawer. Default 200. */
+  /** Max recent denial / fence rows retained for the live feed. Default 200. */
   recentLimit?: number;
   /** Injected clock (deterministic tests). Default the system clock. */
   clock?: Clock;
-  /** A stable id for this node, surfaced in `meta.nodeId` (server / fleet mode). */
+  /** A stable id for this node, surfaced in `meta.nodeId`. */
   nodeId?: string;
 }
 
-/** A live subscriber to the hub's denial / fence feed (drives the SSE stream). */
+/** A live subscriber to the hub's denial / fence feed. */
 export interface LensListener {
   onDenial?: (row: LensDenialRow) => void;
   onFence?: (row: LensFenceRow) => void;
@@ -78,7 +78,7 @@ export interface LensHub {
   trackAdmitter(name: string, admitter: UnifiedAdmitter): UnifiedAdmitter;
   /** Track a concurrency guard for the health panel; returns it unchanged. */
   trackGuard(name: string, guard: ConcurrencyGuard): ConcurrencyGuard;
-  /** Track an arbitrary `stats()`-style source (e.g. weighted-fair-escrow) the UI renders by `kind`. */
+  /** Track an arbitrary `stats()`-style source (e.g. weighted-fair-escrow) rendered by `kind`. */
   trackStats(name: string, kind: string, read: () => unknown): void;
   /** Record a self-fence event (wire a distributed guard's `onFenced` to this). */
   recordFence(guard: string): void;
@@ -96,7 +96,7 @@ interface PolicyMeta {
   lat: RingBuffer<number>;
 }
 
-/** Create an in-process Lens telemetry hub. */
+/** Create an in-process telemetry hub. */
 export function createLensHub(options: LensHubOptions = {}): LensHub {
   const windowMs = options.windowMs ?? 60_000;
   const topK = options.topK ?? 10;
@@ -118,8 +118,8 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
 
   const emitDenial = (row: LensDenialRow): void => {
     recentDenials.push(row);
-    // Isolate each subscriber: a dead SSE socket (or any throwing listener) must never break the feed
-    // for the other live dashboards — and, since this runs inside the tap, never reach the control path.
+    // Isolate each subscriber: a throwing listener must never break the feed for the others — and, since
+    // this runs inside the tap, never reach the control path.
     for (const l of listeners) {
       try {
         l.onDenial?.(row);
@@ -224,7 +224,7 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
         value: safeRead(read),
       }));
       const snap: LensSnapshot = {
-        meta: { generatedAt: clock.now(), windowMs, mode: "process", lensVersion: LENS_VERSION },
+        meta: { generatedAt: clock.now(), windowMs, mode: "process", lensVersion: MONITOR_VERSION },
         policies,
         guards: guardSnaps,
         stats,
@@ -279,8 +279,8 @@ function guardSnapshot(name: string, guard: ConcurrencyGuard): LensGuardSnapshot
   try {
     s = guard.stats() as Record<string, unknown>;
   } catch {
-    // A guard whose stats() throws must never crash snapshot() — which is also called from the SSE
-    // setInterval, where an uncaught throw would take down the host process.
+    // A guard whose stats() throws must never crash snapshot() — which is also called from the render
+    // loop, where an uncaught throw would take down the host process.
     s = {};
   }
   const num = (v: unknown): number => (typeof v === "number" ? v : 0);

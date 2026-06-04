@@ -16,8 +16,7 @@
       "wire/vectors/golden-vectors.json",
       "wire/scripts/manifest.json",
       "wire/scripts/*.lua",
-      "server",
-      "lens"
+      "server"
     ]
   },
   "formatter": {

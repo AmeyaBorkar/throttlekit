@@ -3,9 +3,9 @@
  * `toArray()` snapshot (O(size), taken only at snapshot time, off the hot path).
  *
  * The hub records each denial / fence / latency sample from inside the *synchronous* tap that runs on every
- * decision, so `push` MUST be O(1). The earlier `Array.prototype.push` + `Array.prototype.shift` ring was
- * O(n) per append once full — which silently made the documented "O(1) tap" guarantee false under a
- * sustained denial stream. This restores it.
+ * decision, so `push` MUST be O(1). A naive `Array.prototype.push` + `Array.prototype.shift` ring is O(n)
+ * per append once full — which would silently make the documented "O(1) tap" guarantee false under a
+ * sustained denial stream. This keeps it O(1).
  */
 export class RingBuffer<T> {
   readonly #cap: number;

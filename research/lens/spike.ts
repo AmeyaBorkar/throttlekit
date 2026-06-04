@@ -48,7 +48,11 @@ function reconstruct(last: LastDecisions): UnifiedAxis | undefined {
 }
 
 /** The single lane a result is attributed to in the Sankey. Exactly one bucket per event. */
-function laneOf(r: { decision: Decision; bindingAxis?: UnifiedAxis; policyDenied?: boolean }): string {
+function laneOf(r: {
+  decision: Decision;
+  bindingAxis?: UnifiedAxis;
+  policyDenied?: boolean;
+}): string {
   if (r.decision.allowed) return "allow";
   if (r.bindingAxis !== undefined) return r.bindingAxis;
   if (r.policyDenied) return "policy";
@@ -114,13 +118,22 @@ async function main(): Promise<void> {
       cost: rateLimit({ strategy: fixedWindow({ limit: 10_000, windowMs: HOUR }) }),
     });
     const first = await a.admit({ key: "k" }); // holds the only slot (NOT released)
-    check(first.decision.allowed && first.bindingAxis === undefined, "CONC: first admit allowed, no binding axis");
+    check(
+      first.decision.allowed && first.bindingAxis === undefined,
+      "CONC: first admit allowed, no binding axis",
+    );
     tally[laneOf(first)] = (tally[laneOf(first)] ?? 0) + 1;
     const second = await a.admit({ key: "k" }); // no slot left -> concurrency binds
     const last = a.lastDecisions();
     check(second.bindingAxis === "concurrency", "CONC: second admit bound by concurrency");
-    check(last.rate === undefined && last.cost === undefined, "CONC: rate+cost short-circuited (concurrency is first)");
-    check(second.bindingAxis === reconstruct(last), "CONC: bindingAxis === reconstruct(lastDecisions)");
+    check(
+      last.rate === undefined && last.cost === undefined,
+      "CONC: rate+cost short-circuited (concurrency is first)",
+    );
+    check(
+      second.bindingAxis === reconstruct(last),
+      "CONC: bindingAxis === reconstruct(lastDecisions)",
+    );
     tally[laneOf(second)] = (tally[laneOf(second)] ?? 0) + 1;
     first.release();
     second.release();
@@ -137,7 +150,10 @@ async function main(): Promise<void> {
     // value 0.5 < bid(2) => policy deny; per-axis budgets untouched (decisions stay undefined).
     const denied = await a.admit({ key: "k", cost: 1, value: 0.5 });
     const last = a.lastDecisions();
-    check(!denied.decision.allowed && denied.policyDenied === true, "POLICY: low-value request denied by policy");
+    check(
+      !denied.decision.allowed && denied.policyDenied === true,
+      "POLICY: low-value request denied by policy",
+    );
     check(denied.bindingAxis === undefined, "POLICY: policy deny has NO binding axis");
     check(
       last.rate === undefined && last.cost === undefined,
@@ -147,7 +163,10 @@ async function main(): Promise<void> {
     denied.release();
     // value 10 >= bid(2) => admitted.
     const ok = await a.admit({ key: "k", cost: 1, value: 10 });
-    check(ok.decision.allowed && ok.bindingAxis === undefined, "POLICY: high-value request admitted");
+    check(
+      ok.decision.allowed && ok.bindingAxis === undefined,
+      "POLICY: high-value request admitted",
+    );
     tally[laneOf(ok)] = (tally[laneOf(ok)] ?? 0) + 1;
     ok.release();
   }
@@ -163,7 +182,9 @@ async function main(): Promise<void> {
     console.log("  lanes:", JSON.stringify(tally));
   }
 
-  console.log("# Universal path: plain rateLimit() attributed by (strategy,key) from tapDecisions alone");
+  console.log(
+    "# Universal path: plain rateLimit() attributed by (strategy,key) from tapDecisions alone",
+  );
   {
     type Ev = { key: string; strategy: string; allowed: boolean };
     const events: Ev[] = [];
@@ -182,7 +203,10 @@ async function main(): Promise<void> {
     }
     check(strategySeen === "gcra", "universal: events carry the strategy name (gcra)");
     check(events.length === 7, `universal: tap saw every check (7), got ${events.length}`);
-    check(denies.get("alice") === 2, `universal: alice denied twice (5 checks, burst 3), got ${denies.get("alice") ?? 0}`);
+    check(
+      denies.get("alice") === 2,
+      `universal: alice denied twice (5 checks, burst 3), got ${denies.get("alice") ?? 0}`,
+    );
     check(!denies.has("bob"), "universal: bob never denied (2 checks < burst 3)");
   }
 
