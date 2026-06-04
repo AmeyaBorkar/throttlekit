@@ -195,7 +195,7 @@ throttlekit-server --config .throttlekit.yaml \
 
 | Flag | Effect |
 |---|---|
-| `--store <backend>` | pick the backend explicitly: `memory` \| `redis` \| `postgres` (inferred from the URL flags if omitted) |
+| `--store <backend>` | pick the backend explicitly: `memory` \| `redis` \| `postgres` \| `dynamodb` (inferred from the URL flags if omitted) |
 | `--redis <url>` | share one Redis store across instances (one fleet-wide limit); omit for in-process memory |
 | `--redis-prefix <p>` | key prefix for the shared Redis store |
 | `--postgres-url <url>` | back the fleet with a shared **Postgres** store (no Redis required) |

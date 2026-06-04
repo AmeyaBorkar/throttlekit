@@ -1,0 +1,35 @@
+# Dev backends for ThrottleKit's gated store tests. One command brings up Redis, Postgres, and a local
+# DynamoDB on the ports the suites expect — a developer convenience, NOT a production topology.
+#
+#   docker compose -f docker-compose.stores.yml up -d
+#
+# Then point the gated suites at them (the core's Redis/Postgres store + coordinator tests, and the
+# server's gated store e2e):
+#
+#   THROTTLEKIT_TEST_REDIS=redis://localhost:6380 \
+#   THROTTLEKIT_TEST_POSTGRES=postgres://throttlekit:throttlekit@localhost:5433/throttlekit \
+#   THROTTLEKIT_TEST_DYNAMODB=http://localhost:8000 \
+#     npx vitest run --no-file-parallelism
+#
+# Non-default host ports (6380 / 5433 / 8000) so this won't clobber a Redis/Postgres you already run.
+services:
+  tk-redis:
+    image: redis:7-alpine
+    container_name: tk-redis
+    ports: ["6380:6379"]
+
+  tk-postgres:
+    image: postgres:16-alpine
+    container_name: tk-postgres
+    environment:
+      POSTGRES_USER: throttlekit
+      POSTGRES_PASSWORD: throttlekit
+      POSTGRES_DB: throttlekit
+    ports: ["5433:5432"]
+
+  # dynamodb-local ignores credentials, but the AWS SDK still requires some to be present — pass dummy
+  # AWS_* env vars (or `--store dynamodb --dynamodb-create-table`) when pointing the server at this.
+  tk-dynamodb:
+    image: amazon/dynamodb-local
+    container_name: tk-dynamodb
+    ports: ["8000:8000"]

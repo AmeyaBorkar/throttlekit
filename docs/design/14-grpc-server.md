@@ -5,9 +5,11 @@
 
 ## Purpose
 
-`throttlekit-server` exposes the frozen `throttlekit` core over gRPC. Point multiple instances at one
-`--redis` and you have a coordinated fleet enforcing one shared limit. It depends only on the core's public,
-frozen API — it adds no surface to the core and keeps the zero-runtime-dependency promise intact. (The core
+`throttlekit-server` exposes the frozen `throttlekit` core over gRPC behind a **pluggable store resolver**.
+Point multiple instances at one shared store — `--redis`, `--postgres-url`, or `--dynamodb-table` — and you
+have a coordinated fleet enforcing one shared limit (or run a single instance on in-process memory). It
+depends only on the core's public, frozen API — it adds no surface to the core and keeps the
+zero-runtime-dependency promise intact. (The core
 is 1.0/frozen; the server evolves independently and is currently experimental/pre-1.0.)
 
 ## Architecture — three clean layers
@@ -43,9 +45,13 @@ and starts an `unref`'d sweeper interval (cleared on close).
 each policy by shape: a `tokenBudget` block → a meter; a `concurrency` block → an admitter (wiring
 `adaptiveConcurrency` + an optional rate `strategy` into `unifiedAdmission`); a `twoTier` block → a leased
 two-tier limiter; a plain rate-limit policy is delegated unchanged to the core's `loadConfig`. The CLI flags
-(`--config`, `--host`, `--port`, `--fail`, `--redis`, `--redis-prefix`, `--tls-cert/-key/-ca`) map to
-resources; a shared `RedisStore` is used when `--redis` is given, else per-policy in-process memory. The CLI
-warns when serving insecure on a non-loopback host, and drains gracefully on SIGINT/SIGTERM.
+(`--config`, `--host`, `--port`, `--fail`, `--store`, `--redis`, `--redis-prefix`, `--postgres-url`,
+`--postgres-table`, `--postgres-prefix`, `--dynamodb-table`, `--dynamodb-region`, `--dynamodb-endpoint`,
+`--dynamodb-prefix`, `--dynamodb-create-table`, `--tls-cert/-key/-ca`) map to resources; `--store` selects
+the shared backend (`memory|redis|postgres|dynamodb`), inferred from the connection signal when omitted
+(`--redis` → redis, `--postgres-url` → postgres, `--dynamodb-table` → dynamodb, else per-policy in-process
+memory). The CLI warns when serving insecure on a non-loopback host, and drains gracefully on
+SIGINT/SIGTERM.
 
 ## Design decisions & rationale
 
@@ -70,8 +76,10 @@ warns when serving insecure on a non-loopback host, and drains gracefully on SIG
 ## Caveats
 
 - Default credentials are insecure; the CLI only *warns* (doesn't refuse) on a non-loopback insecure bind.
-- Token-budget meters and the concurrency lease table are **single-instance** today (the lease table lives in
-  one process's memory; a fleet-shared budget is a future enhancement via the core's distributed primitives).
+- Token-budget meters and the concurrency lease table are **single-instance per server process** today (the
+  lease table lives in one process's memory; a fleet-shared budget is a future enhancement via the core's
+  distributed primitives). Rate-limit decisions, by contrast, are coordinated through the configured shared
+  store (`redis`/`postgres`/`dynamodb`), so they are fleet-wide.
 - The joint-LP `hold`/`value` terms are flagged experimental.
 
 ## What proves it

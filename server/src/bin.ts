@@ -129,7 +129,7 @@ Options:
       --host <host>       bind host (default 0.0.0.0)
   -p, --port <port>       bind port (default 50051)
       --fail open|closed  store-outage policy (default open)
-      --store <backend>   backing store: memory|redis|postgres (inferred from the URL flags if omitted)
+      --store <backend>   backing store: memory|redis|postgres|dynamodb (inferred from the URL flags if omitted)
       --redis <url>       share a Redis store across instances (fleet mode); omit for in-process memory
       --redis-prefix <p>  key prefix for the shared Redis store
       --postgres-url <url>   share a Postgres store across instances (no Redis required)

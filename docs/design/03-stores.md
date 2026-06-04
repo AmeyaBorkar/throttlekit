@@ -84,6 +84,10 @@ These four reach exactness without a Redis, each via the strongest primitive its
 the *same* pure JS transform — there is no backend-specific algorithm to keep in sync — and all encode
 state as the same JSON text for cross-backend bit-identity.
 
+> **Deployment note:** of these four, **Postgres and DynamoDB** can back a Node `throttlekit-server` (via
+> `--store postgres|dynamodb`); **Deno KV and D1** are edge-runtime-only — reachable from inside their
+> runtimes, not through the Node service door.
+
 - **Postgres** wraps the RMW in a transaction guarded by `pg_advisory_xact_lock(hash(key))`, then upserts
   with `INSERT … ON CONFLICT (key) DO UPDATE` (`src/postgres/store.ts:152`). *Why an advisory lock and not
   `SELECT … FOR UPDATE`:* `FOR UPDATE` can't lock a row that doesn't exist yet, so two first-touch

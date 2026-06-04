@@ -26,6 +26,10 @@ Two properties hold for **every** store and matter during an outage:
 
 ## Per‑store outage behaviour
 
+> A Node `throttlekit-server` can host **memory**, **redis**, **postgres**, or **dynamodb**. **D1**, **Deno
+> KV**, and **Durable Objects** run only inside their edge runtimes (Cloudflare / Deno) — reachable there,
+> not through the Node service door. The rows below cover every store in the core regardless of host.
+
 | Store | What "down" means | `apply()` during the outage | State **lost** vs **preserved** | Recovery when it returns |
 |---|---|---|---|---|
 | **MemoryStore** | process crash / restart (no network to fail) | **never rejects** — single‑threaded in‑process RMW | **Lost** on process restart (state is RAM only); fully preserved within the live process | Starts empty → at most one window/burst of over‑admission as counters re‑accrue. Bound the key map with `maxKeys` so a flood can't OOM. |
