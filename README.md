@@ -80,6 +80,7 @@ The incumbents are good at what they do — this is what ThrottleKit adds on top
 | Unified **rate × concurrency × cost** in one decision | – | – | – | **✓** |
 | Weighted-fair share · overload shedding · fixed-memory DDoS sketch | – | – | – | **✓** |
 | Polyglot from one **verified** core (Python today) | – | – | – | **✓** |
+| Live **binding-axis** monitoring dashboard (which axis is throttling) | – | – | – | **✓ (Lens)** |
 | Framework / transport adapters | 1 (Express) | a few | – | **13** |
 | Zero runtime dependencies | – | – | – | **✓** |
 
@@ -151,6 +152,20 @@ Primitives that sit *upstream* of per-key limiters — overload, fairness, and c
 - **`sketchRateLimit`** — cap an unbounded key universe in ~7.4 KB with a Count-Min Sketch that provably never over-admits.
 
 → [Overload, fairness & DDoS](https://github.com/AmeyaBorkar/throttlekit/wiki/Overload-Fairness-and-DDoS)
+
+## Monitoring — the Lens (experimental)
+
+A built-in, **zero-dependency** monitoring dashboard — [`throttlekit-lens`](./lens) — gives *every* limiter the full ops board (throughput, deny rate, top keys, concurrency health, a live denial feed) plus the one view no other rate-limiter dashboard can render: **live binding-axis attribution**. Because `unifiedAdmission` composes rate × concurrency × cost in one decision, the Lens shows **which axis is throttling each key right now** — click a denial for the exact per-axis `Decision` — beside a first-class **Guarantee** panel (live headroom to the TLA⁺-proven overshoot line).
+
+```ts
+import { createLensHub, serveLens } from "throttlekit-lens";
+
+const hub = createLensHub();
+const api = hub.trackLimiter("api", rateLimit({ strategy: gcra({ limit: 100, periodMs: 60_000 }) }));
+const lens = await serveLens(hub); // loopback :9090 — or mount lensHandler() in your app, no extra port
+```
+
+Or get it for free on the [service door](#polyglot--one-core-two-doors-experimental): `throttlekit-server` serves the Lens **on by default** (loopback) alongside gRPC. The taps are synchronous, exception-swallowing, and O(1), so the dashboard can never perturb the control path. → [Monitoring & the Lens](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens)
 
 ## Polyglot — one core, two doors (experimental)
 

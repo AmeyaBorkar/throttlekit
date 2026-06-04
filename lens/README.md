@@ -52,6 +52,23 @@ console.log(`Lens at ${lens.url}`);
 
 Off-by-default in your app (you choose where to mount it); the sidecar **binds to loopback by default**. Exposing it beyond loopback without `tls` or a `token` logs a loud warning. There are **no mutation endpoints** — the surface is strictly read-only, and it exposes keys/tenants, so gate it behind auth/mTLS before exposing it.
 
+## Fleet view + the service door
+
+Each instance serves its own Lens. For a **fleet-global** view, point every node at one aggregator — it merges additive counters and re-tops the heavy hitters across nodes into a single `mode:"fleet"` snapshot the same UI renders:
+
+```ts
+import { createLensAggregator, serveLensAggregator, pushSnapshots } from "throttlekit-lens";
+
+// On the aggregator host:
+const agg = createLensAggregator();
+await serveLensAggregator(agg, { port: 9091, token: process.env.LENS_TOKEN });
+
+// On each node — push this hub's snapshot on a timer:
+pushSnapshots(hub, { url: "http://aggregator:9091", token: process.env.LENS_TOKEN });
+```
+
+Not running your own hub? **[`throttlekit-server`](https://www.npmjs.com/package/throttlekit-server)** serves the Lens **on by default** (`throttlekit-server --config x.yaml` → dashboard on loopback `:9090`), with `--lens-aggregator <url>` to push to the fleet view above.
+
 ## Honest scope
 
 Per-process: each instance serves its own Lens (fleet-global aggregation is a separate aggregator). The numbers are eventually-consistent and per-window; top-K is Space-Saving (over-estimates, never misses a true heavy hitter). The binding-axis lane requires `unifiedAdmission`; a single-axis `rateLimit()` has nothing to decompose.

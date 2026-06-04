@@ -151,6 +151,33 @@ admitter (and `admit` on a rate limiter / meter) return `UNIMPLEMENTED`. Single-
 server is the concurrency authority for its own clients); a fleet-coordinated ceiling via the core's
 `distributedAdaptiveConcurrency` is the planned next step, reachable by the **same** client lifecycle.
 
+## Watch it live — the Lens dashboard
+
+The server serves the **[ThrottleKit Lens](../lens)** — a read-only monitoring dashboard — alongside gRPC,
+**on by default, bound to loopback**:
+
+```bash
+throttlekit-server --config .throttlekit.yaml
+#  → gRPC on :50051  +  Lens dashboard on http://127.0.0.1:9090
+```
+
+It taps every limiter and unified admitter into an in-process hub (synchronous, exception-swallowing, O(1)
+— the gRPC decisions are byte-for-byte unchanged) and renders the full ops board plus **live binding-axis
+attribution**: for a unified policy, *which* of rate / concurrency / cost (or the joint-LP `policy` lane) is
+throttling each key right now. It works for **every** policy — a plain `gcra` limiter gets the board and the
+"why throttled" attribution by policy + key; the axis lane lights up for unified admitters.
+
+| Flag | Effect |
+|---|---|
+| `--lens [on\|off]` | serve the Lens alongside gRPC (default **on**, loopback `:9090`); `--lens off` disables |
+| `--lens-host <h>` / `--lens-port <p>` | move or expose the Lens — a **non-loopback** host warns and wants a `--lens-token` |
+| `--lens-token <tok>` | require `Authorization: Bearer <tok>` on every Lens request |
+| `--lens-aggregator <url>` | push this node's snapshot to a fleet Lens aggregator for one merged fleet view |
+
+Strictly read-only (no mutation endpoints) and it exposes keys/tenants, so the same rule as gRPC applies:
+front anything beyond loopback with a token and/or TLS. See the
+[Monitoring & the Lens](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens) guide.
+
 ## Embed it (Node)
 
 ```ts
@@ -208,6 +235,8 @@ throttlekit-server --config .throttlekit.yaml \
 | `--tls-cert` + `--tls-key` | serve **TLS** |
 | `--tls-ca <ca>` | require + verify client certs ⇒ **mTLS** |
 | `--fail open\|closed` | store-outage policy (default `open`) |
+| `--lens [on\|off]` / `--lens-host` / `--lens-port` | the on-by-default **Lens** dashboard (loopback `:9090`); see [Watch it live](#watch-it-live--the-lens-dashboard) |
+| `--lens-token <tok>` / `--lens-aggregator <url>` | gate the Lens with a bearer token / push snapshots to a fleet aggregator |
 
 **Container** (build from the repo root so the single-source proto in `wire/` is bundled):
 

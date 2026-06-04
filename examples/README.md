@@ -31,3 +31,8 @@ The Redis example needs a reachable Redis (`REDIS_URL`) and the Postgres example
 the package entry points: `throttlekit` (core, `sketchRateLimit`, `mergeableSketch`, `withAnalytics`,
 `adaptiveThrottle`, `fairShare`), `throttlekit/redis`, `throttlekit/postgres`, `throttlekit/express`,
 `throttlekit/fetch`, and `throttlekit/hono` (plus `/next`, `/fastify`, `/koa`).
+
+**Monitoring:** the [ThrottleKit Lens](../lens) dashboard ships as its own `@experimental` package
+(`npm i throttlekit-lens`), so it isn't a `../src` example here — see the
+[Monitoring & the Lens](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens) guide for
+runnable embedded / sidecar / fleet snippets. It's also **on by default** on [`throttlekit-server`](../server).
