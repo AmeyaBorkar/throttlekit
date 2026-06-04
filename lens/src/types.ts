@@ -8,6 +8,7 @@ import type {
   AdmissionAnalyticsSnapshot,
   AdmissionLane,
   AnalyticsSnapshot,
+  Decision,
   UnifiedAxis,
 } from "throttlekit";
 
@@ -43,6 +44,10 @@ export interface LensPolicySnapshot {
   /** Configured axes for an admitter, when known. */
   axes?: UnifiedAxis[];
   analytics: AnalyticsSnapshot | AdmissionAnalyticsSnapshot;
+  /** Most recently observed effective ceiling (drives the headroom / Guarantee panel). */
+  limit?: number;
+  /** Recent admit-path latency over a small ring (the latency panel). */
+  latency?: { avgMs: number; maxMs: number; n: number };
 }
 
 /** A concurrency guard's live health (from `ConcurrencyGuard.stats()`; distributed extras when present). */
@@ -78,6 +83,10 @@ export interface LensDenialRow {
   /** The binding lane (admitters only); absent for a plain-limiter denial. */
   lane?: AdmissionLane;
   allowed: boolean;
+  /** The decision that produced this denial — the "why, with numbers" the drawer shows. */
+  decision: Decision;
+  /** Per-axis decisions (admitters) for the drawer's exact-numbers breakdown. */
+  perAxis?: Partial<Record<UnifiedAxis, Decision>>;
 }
 
 /** One self-fence event in the live concurrency fence feed. */

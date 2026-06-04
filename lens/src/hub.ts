@@ -3,9 +3,10 @@
  *
  * Register the limiters / unified admitters / concurrency guards your app uses and the hub returns
  * *tapped* wrappers to use in their place; it then maintains a rolling per-window snapshot (allow/deny,
- * per-axis denials for admitters, top-K heavy hitters, guard health) plus a bounded live feed of recent
- * denials and self-fence events. `snapshot()` is what `GET /api/snapshot` serves; `subscribe()` is what the
- * SSE stream pushes.
+ * per-axis denials for admitters, top-K heavy hitters, observed ceiling + admit-path latency, guard
+ * health) plus a bounded live feed of recent denials (each with its exact per-axis decision) and
+ * self-fence events. `snapshot()` is what `GET /api/snapshot` serves; `subscribe()` is what the SSE
+ * stream pushes.
  *
  * Universal by design: a plain `rateLimit()` feeds the full board via {@link tapDecisions} + `withAnalytics`;
  * a `unifiedAdmission` additionally lights up the binding-axis lane via `admissionTap` +
@@ -19,9 +20,11 @@ import {
   type AnalyticsLimiter,
   type Clock,
   type ConcurrencyGuard,
+  type Decision,
   type DecisionEvent,
   type Limiter,
   type UnifiedAdmitter,
+  type UnifiedAxis,
   admissionTap,
   systemClock,
   tapDecisions,
@@ -40,6 +43,11 @@ import type {
 
 /** The Lens package version, stamped into every snapshot's `meta.lensVersion`. */
 export const LENS_VERSION = "0.1.0-experimental.0";
+
+/** How many recent admit-path latencies to retain per policy for the latency panel. */
+const LATENCY_RING = 256;
+/** The unified axes, for cleaning a per-axis snapshot down to its defined entries. */
+const AXES: readonly UnifiedAxis[] = ["rate", "concurrency", "cost"];
 
 /** Options for {@link createLensHub}. */
 export interface LensHubOptions {
@@ -81,6 +89,12 @@ export interface LensHub {
   subscribe(listener: LensListener): () => void;
 }
 
+/** Per-policy side metrics the analytics snapshot doesn't carry (the observed ceiling + latency ring). */
+interface PolicyMeta {
+  lastLimit: number;
+  lat: number[];
+}
+
 /** Create an in-process Lens telemetry hub. */
 export function createLensHub(options: LensHubOptions = {}): LensHub {
   const windowMs = options.windowMs ?? 60_000;
@@ -88,8 +102,12 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
   const recentLimit = options.recentLimit ?? 200;
   const clock = options.clock ?? systemClock;
 
-  const limiters: Array<{ name: string; analytics: AnalyticsLimiter }> = [];
-  const admitters: Array<{ name: string; analytics: AdmissionAnalyticsAdmitter }> = [];
+  const limiters: Array<{ name: string; analytics: AnalyticsLimiter; meta: PolicyMeta }> = [];
+  const admitters: Array<{
+    name: string;
+    analytics: AdmissionAnalyticsAdmitter;
+    meta: PolicyMeta;
+  }> = [];
   const guards: Array<{ name: string; guard: ConcurrencyGuard }> = [];
   const customStats: Array<{ name: string; kind: string; read: () => unknown }> = [];
   const recentDenials: LensDenialRow[] = [];
@@ -103,6 +121,12 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
     if (arr.length > recentLimit) arr.shift();
   };
 
+  /** Record an admit-path latency sample into a policy's ring. */
+  const recordLatency = (meta: PolicyMeta, ms: number): void => {
+    meta.lat.push(ms);
+    if (meta.lat.length > LATENCY_RING) meta.lat.shift();
+  };
+
   const emitDenial = (row: LensDenialRow): void => {
     pushBounded(recentDenials, row);
     for (const l of listeners) l.onDenial?.(row);
@@ -111,21 +135,42 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
   return {
     trackLimiter(name, limiter) {
       const analytics = withAnalytics(limiter, { windowMs, topK, clock });
-      limiters.push({ name, analytics });
-      // tapDecisions feeds the live denial stream; withAnalytics holds the rolling snapshot.
+      const meta: PolicyMeta = { lastLimit: 0, lat: [] };
+      limiters.push({ name, analytics, meta });
+      // tapDecisions feeds the live denial stream + side metrics; withAnalytics holds the snapshot.
       return tapDecisions(analytics, (e: DecisionEvent) => {
-        if (!e.decision.allowed)
-          emitDenial({ at: clock.now(), policy: name, key: e.key, allowed: false });
+        meta.lastLimit = e.decision.limit;
+        recordLatency(meta, e.durationMs);
+        if (!e.decision.allowed) {
+          emitDenial({
+            at: clock.now(),
+            policy: name,
+            key: e.key,
+            allowed: false,
+            decision: e.decision,
+          });
+        }
       });
     },
 
     trackAdmitter(name, admitter) {
       const analytics = withAdmissionAnalytics(admitter, { windowMs, topK, clock });
-      admitters.push({ name, analytics });
+      const meta: PolicyMeta = { lastLimit: 0, lat: [] };
+      admitters.push({ name, analytics, meta });
       return admissionTap(analytics, (e: AdmissionEvent) => {
+        meta.lastLimit = e.decision.limit;
+        recordLatency(meta, e.durationMs);
         if (e.decision.allowed) return;
-        const row: LensDenialRow = { at: clock.now(), policy: name, key: e.key, allowed: false };
+        const row: LensDenialRow = {
+          at: clock.now(),
+          policy: name,
+          key: e.key,
+          allowed: false,
+          decision: e.decision,
+        };
         if (e.lane !== undefined) row.lane = e.lane;
+        const perAxis = cleanPerAxis(e.perAxis);
+        if (Object.keys(perAxis).length > 0) row.perAxis = perAxis;
         emitDenial(row);
       });
     },
@@ -151,16 +196,21 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
 
     snapshot(): LensSnapshot {
       const policies: LensPolicySnapshot[] = [];
-      for (const { name, analytics } of limiters) {
-        policies.push({
-          name,
-          kind: "limiter",
-          strategy: analytics.strategy.name,
-          analytics: analytics.analytics(),
-        });
+      for (const { name, analytics, meta } of limiters) {
+        policies.push(
+          withMeta(
+            {
+              name,
+              kind: "limiter",
+              strategy: analytics.strategy.name,
+              analytics: analytics.analytics(),
+            },
+            meta,
+          ),
+        );
       }
-      for (const { name, analytics } of admitters) {
-        policies.push({ name, kind: "admitter", analytics: analytics.analytics() });
+      for (const { name, analytics, meta } of admitters) {
+        policies.push(withMeta({ name, kind: "admitter", analytics: analytics.analytics() }, meta));
       }
       const guardSnaps: LensGuardSnapshot[] = guards.map(({ name, guard }) =>
         guardSnapshot(name, guard),
@@ -190,6 +240,33 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
       };
     },
   };
+}
+
+/** Attach the observed ceiling + latency summary to a policy snapshot. */
+function withMeta(policy: LensPolicySnapshot, meta: PolicyMeta): LensPolicySnapshot {
+  if (meta.lastLimit > 0) policy.limit = meta.lastLimit;
+  if (meta.lat.length > 0) {
+    let sum = 0;
+    let max = 0;
+    for (const v of meta.lat) {
+      sum += v;
+      if (v > max) max = v;
+    }
+    policy.latency = { avgMs: sum / meta.lat.length, maxMs: max, n: meta.lat.length };
+  }
+  return policy;
+}
+
+/** Drop the `undefined` per-axis entries so the row's `perAxis` only carries real decisions. */
+function cleanPerAxis(
+  p: Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>>,
+): Partial<Record<UnifiedAxis, Decision>> {
+  const out: Partial<Record<UnifiedAxis, Decision>> = {};
+  for (const axis of AXES) {
+    const d = p[axis];
+    if (d !== undefined) out[axis] = d;
+  }
+  return out;
 }
 
 /** Read a concurrency guard's `stats()`, copying the distributed extras when present. */

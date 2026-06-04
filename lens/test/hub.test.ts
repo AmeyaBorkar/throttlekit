@@ -29,6 +29,11 @@ describe("createLensHub", () => {
     expect(a.denied).toBe(2);
     expect(snap.recentDenials).toHaveLength(2);
     expect(denials).toEqual(["alice", "alice"]);
+    // Phase-3 enrichments: observed ceiling + latency ring + the decision on each denial row.
+    expect(p?.limit).toBeGreaterThan(0);
+    expect(p?.latency?.n).toBe(5);
+    expect(snap.recentDenials[0]?.decision.allowed).toBe(false);
+    expect(snap.recentDenials[0]?.decision.remaining).toBe(0);
   });
 
   it("tracks a unified admitter with the binding-axis breakdown", async () => {
@@ -49,8 +54,12 @@ describe("createLensHub", () => {
     expect(a.denied).toBe(3);
     expect(a.deniedByLane.rate).toBe(3);
     expect(a.deniedByLane.cost).toBe(0);
-    // The denial feed carries the binding lane.
+    // The denial feed carries the binding lane + the drawer-grade per-axis decision.
     expect(snap.recentDenials.every((r) => r.lane === "rate")).toBe(true);
+    const row = snap.recentDenials[0];
+    expect(row?.decision.allowed).toBe(false);
+    expect(row?.perAxis?.rate?.allowed).toBe(false);
+    expect(p?.limit).toBeGreaterThan(0);
   });
 
   it("reads concurrency guard health and a custom stats source", () => {
