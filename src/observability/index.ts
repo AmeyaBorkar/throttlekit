@@ -9,6 +9,7 @@
 
 export {
   bindingAxisOf,
+  instrumentAdmitter,
   instrumentGuard,
   instrumentLimiter,
   METRIC_NAMES,

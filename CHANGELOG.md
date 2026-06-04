@@ -8,6 +8,33 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [1.2.0] — 2026-06-05
+
+A purely **additive** minor (the SemVer freeze holds): one new, stable OpenTelemetry metric that lets a
+Grafana board break unified-admission denials down by **which axis** bound them — the aggregate escape
+hatch for the `throttlekit.binding_axis` span attribute (which, as a span facet, no Prometheus board could
+group by). The live, per-key, exact-per-axis view remains the [`throttlekit-lens`](./lens) dashboard; this
+is for shops that live in Grafana.
+
+### Added
+
+- **`instrumentAdmitter(admitter, meter, options?)`** (`throttlekit/otel`) — wraps a `UnifiedAdmitter` and
+  records the new **`throttlekit.denies_by_axis`** counter (`+1` per denial) with a `{ lane }` attribute ∈
+  `rate` | `concurrency` | `cost` | `policy`. Delegates `admit` / `admitSync` / `lastDecisions` to the
+  inner admitter; only denials are counted; static `options.attributes` merge onto each measurement. The
+  lane is read from the admission's own `bindingAxis` (exact) — a denied admission with no axis is, by
+  contract, a joint-LP `policy` denial.
+- **`METRIC_NAMES.deniesByAxis`** (`"throttlekit.denies_by_axis"`) — a new stable metric name. Query it as
+  `sum by (lane) (rate(throttlekit_denies_by_axis_total[5m]))`. The reference `grafana/` dashboard gains a
+  **Denials by binding axis** panel.
+
+### Notes
+
+- **Additive, not a freeze break.** Adding a metric *name* (vs. renaming one) is a minor; the
+  `metrics-contract` test's exact `toEqual` still trips, so the addition is a deliberate, reviewed change.
+  No existing metric name, span attribute, or instrument changed. `@opentelemetry/api` stays a type-only
+  optional peer — no runtime dependency added. See [docs/METRICS.md](./docs/METRICS.md).
+
 ## [1.1.0] — 2026-06-04
 
 The first minor on the `1.x` line — purely **additive** (the SemVer freeze holds). It ships the

@@ -16,6 +16,12 @@
  */
 
 import type { Meter } from "@opentelemetry/api";
+import type {
+  UnifiedAdmission,
+  UnifiedAdmitOptions,
+  UnifiedAdmitter,
+  UnifiedAxis,
+} from "../admission/unified";
 import type { ConcurrencyGuard } from "../concurrency/adaptive";
 import { forwardIntrospection } from "../core/limiter";
 import type { Decision, Limiter } from "../core/types";
@@ -40,6 +46,13 @@ export const METRIC_NAMES = {
   concurrencyInflight: "throttlekit.concurrency.inflight",
   /** Observable gauge (ms): windowed no-load RTT baseline. */
   concurrencyRttNoload: "throttlekit.concurrency.rtt_noload",
+  /**
+   * Counter `+1` per **unified-admission denial**, attributed to the binding lane via a `{ lane }`
+   * attribute ∈ `rate` | `concurrency` | `cost` | `policy` (the joint-LP bid-price filter). The metric
+   * a span attribute can't be — it lets a Grafana board break denials down by *which axis* bound them.
+   * Recorded by {@link instrumentAdmitter}. **Additive in 1.2.0** (a new name, not a changed one).
+   */
+  deniesByAxis: "throttlekit.denies_by_axis",
 } as const;
 
 /** Common options for the instrumentation wrappers. */
@@ -196,6 +209,63 @@ export function instrumentGuard(
   );
 
   return guard;
+}
+
+/**
+ * Wrap a {@link UnifiedAdmitter} so every **denied** admission increments the
+ * {@link METRIC_NAMES.deniesByAxis} counter with a `{ lane }` attribute identifying the binding lane —
+ * `rate` / `concurrency` / `cost`, or `"policy"` for a joint-LP bid-price denial. This is the one signal
+ * the `throttlekit.binding_axis` *span* attribute could never be: a metric label a Grafana board can group
+ * by, so denials finally decompose by axis —
+ * `sum by (lane) (rate(throttlekit_denies_by_axis_total[5m]))`.
+ *
+ * The returned admitter delegates `admit` / `admitSync` / `lastDecisions` to the inner one and records
+ * **only denials** (an allow records nothing). The lane is read from the admission's own `bindingAxis`
+ * (exact, never racy); a denied admission with no binding axis is — by the `unifiedAdmission` contract —
+ * a joint-LP `policy` denial. `options.attributes` (e.g. `{ region }`) merge onto every measurement.
+ *
+ * @example
+ * ```ts
+ * import { instrumentAdmitter } from "throttlekit/otel";
+ * import { metrics } from "@opentelemetry/api";
+ *
+ * const admit = instrumentAdmitter(
+ *   unifiedAdmission({ rate, concurrency, cost }),
+ *   metrics.getMeter("checkout"),
+ * );
+ * const { decision, release } = await admit.admit({ key: tenant, cost: tokens });
+ * ```
+ */
+export function instrumentAdmitter(
+  admitter: UnifiedAdmitter,
+  meter: Meter,
+  options: InstrumentOptions = {},
+): UnifiedAdmitter {
+  const denies = meter.createCounter(METRIC_NAMES.deniesByAxis, {
+    description:
+      "Unified-admission denials, attributed to the binding lane (rate/concurrency/cost/policy).",
+  });
+  const base = options.attributes;
+  const record = (admission: UnifiedAdmission): void => {
+    if (admission.decision.allowed) return;
+    const lane: UnifiedAxis | "policy" = admission.bindingAxis ?? "policy";
+    denies.add(1, base !== undefined ? { ...base, lane } : { lane });
+  };
+  return {
+    async admit(opts?: UnifiedAdmitOptions): Promise<UnifiedAdmission> {
+      const admission = await admitter.admit(opts);
+      record(admission);
+      return admission;
+    },
+    admitSync(opts?: UnifiedAdmitOptions): UnifiedAdmission {
+      const admission = admitter.admitSync(opts);
+      record(admission);
+      return admission;
+    },
+    lastDecisions(): Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>> {
+      return admitter.lastDecisions();
+    },
+  };
 }
 
 /**

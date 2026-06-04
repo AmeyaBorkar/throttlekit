@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { UnifiedAdmission, UnifiedAdmitter } from "../../src/admission/unified";
 import { gcra } from "../../src/algorithms/gcra";
 import { rateLimit } from "../../src/core/limiter";
 import type { Decision } from "../../src/core/types";
@@ -6,6 +7,7 @@ import {
   METRIC_NAMES,
   SPAN_ATTRIBUTES,
   bindingAxisOf,
+  instrumentAdmitter,
   instrumentGuard,
   instrumentLimiter,
   recordDecisionOnSpan,
@@ -44,6 +46,8 @@ describe("observability contract (TK-819 / TK-820)", () => {
       concurrencyLimit: "throttlekit.concurrency.limit",
       concurrencyInflight: "throttlekit.concurrency.inflight",
       concurrencyRttNoload: "throttlekit.concurrency.rtt_noload",
+      // Additive in 1.2.0 — a NEW name (the binding-axis denial counter), not a changed one.
+      deniesByAxis: "throttlekit.denies_by_axis",
     });
   });
 
@@ -215,6 +219,100 @@ describe("observability contract (TK-819 / TK-820)", () => {
       expect(attrs.tenant).toBe("abc");
       expect(attrs.region).toBe("us-east");
       expect(attrs["throttlekit.binding_axis"]).toBe("rate");
+    });
+  });
+
+  // ── 1.2.0: instrumentAdmitter → throttlekit.denies_by_axis{lane} ──────────────────────────
+  describe("instrumentAdmitter (denies_by_axis)", () => {
+    type Add = { value: number; attrs: Record<string, unknown> };
+    function meterCapturing(adds: Add[], names: string[]) {
+      return {
+        createCounter(name: string) {
+          names.push(name);
+          return {
+            add(value: number, attrs: Record<string, unknown>) {
+              adds.push({ value, attrs });
+            },
+          };
+        },
+        createHistogram() {
+          return { record() {} };
+        },
+        createObservableGauge() {
+          return { name: "" };
+        },
+        addBatchObservableCallback() {},
+      };
+    }
+    function admission(
+      decision: Decision,
+      bindingAxis?: "rate" | "concurrency" | "cost",
+      policyDenied?: boolean,
+    ): UnifiedAdmission {
+      return {
+        decision,
+        release() {},
+        ...(bindingAxis !== undefined ? { bindingAxis } : {}),
+        ...(policyDenied ? { policyDenied } : {}),
+      };
+    }
+    function fakeAdmitter(next: UnifiedAdmission): UnifiedAdmitter {
+      return {
+        admit: async () => next,
+        admitSync: () => next,
+        lastDecisions: () => ({}),
+      };
+    }
+
+    it("creates exactly the denies_by_axis counter and records {lane} on an axis-bound denial", async () => {
+      const adds: Add[] = [];
+      const names: string[] = [];
+      const admit = instrumentAdmitter(
+        fakeAdmitter(admission(denied, "cost")),
+        meterCapturing(adds, names) as never,
+      );
+      await admit.admit({ key: "k", cost: 5 });
+      expect(names).toEqual([METRIC_NAMES.deniesByAxis]);
+      expect(adds).toEqual([{ value: 1, attrs: { lane: "cost" } }]);
+    });
+
+    it("attributes a joint-LP (no binding axis) denial to lane 'policy'", () => {
+      const adds: Add[] = [];
+      const admit = instrumentAdmitter(
+        fakeAdmitter(admission(denied, undefined, true)),
+        meterCapturing(adds, []) as never,
+      );
+      admit.admitSync({ key: "k" });
+      expect(adds).toEqual([{ value: 1, attrs: { lane: "policy" } }]);
+    });
+
+    it("records nothing on an allow", async () => {
+      const adds: Add[] = [];
+      const admit = instrumentAdmitter(
+        fakeAdmitter(admission(allowed)),
+        meterCapturing(adds, []) as never,
+      );
+      await admit.admit();
+      expect(adds).toEqual([]);
+    });
+
+    it("merges static attributes onto the lane", () => {
+      const adds: Add[] = [];
+      const admit = instrumentAdmitter(
+        fakeAdmitter(admission(denied, "rate")),
+        meterCapturing(adds, []) as never,
+        { attributes: { region: "us-east" } },
+      );
+      admit.admitSync();
+      expect(adds).toEqual([{ value: 1, attrs: { region: "us-east", lane: "rate" } }]);
+    });
+
+    it("forwards lastDecisions to the inner admitter", () => {
+      const admit = instrumentAdmitter(
+        fakeAdmitter(admission(denied, "rate")),
+        meterCapturing([], []) as never,
+      );
+      expect(admit.lastDecisions()).toEqual({});
     });
   });
 });

@@ -22,6 +22,7 @@ suffixes per the unit), so `throttlekit.checks` is scraped as `throttlekit_check
 | `throttlekit.concurrency.limit` | ObservableGauge | — | — | Current inferred ceiling of an `adaptiveConcurrency` guard. |
 | `throttlekit.concurrency.inflight` | ObservableGauge | — | — | Concurrency leases outstanding right now. |
 | `throttlekit.concurrency.rtt_noload` | ObservableGauge | `ms` | — | Windowed no-load RTT baseline the guard adapts against. |
+| `throttlekit.denies_by_axis` | Counter | — | `lane` | `+1` per **unified-admission denial**, split by binding lane (`rate` / `concurrency` / `cost` / `policy`). The breakdown a span facet can't be: `sum by (lane) (rate(throttlekit_denies_by_axis_total[5m]))`. Recorded by `instrumentAdmitter` (1.2.0+). |
 
 Wiring:
 
@@ -39,6 +40,22 @@ instrumentGuard(myConcurrencyGuard, meter);
 concurrency gauges (it reads `guard.stats()` once per collection). Pass `{ attributes: { region } }`
 to add static labels to every measurement.
 
+For a `unifiedAdmission`, **`instrumentAdmitter`** records `denies_by_axis` with a `{ lane }` label so a
+Grafana board can finally split denials by *which axis* bound them — the metric the
+`throttlekit.binding_axis` span attribute could never be (a span facet isn't a Prometheus label):
+
+```ts
+import { instrumentAdmitter } from "throttlekit/otel";
+
+const admit = instrumentAdmitter(unifiedAdmission({ rate, concurrency, cost }), meter);
+const { decision, release } = await admit.admit({ key: tenant, cost: tokens }); // only denials are counted
+```
+
+A denied admission with no binding axis is a joint-LP bid-price denial → `lane="policy"`. The live,
+per-key, exact-per-axis view (without a metrics backend) is the [ThrottleKit
+Lens](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens); this counter is the
+aggregate Grafana escape hatch.
+
 ## Span attributes
 
 For trace-level visibility, set the stable `SPAN_ATTRIBUTES` on a span you already have:
@@ -50,6 +67,7 @@ For trace-level visibility, set the stable `SPAN_ATTRIBUTES` on a span you alrea
 | `throttlekit.limit` | number | effective ceiling |
 | `throttlekit.remaining` | number | units remaining after the decision |
 | `throttlekit.retry_after_ms` | number | ms to wait before retry (`0` when allowed) |
+| `throttlekit.binding_axis` | string | `unifiedAdmission` only (via `recordUnifiedAdmissionOnSpan`): which axis bound a denial — `rate` / `concurrency` / `cost`. Omitted on an allow, or a joint-LP `policy` denial. |
 
 ```ts
 import { trace } from "@opentelemetry/api";
@@ -76,9 +94,13 @@ concurrency gauges — with `$datasource` and `$strategy` template variables. Im
 Dashboards → New → Import. It targets the Prometheus names above (`throttlekit_checks_total`,
 `throttlekit_remaining_bucket`, …); if your OTel exporter appends a unit suffix to the latency
 histogram (e.g. `throttlekit_store_latency_milliseconds_bucket`), tweak that one panel's metric name.
+A seventh panel — **Denials by binding axis** — stacks `throttlekit_denies_by_axis_total` by `lane`; it
+populates once you wrap a `unifiedAdmission` with `instrumentAdmitter`.
 
 ## Stability policy
 
 `METRIC_NAMES` and `SPAN_ATTRIBUTES` are frozen `as const` and asserted by
-`test/observability/metrics-contract.test.ts`. Any rename fails that test, forcing a conscious,
-documented, major-version change — your dashboards won't silently break under a patch upgrade.
+`test/observability/metrics-contract.test.ts`. Any rename of an existing name fails that test, forcing a
+conscious, documented, **major**-version change — your dashboards won't silently break under a patch
+upgrade. *Adding* a new name (like `denies_by_axis` in 1.2.0) is additive — a **minor** — but still trips
+the `toEqual`, so it too is a deliberate, reviewed change, never an accident.
