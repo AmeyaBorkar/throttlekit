@@ -13,7 +13,7 @@ _Nothing yet._
 A purely **additive** minor (the SemVer freeze holds): one new, stable OpenTelemetry metric that lets a
 Grafana board break unified-admission denials down by **which axis** bound them — the aggregate escape
 hatch for the `throttlekit.binding_axis` span attribute (which, as a span facet, no Prometheus board could
-group by). The live, per-key, exact-per-axis view remains the [`throttlekit-lens`](./lens) dashboard; this
+group by). The live, per-key, exact-per-axis view remains the [`throttlekit-lens`](https://www.npmjs.com/package/throttlekit-lens) dashboard; this
 is for shops that live in Grafana.
 
 ### Added
@@ -39,7 +39,7 @@ is for shops that live in Grafana.
 
 The first minor on the `1.x` line — purely **additive** (the SemVer freeze holds). It ships the
 `@experimental` in-process telemetry that powers the new **ThrottleKit Lens** dashboard
-(the separate [`throttlekit-lens`](./lens) package): primitives that read only state `unifiedAdmission`
+(the separate [`throttlekit-lens`](https://www.npmjs.com/package/throttlekit-lens) package): primitives that read only state `unifiedAdmission`
 already computes, so they add no hot-path store reads and never alter any decision.
 
 ### Added
