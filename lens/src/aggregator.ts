@@ -28,7 +28,9 @@ import type {
   Clock,
 } from "throttlekit";
 import { systemClock } from "throttlekit";
+import { bearerEqual } from "./auth.js";
 import { LENS_VERSION, type LensHub } from "./hub.js";
+import { hostForUrl, listenServer } from "./net.js";
 import type { LensTlsOptions, RunningLens } from "./serve.js";
 import { writeSseEvent, writeSseHeaders, writeSsePing } from "./sse.js";
 import type {
@@ -263,7 +265,7 @@ function aggregatorHandler(aggregator: LensAggregator, options: ServeAggregatorO
   const pingMs = options.pingMs ?? 15000;
   const html = renderLensHtml("");
   const authed = (req: IncomingMessage): boolean =>
-    token === undefined || req.headers.authorization === `Bearer ${token}`;
+    token === undefined || bearerEqual(req.headers.authorization, token);
 
   return (req: IncomingMessage, res: ServerResponse): void => {
     if (!authed(req)) {
@@ -301,18 +303,34 @@ function aggregatorHandler(aggregator: LensAggregator, options: ServeAggregatorO
     }
     if (path === "/api/stream") {
       writeSseHeaders(res);
-      writeSseEvent(res, "snapshot", aggregator.snapshot());
-      const snapTimer = setInterval(
-        () => writeSseEvent(res, "snapshot", aggregator.snapshot()),
-        intervalMs,
-      );
-      const pingTimer = setInterval(() => writeSsePing(res), pingMs);
+      let closed = false;
+      const timers: ReturnType<typeof setInterval>[] = [];
       const cleanup = (): void => {
-        clearInterval(snapTimer);
-        clearInterval(pingTimer);
+        if (closed) return;
+        closed = true;
+        for (const t of timers) clearInterval(t);
       };
       req.on("close", cleanup);
       res.on("close", cleanup);
+      const pushSnapshot = (): void => {
+        if (closed) return;
+        let snap: unknown;
+        try {
+          snap = aggregator.snapshot();
+        } catch {
+          cleanup();
+          return;
+        }
+        if (!writeSseEvent(res, "snapshot", snap)) cleanup();
+      };
+      pushSnapshot();
+      if (closed) return;
+      timers.push(setInterval(pushSnapshot, intervalMs));
+      timers.push(
+        setInterval(() => {
+          if (!writeSsePing(res)) cleanup();
+        }, pingMs),
+      );
       return;
     }
     if (path === "/" || path === "/index.html") {
@@ -354,15 +372,13 @@ export async function serveLensAggregator(
         )
       : createHttpServer(handler);
 
-  await new Promise<void>((resolve) => server.listen(port, host, () => resolve()));
-  const address = server.address();
-  const boundPort = address !== null && typeof address === "object" ? address.port : port;
+  const boundPort = await listenServer(server, port, host);
   const scheme = secure ? "https" : "http";
 
   return {
     port: boundPort,
     host,
-    url: `${scheme}://${host}:${boundPort}`,
+    url: `${scheme}://${hostForUrl(host)}:${boundPort}`,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((err) => (err === undefined || err === null ? resolve() : reject(err)));
@@ -387,9 +403,13 @@ export function pushSnapshots(hub: LensHub, options: PushSnapshotsOptions): () =
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (options.token !== undefined) headers.Authorization = `Bearer ${options.token}`;
   const send = (): void => {
-    void fetch(target, { method: "POST", headers, body: JSON.stringify(hub.snapshot()) }).catch(
-      () => {},
-    );
+    void fetch(target, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(hub.snapshot()),
+      // Bound each push so a black-holed aggregator can't pile up overlapping in-flight requests.
+      signal: AbortSignal.timeout(Math.max(1000, intervalMs)),
+    }).catch(() => {});
   };
   send();
   const timer = setInterval(send, intervalMs);

@@ -31,6 +31,7 @@ import {
   withAdmissionAnalytics,
   withAnalytics,
 } from "throttlekit";
+import { RingBuffer } from "./ring.js";
 import type {
   LensDenialRow,
   LensFenceRow,
@@ -41,8 +42,8 @@ import type {
   LensStatsSnapshot,
 } from "./types.js";
 
-/** The Lens package version, stamped into every snapshot's `meta.lensVersion`. */
-export const LENS_VERSION = "0.1.0-experimental.0";
+/** The Lens package version, stamped into every snapshot's `meta.lensVersion`. Keep in sync with package.json. */
+export const LENS_VERSION = "0.1.0-experimental.1";
 
 /** How many recent admit-path latencies to retain per policy for the latency panel. */
 const LATENCY_RING = 256;
@@ -92,7 +93,7 @@ export interface LensHub {
 /** Per-policy side metrics the analytics snapshot doesn't carry (the observed ceiling + latency ring). */
 interface PolicyMeta {
   lastLimit: number;
-  lat: number[];
+  lat: RingBuffer<number>;
 }
 
 /** Create an in-process Lens telemetry hub. */
@@ -110,37 +111,33 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
   }> = [];
   const guards: Array<{ name: string; guard: ConcurrencyGuard }> = [];
   const customStats: Array<{ name: string; kind: string; read: () => unknown }> = [];
-  const recentDenials: LensDenialRow[] = [];
-  const recentFences: LensFenceRow[] = [];
+  const recentDenials = new RingBuffer<LensDenialRow>(recentLimit);
+  const recentFences = new RingBuffer<LensFenceRow>(recentLimit);
   const listeners = new Set<LensListener>();
   let health: LensHealth | undefined;
 
-  /** Append to a bounded ring (oldest dropped past `recentLimit`). */
-  const pushBounded = <T>(arr: T[], row: T): void => {
-    arr.push(row);
-    if (arr.length > recentLimit) arr.shift();
-  };
-
-  /** Record an admit-path latency sample into a policy's ring. */
-  const recordLatency = (meta: PolicyMeta, ms: number): void => {
-    meta.lat.push(ms);
-    if (meta.lat.length > LATENCY_RING) meta.lat.shift();
-  };
-
   const emitDenial = (row: LensDenialRow): void => {
-    pushBounded(recentDenials, row);
-    for (const l of listeners) l.onDenial?.(row);
+    recentDenials.push(row);
+    // Isolate each subscriber: a dead SSE socket (or any throwing listener) must never break the feed
+    // for the other live dashboards — and, since this runs inside the tap, never reach the control path.
+    for (const l of listeners) {
+      try {
+        l.onDenial?.(row);
+      } catch {
+        // observer-only: swallow.
+      }
+    }
   };
 
   return {
     trackLimiter(name, limiter) {
       const analytics = withAnalytics(limiter, { windowMs, topK, clock });
-      const meta: PolicyMeta = { lastLimit: 0, lat: [] };
+      const meta: PolicyMeta = { lastLimit: 0, lat: new RingBuffer<number>(LATENCY_RING) };
       limiters.push({ name, analytics, meta });
       // tapDecisions feeds the live denial stream + side metrics; withAnalytics holds the snapshot.
       return tapDecisions(analytics, (e: DecisionEvent) => {
         meta.lastLimit = e.decision.limit;
-        recordLatency(meta, e.durationMs);
+        meta.lat.push(e.durationMs);
         if (!e.decision.allowed) {
           emitDenial({
             at: clock.now(),
@@ -155,11 +152,11 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
 
     trackAdmitter(name, admitter) {
       const analytics = withAdmissionAnalytics(admitter, { windowMs, topK, clock });
-      const meta: PolicyMeta = { lastLimit: 0, lat: [] };
+      const meta: PolicyMeta = { lastLimit: 0, lat: new RingBuffer<number>(LATENCY_RING) };
       admitters.push({ name, analytics, meta });
       return admissionTap(analytics, (e: AdmissionEvent) => {
         meta.lastLimit = e.decision.limit;
-        recordLatency(meta, e.durationMs);
+        meta.lat.push(e.durationMs);
         if (e.decision.allowed) return;
         const row: LensDenialRow = {
           at: clock.now(),
@@ -186,8 +183,14 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
 
     recordFence(guard) {
       const row: LensFenceRow = { at: clock.now(), guard };
-      pushBounded(recentFences, row);
-      for (const l of listeners) l.onFence?.(row);
+      recentFences.push(row);
+      for (const l of listeners) {
+        try {
+          l.onFence?.(row);
+        } catch {
+          // observer-only: swallow.
+        }
+      }
     },
 
     setHealth(h) {
@@ -225,8 +228,8 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
         policies,
         guards: guardSnaps,
         stats,
-        recentDenials: [...recentDenials],
-        recentFences: [...recentFences],
+        recentDenials: recentDenials.toArray(),
+        recentFences: recentFences.toArray(),
       };
       if (options.nodeId !== undefined) snap.meta.nodeId = options.nodeId;
       if (health !== undefined) snap.health = health;
@@ -245,14 +248,15 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
 /** Attach the observed ceiling + latency summary to a policy snapshot. */
 function withMeta(policy: LensPolicySnapshot, meta: PolicyMeta): LensPolicySnapshot {
   if (meta.lastLimit > 0) policy.limit = meta.lastLimit;
-  if (meta.lat.length > 0) {
+  const lat = meta.lat.toArray();
+  if (lat.length > 0) {
     let sum = 0;
     let max = 0;
-    for (const v of meta.lat) {
+    for (const v of lat) {
       sum += v;
       if (v > max) max = v;
     }
-    policy.latency = { avgMs: sum / meta.lat.length, maxMs: max, n: meta.lat.length };
+    policy.latency = { avgMs: sum / lat.length, maxMs: max, n: lat.length };
   }
   return policy;
 }
@@ -271,7 +275,14 @@ function cleanPerAxis(
 
 /** Read a concurrency guard's `stats()`, copying the distributed extras when present. */
 function guardSnapshot(name: string, guard: ConcurrencyGuard): LensGuardSnapshot {
-  const s = guard.stats() as Record<string, unknown>;
+  let s: Record<string, unknown>;
+  try {
+    s = guard.stats() as Record<string, unknown>;
+  } catch {
+    // A guard whose stats() throws must never crash snapshot() — which is also called from the SSE
+    // setInterval, where an uncaught throw would take down the host process.
+    s = {};
+  }
   const num = (v: unknown): number => (typeof v === "number" ? v : 0);
   const snap: LensGuardSnapshot = {
     name,

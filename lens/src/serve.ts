@@ -9,6 +9,7 @@ import { type Server, createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { type LensHandlerOptions, lensHandler } from "./handler.js";
 import type { LensHub } from "./hub.js";
+import { hostForUrl, listenServer } from "./net.js";
 
 /** TLS material for an HTTPS / mTLS Lens listener (paths read at startup). */
 export interface LensTlsOptions {
@@ -69,15 +70,13 @@ export async function serveLens(
         )
       : createHttpServer(handler);
 
-  await new Promise<void>((resolve) => server.listen(port, host, () => resolve()));
-  const address = server.address();
-  const boundPort = address !== null && typeof address === "object" ? address.port : port;
+  const boundPort = await listenServer(server, port, host);
   const scheme = secure ? "https" : "http";
 
   return {
     port: boundPort,
     host,
-    url: `${scheme}://${host}:${boundPort}`,
+    url: `${scheme}://${hostForUrl(host)}:${boundPort}`,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((err) => (err === undefined || err === null ? resolve() : reject(err)));

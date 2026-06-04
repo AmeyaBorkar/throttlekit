@@ -13,13 +13,30 @@ export function writeSseHeaders(res: ServerResponse): void {
   });
 }
 
-/** Emit one named SSE event with a JSON payload. */
-export function writeSseEvent(res: ServerResponse, event: string, data: unknown): void {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+/**
+ * Emit one named SSE event with a JSON payload. Returns `false` when the socket is no longer writable (the
+ * client went away) — the caller should then tear the subscription down. A failed write **never throws**,
+ * so one dead client can neither break the fan-out to the other live dashboards nor (since the feed is
+ * driven from a tap) perturb the control path.
+ */
+export function writeSseEvent(res: ServerResponse, event: string, data: unknown): boolean {
+  if (res.writableEnded || res.destroyed) return false;
+  try {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-/** Emit an SSE comment line — a keep-alive ping that some proxies need to hold the connection open. */
-export function writeSsePing(res: ServerResponse): void {
-  res.write(": ping\n\n");
+/** Emit an SSE comment line — a keep-alive ping. Returns `false` if the socket is gone (see above). */
+export function writeSsePing(res: ServerResponse): boolean {
+  if (res.writableEnded || res.destroyed) return false;
+  try {
+    res.write(": ping\n\n");
+    return true;
+  } catch {
+    return false;
+  }
 }

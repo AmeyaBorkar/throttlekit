@@ -94,3 +94,58 @@ describe("createLensHub", () => {
     expect(snap.health?.backend).toBe("redis");
   });
 });
+
+describe("createLensHub hardening", () => {
+  it("isolates a throwing subscriber so the feed still reaches the others", async () => {
+    const clock = new ManualClock(0);
+    const hub = createLensHub({ clock, windowMs: HOUR });
+    const limiter = hub.trackLimiter(
+      "api",
+      rateLimit({ strategy: gcra({ limit: 1, periodMs: HOUR, burst: 1 }) }),
+    );
+    hub.subscribe({
+      onDenial: () => {
+        throw new Error("a dead SSE socket throws on write");
+      },
+    });
+    const good: string[] = [];
+    hub.subscribe({ onDenial: (r) => good.push(r.key) });
+
+    await limiter.check("k"); // allow (burst 1)
+    await limiter.check("k"); // deny — the throwing subscriber must not starve the good one
+    expect(good).toEqual(["k"]);
+    expect(hub.snapshot().recentDenials).toHaveLength(1);
+  });
+
+  it("bounds the denial feed to recentLimit, keeping the most recent", async () => {
+    const clock = new ManualClock(0);
+    const hub = createLensHub({ clock, windowMs: HOUR, recentLimit: 5 });
+    const limiter = hub.trackLimiter(
+      "api",
+      rateLimit({ strategy: gcra({ limit: 1, periodMs: HOUR, burst: 1 }) }),
+    );
+    await limiter.check("k"); // allow (consume the single burst)
+    for (let i = 0; i < 20; i++) {
+      clock.advance(1);
+      await limiter.check("k"); // deny at t = 1..20 on the same key
+    }
+    const rows = hub.snapshot().recentDenials;
+    expect(rows).toHaveLength(5);
+    expect(rows.map((r) => r.at)).toEqual([16, 17, 18, 19, 20]);
+  });
+
+  it("survives a guard whose stats() throws (snapshot must never crash)", () => {
+    const hub = createLensHub();
+    const throwingGuard = {
+      stats() {
+        throw new Error("stats boom");
+      },
+    } as unknown as Parameters<typeof hub.trackGuard>[1];
+    hub.trackGuard("boom", throwingGuard);
+
+    const snap = hub.snapshot();
+    expect(snap.guards).toHaveLength(1);
+    expect(snap.guards[0]?.limit).toBe(0);
+    expect(snap.guards[0]?.inflight).toBe(0);
+  });
+});

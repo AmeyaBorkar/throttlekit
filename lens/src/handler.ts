@@ -12,6 +12,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { bearerEqual } from "./auth.js";
 import type { LensHub } from "./hub.js";
 import { writeSseEvent, writeSseHeaders, writeSsePing } from "./sse.js";
 import { renderLensHtml } from "./ui.js";
@@ -45,7 +46,7 @@ export function lensHandler(hub: LensHub, options: LensHandlerOptions = {}): Len
       res.writeHead(405, { Allow: "GET", "Content-Type": "text/plain" }).end("Method Not Allowed");
       return;
     }
-    if (token !== undefined && req.headers.authorization !== `Bearer ${token}`) {
+    if (token !== undefined && !bearerEqual(req.headers.authorization, token)) {
       res.writeHead(401, { "Content-Type": "text/plain" }).end("Unauthorized");
       return;
     }
@@ -62,23 +63,48 @@ export function lensHandler(hub: LensHub, options: LensHandlerOptions = {}): Len
 
     if (path === "/api/stream") {
       writeSseHeaders(res);
-      writeSseEvent(res, "snapshot", hub.snapshot());
-      const unsubscribe = hub.subscribe({
-        onDenial: (row) => writeSseEvent(res, "denial", row),
-        onFence: (row) => writeSseEvent(res, "fence", row),
-      });
-      const snapTimer = setInterval(
-        () => writeSseEvent(res, "snapshot", hub.snapshot()),
-        intervalMs,
-      );
-      const pingTimer = setInterval(() => writeSsePing(res), pingMs);
+      let closed = false;
+      const timers: ReturnType<typeof setInterval>[] = [];
+      let unsubscribe: () => void = () => {};
       const cleanup = (): void => {
-        clearInterval(snapTimer);
-        clearInterval(pingTimer);
+        if (closed) return;
+        closed = true;
+        for (const t of timers) clearInterval(t);
         unsubscribe();
       };
       req.on("close", cleanup);
       res.on("close", cleanup);
+      // A write that returns false means the client is gone: tear the whole subscription down at once,
+      // so one dead browser tab can't leak a subscription + its timers.
+      unsubscribe = hub.subscribe({
+        onDenial: (row) => {
+          if (!writeSseEvent(res, "denial", row)) cleanup();
+        },
+        onFence: (row) => {
+          if (!writeSseEvent(res, "fence", row)) cleanup();
+        },
+      });
+      const pushSnapshot = (): void => {
+        if (closed) return;
+        let snap: unknown;
+        try {
+          snap = hub.snapshot();
+        } catch {
+          // hub.snapshot() is defensive, but the SSE timer is the one place an uncaught throw would
+          // crash the host process — so belt-and-suspenders, tear down instead.
+          cleanup();
+          return;
+        }
+        if (!writeSseEvent(res, "snapshot", snap)) cleanup();
+      };
+      pushSnapshot(); // initial snapshot, after cleanup is wired so a failed first write self-tears
+      if (closed) return;
+      timers.push(setInterval(pushSnapshot, intervalMs));
+      timers.push(
+        setInterval(() => {
+          if (!writeSsePing(res)) cleanup();
+        }, pingMs),
+      );
       return;
     }
 

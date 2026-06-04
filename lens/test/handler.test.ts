@@ -121,5 +121,21 @@ describe("token auth", () => {
       headers: { Authorization: "Bearer s3cret" },
     });
     expect(authed.status).toBe(200);
+    const wrong = await fetch(`${lens.url}/api/snapshot`, {
+      headers: { Authorization: "Bearer nope" },
+    });
+    expect(wrong.status).toBe(401);
+  });
+});
+
+describe("serveLens bind failure", () => {
+  it("rejects (rather than hanging) when the chosen port is already in use", async () => {
+    const first = await serveLens(createLensHub(), { port: 0, host: "127.0.0.1" });
+    // A second Lens on the SAME port must reject promptly — the on-by-default server must surface a
+    // port clash, not hang on a listen callback that never fires.
+    await expect(
+      serveLens(createLensHub(), { port: first.port, host: "127.0.0.1" }),
+    ).rejects.toThrow();
+    await first.close();
   });
 });

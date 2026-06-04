@@ -1,6 +1,6 @@
 {
   "name": "throttlekit-lens",
-  "version": "0.1.0-experimental.0",
+  "version": "0.1.0-experimental.1",
   "description": "ThrottleKit Lens — a zero-dependency, read-only monitoring dashboard for ThrottleKit: live binding-axis attribution plus the full ops board, mountable in your app or run as a sidecar.",
   "repository": {
     "type": "git",
@@ -29,7 +29,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": ["dist", "README.md", "CHANGELOG.md"],
   "scripts": {
