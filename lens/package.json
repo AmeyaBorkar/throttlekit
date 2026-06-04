@@ -1,5 +1,5 @@
 {
-  "name": "@throttlekit/lens",
+  "name": "throttlekit-lens",
   "version": "0.1.0-experimental.0",
   "description": "ThrottleKit Lens — a zero-dependency, read-only monitoring dashboard for ThrottleKit: live binding-axis attribution plus the full ops board, mountable in your app or run as a sidecar.",
   "repository": {

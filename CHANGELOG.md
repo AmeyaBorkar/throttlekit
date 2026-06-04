@@ -8,6 +8,31 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [1.1.0] — 2026-06-04
+
+The first minor on the `1.x` line — purely **additive** (the SemVer freeze holds). It ships the
+`@experimental` in-process telemetry that powers the new **ThrottleKit Lens** dashboard
+(the separate [`throttlekit-lens`](./lens) package): primitives that read only state `unifiedAdmission`
+already computes, so they add no hot-path store reads and never alter any decision.
+
+### Added
+
+- **`admissionTap(admitter, onAdmission)`** (`@experimental`) — the multi-axis sibling of `tapDecisions`.
+  It wraps a `UnifiedAdmitter` and fires a synchronous, exception-swallowing, O(1) callback once per
+  completed admit with an `AdmissionEvent`: the combined `decision`, the **binding axis**, the per-axis
+  snapshot, and the single attributed **lane** (`rate` / `concurrency` / `cost`, or the joint-LP
+  `policy` lane). A throwing observer can never break admission.
+- **`withAdmissionAnalytics(admitter, opts)`** (`@experimental`) — the lane-segmented fork of
+  `withAnalytics`. Same epoch-aligned window and Space-Saving top-K, but allow/deny counters and
+  heavy-hitters are **partitioned by binding lane** (`Σ deniedByLane === denied`), so a dashboard can
+  show *which* axis is throttling each key. Exposes `AdmissionAnalyticsSnapshot` via `analytics()`.
+- New root-barrel types: `AdmissionEvent`, `AdmissionTap`, `AdmissionLane`, `AdmissionKind`,
+  `AdmissionAnalyticsOptions`, `AdmissionAnalyticsSnapshot`, `AdmissionAnalyticsAdmitter`,
+  `AdmissionHeavyHitter`.
+
+Both primitives are excluded from the `1.x` SemVer guarantee (their shapes may change in a minor); see
+STABILITY.md. The dashboard that consumes them ships as the separate **`throttlekit-lens`** package.
+
 ## [1.0.1] — 2026-05-31
 
 First patch on the `1.x` line — a header-builder crash fix and a docs clarification. No API or runtime

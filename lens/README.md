@@ -1,4 +1,4 @@
-# @throttlekit/lens
+# throttlekit-lens
 
 A **zero-dependency, read-only monitoring dashboard** for [ThrottleKit](https://github.com/AmeyaBorkar/throttlekit) — the full ops board for *every* limiter, plus the one view no other rate-limiter dashboard can render: **live binding-axis attribution**.
 
@@ -15,7 +15,7 @@ Register what you already use; the hub returns *tapped* wrappers to use in their
 ### Mount in your own app (no extra port)
 
 ```ts
-import { createLensHub, lensHandler } from "@throttlekit/lens";
+import { createLensHub, lensHandler } from "throttlekit-lens";
 import { rateLimit, gcra, unifiedAdmission } from "throttlekit";
 
 const hub = createLensHub();
@@ -32,7 +32,7 @@ app.use("/__throttlekit", (req, res) => handler(req, res));
 ### Or run a standalone sidecar
 
 ```ts
-import { createLensHub, serveLens } from "@throttlekit/lens";
+import { createLensHub, serveLens } from "throttlekit-lens";
 
 const hub = createLensHub();
 // ...track your limiters/admitters/guards...
