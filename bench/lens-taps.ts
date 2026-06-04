@@ -88,7 +88,9 @@ export function main(): number {
   );
   const { rows } = measure();
   for (const row of rows) {
-    console.log(`  ${row.label.padEnd(32)} ${row.nsPerOp.toFixed(1).padStart(7)} ns/op  ×${row.ratio.toFixed(2)}`);
+    console.log(
+      `  ${row.label.padEnd(32)} ${row.nsPerOp.toFixed(1).padStart(7)} ns/op  ×${row.ratio.toFixed(2)}`,
+    );
   }
 
   const full = rows[rows.length - 1];
@@ -98,8 +100,7 @@ export function main(): number {
   }
   if (full.ratio > limit) {
     console.error(
-      `\n✗ the fully-tapped control path is ${full.ratio.toFixed(2)}× a bare checkSync — above the ${limit.toFixed(1)}× ceiling. ` +
-        "A tap regressed the hot path (megamorphism / an allocation per decision?). Investigate before release.",
+      `\n✗ the fully-tapped control path is ${full.ratio.toFixed(2)}× a bare checkSync — above the ${limit.toFixed(1)}× ceiling. A tap regressed the hot path (megamorphism / an allocation per decision?). Investigate before release.`,
     );
     return 1;
   }
