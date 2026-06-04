@@ -43,6 +43,9 @@
     "ioredis": "^5.4.1",
     "throttlekit": "^1.0.1"
   },
+  "optionalDependencies": {
+    "pg": "^8.11.0"
+  },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/node": "^22.10.2",

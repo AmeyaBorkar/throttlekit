@@ -2,9 +2,10 @@
 /**
  * `throttlekit-server` CLI. Loads a `.throttlekit.yaml`/`.json` policy file and serves it over gRPC.
  *
- * Point multiple instances at one `--redis` to run a coordinated fleet (one shared limit); omit it for a
- * single-instance in-process memory store. Front anything non-loopback with `--tls-cert/--tls-key`
- * (add `--tls-ca` for mTLS) so nothing can poison a shared budget.
+ * Point multiple instances at one shared store — `--redis <url>` or `--postgres-url <url>` — to run a
+ * coordinated fleet (one shared limit); omit both for a single-instance in-process memory store. Front
+ * anything non-loopback with `--tls-cert/--tls-key` (add `--tls-ca` for mTLS) so nothing can poison a
+ * shared budget.
  */
 
 import { readFileSync } from "node:fs";
@@ -13,6 +14,7 @@ import type { FailMode } from "throttlekit";
 
 import { serve } from "./grpc.js";
 import { createServerCredentials, createStore, isSecure } from "./runtime.js";
+import type { StoreType } from "./runtime.js";
 import { createRateLimiterServiceFromConfig } from "./service.js";
 
 interface Args {
@@ -20,8 +22,12 @@ interface Args {
   host: string;
   port: number;
   fail: FailMode;
+  store?: StoreType;
   redis?: string;
   redisPrefix?: string;
+  postgresUrl?: string;
+  postgresTable?: string;
+  postgresPrefix?: string;
   tlsCert?: string;
   tlsKey?: string;
   tlsCa?: string;
@@ -54,11 +60,28 @@ function parseArgs(argv: string[]): Args {
         args.fail = v;
         break;
       }
+      case "--store": {
+        const v = argv[++i];
+        if (v !== "memory" && v !== "redis" && v !== "postgres") {
+          throw new Error(`--store must be memory|redis|postgres, got ${v}`);
+        }
+        args.store = v;
+        break;
+      }
       case "--redis":
         args.redis = argv[++i];
         break;
       case "--redis-prefix":
         args.redisPrefix = argv[++i];
+        break;
+      case "--postgres-url":
+        args.postgresUrl = argv[++i];
+        break;
+      case "--postgres-table":
+        args.postgresTable = argv[++i];
+        break;
+      case "--postgres-prefix":
+        args.postgresPrefix = argv[++i];
         break;
       case "--tls-cert":
         args.tlsCert = argv[++i];
@@ -86,8 +109,12 @@ Options:
       --host <host>       bind host (default 0.0.0.0)
   -p, --port <port>       bind port (default 50051)
       --fail open|closed  store-outage policy (default open)
+      --store <backend>   backing store: memory|redis|postgres (inferred from the URL flags if omitted)
       --redis <url>       share a Redis store across instances (fleet mode); omit for in-process memory
       --redis-prefix <p>  key prefix for the shared Redis store
+      --postgres-url <url>   share a Postgres store across instances (no Redis required)
+      --postgres-table <t>   table holding limiter state (default throttlekit)
+      --postgres-prefix <p>  key prefix for the shared Postgres store
       --tls-cert <path>   PEM server certificate  ┐ enable TLS
       --tls-key <path>    PEM server private key   ┘
       --tls-ca <path>     PEM CA bundle ⇒ require + verify client certs (mTLS)
@@ -122,9 +149,13 @@ async function main(): Promise<void> {
   }
 
   const text = readFileSync(args.config, "utf8");
-  const { store, distributed, dispose } = createStore({
+  const { store, mode, dispose } = await createStore({
+    store: args.store,
     redisUrl: args.redis,
     redisPrefix: args.redisPrefix,
+    postgresUrl: args.postgresUrl,
+    postgresTable: args.postgresTable,
+    postgresPrefix: args.postgresPrefix,
   });
   const service = createRateLimiterServiceFromConfig(text, {
     ...(store !== undefined ? { store } : {}),
@@ -137,7 +168,6 @@ async function main(): Promise<void> {
     credentials: createServerCredentials(tls),
   });
 
-  const mode = distributed ? "redis" : "memory";
   const security = args.tlsCa !== undefined ? "mTLS" : secure ? "TLS" : "insecure";
   console.log(
     `throttlekit-server listening on ${args.host}:${running.port} ` +
