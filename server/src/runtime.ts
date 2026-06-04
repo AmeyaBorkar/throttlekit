@@ -13,21 +13,28 @@ import { readFileSync } from "node:fs";
 import * as grpc from "@grpc/grpc-js";
 import { Redis } from "ioredis";
 import type { Store } from "throttlekit";
+import { DynamoStore } from "throttlekit/dynamodb";
+import type {
+  DynamoClientLike,
+  DynamoDeleteInput,
+  DynamoGetInput,
+  DynamoPutInput,
+} from "throttlekit/dynamodb";
 import { PostgresStore } from "throttlekit/postgres";
 import type { PgPoolLike } from "throttlekit/postgres";
 import { RedisStore } from "throttlekit/redis";
 import type { RedisClientLike } from "throttlekit/redis";
 
 /** Which backend holds the limiter state. `memory` is per-policy in-process; the rest are shared. */
-export type StoreType = "memory" | "redis" | "postgres";
+export type StoreType = "memory" | "redis" | "postgres" | "dynamodb";
 
 /**
  * How the served policies are backed. `store` selects the backend explicitly; when omitted it is
- * inferred (a `postgresUrl` ⇒ postgres, else a `redisUrl` ⇒ redis, else memory) so the legacy
- * `--redis <url>`-only invocation keeps working unchanged.
+ * inferred from the lone connection signal (a `postgresUrl` ⇒ postgres, a `redisUrl` ⇒ redis, a
+ * `dynamodbTable` ⇒ dynamodb, else memory) so the legacy `--redis <url>`-only invocation keeps working.
  */
 export interface StoreSpec {
-  /** Explicit backend. Omit to infer from which connection URL is present (back-compat). */
+  /** Explicit backend. Omit to infer from which connection signal is present (back-compat). */
   store?: StoreType;
   /** Redis connection URL (e.g. `redis://localhost:6379`). */
   redisUrl?: string;
@@ -39,6 +46,17 @@ export interface StoreSpec {
   postgresTable?: string;
   /** Optional key prefix applied across the shared Postgres store. */
   postgresPrefix?: string;
+  /** DynamoDB table name (its presence is the dynamodb signal; provision it unless `dynamodbCreateTable`). */
+  dynamodbTable?: string;
+  /** AWS region for the DynamoDB store (else the SDK's default chain / `AWS_REGION`). */
+  dynamodbRegion?: string;
+  /** Override the DynamoDB endpoint — e.g. `http://localhost:8000` for dynamodb-local. */
+  dynamodbEndpoint?: string;
+  /** Optional key prefix applied across the shared DynamoDB store. */
+  dynamodbPrefix?: string;
+  /** Create the table (a single `pk` string partition key, on-demand billing) if absent, then wait for
+   * it to become active. A dev/local convenience — production usually points at a pre-provisioned table. */
+  dynamodbCreateTable?: boolean;
 }
 
 /** A resolved store plus a disposer for any resources it owns (a Redis connection / a pg Pool). */
@@ -54,20 +72,23 @@ export interface ResolvedStore {
 }
 
 /**
- * Resolve the effective backend. An explicit `store` wins; otherwise infer it from the connection
- * URLs. A Redis **and** a Postgres URL with no explicit `store` is rejected so a stray flag can't
- * silently pick the wrong backend.
+ * Resolve the effective backend. An explicit `store` wins; otherwise infer it from the lone connection
+ * signal. More than one signal with no explicit `store` is rejected so a stray flag can't silently pick
+ * the wrong backend.
  */
 export function resolveStoreType(spec: StoreSpec): StoreType {
   if (spec.store !== undefined) return spec.store;
-  if (spec.redisUrl !== undefined && spec.postgresUrl !== undefined) {
+  const inferred: StoreType[] = [
+    spec.redisUrl !== undefined ? "redis" : undefined,
+    spec.postgresUrl !== undefined ? "postgres" : undefined,
+    spec.dynamodbTable !== undefined ? "dynamodb" : undefined,
+  ].filter((s): s is StoreType => s !== undefined);
+  if (inferred.length > 1) {
     throw new Error(
-      "ambiguous store: both --redis and --postgres-url were given; pass --store to choose one",
+      `ambiguous store: ${inferred.join(" + ")} all implied; pass --store to choose one`,
     );
   }
-  if (spec.postgresUrl !== undefined) return "postgres";
-  if (spec.redisUrl !== undefined) return "redis";
-  return "memory";
+  return inferred[0] ?? "memory";
 }
 
 /** A `pg.Pool` constructor narrowed to the slice we use (a {@link PgPoolLike} plus async `end`). */
@@ -93,6 +114,109 @@ async function loadPgPoolCtor(): Promise<PgPoolCtor> {
   const Pool = mod.Pool ?? mod.default?.Pool;
   if (Pool === undefined) throw new Error("the 'pg' module did not export a Pool constructor");
   return Pool;
+}
+
+// The minimal slices of the AWS SDK v3 the DynamoDB door uses, so the untyped lazy imports below stay
+// type-checked without depending on @aws-sdk types at build time.
+interface DdbClient {
+  send(command: unknown): Promise<{ Item?: Record<string, unknown> }>;
+  destroy(): void;
+}
+interface AwsDdbClientModule {
+  DynamoDBClient: new (config: { region?: string; endpoint?: string }) => DdbClient;
+  CreateTableCommand: new (input: unknown) => unknown;
+  waitUntilTableExists: (
+    cfg: { client: DdbClient; maxWaitTime: number },
+    params: { TableName: string },
+  ) => Promise<unknown>;
+}
+interface AwsDdbLibModule {
+  DynamoDBDocumentClient: { from(client: DdbClient): DdbClient };
+  GetCommand: new (input: DynamoGetInput) => unknown;
+  PutCommand: new (input: DynamoPutInput) => unknown;
+  DeleteCommand: new (input: DynamoDeleteInput) => unknown;
+}
+
+// Lazy, untyped specifiers (same rationale as pg): the AWS SDK is a large dependency only a
+// `--store dynamodb` deployment needs, and tsc must not demand its types at build time.
+const AWS_DDB_CLIENT_MODULE: string = "@aws-sdk/client-dynamodb";
+const AWS_DDB_LIB_MODULE: string = "@aws-sdk/lib-dynamodb";
+
+/** Create the single-`pk` table (on-demand billing) if it doesn't already exist, then wait for it. */
+async function ensureDynamoTable(
+  ddb: DdbClient,
+  CreateTableCommand: AwsDdbClientModule["CreateTableCommand"],
+  waitUntilTableExists: AwsDdbClientModule["waitUntilTableExists"],
+  table: string,
+): Promise<void> {
+  try {
+    await ddb.send(
+      new CreateTableCommand({
+        TableName: table,
+        AttributeDefinitions: [{ AttributeName: "pk", AttributeType: "S" }],
+        KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }],
+        BillingMode: "PAY_PER_REQUEST",
+      }),
+    );
+  } catch (err) {
+    // The table already exists ⇒ idempotent no-op; anything else is a real failure.
+    const name =
+      typeof err === "object" && err !== null ? (err as { name?: unknown }).name : undefined;
+    if (name !== "ResourceInUseException") throw err;
+  }
+  await waitUntilTableExists({ client: ddb, maxWaitTime: 30 }, { TableName: table });
+}
+
+/** Build a DynamoDB-backed store + its disposer, lazily loading the AWS SDK and adapting its doc client. */
+async function buildDynamoStore(
+  spec: StoreSpec,
+): Promise<{ store: Store; dispose: () => Promise<void> }> {
+  if (spec.dynamodbTable === undefined) {
+    throw new Error("--store dynamodb requires --dynamodb-table <name>");
+  }
+  let clientMod: AwsDdbClientModule;
+  let libMod: AwsDdbLibModule;
+  try {
+    clientMod = (await import(AWS_DDB_CLIENT_MODULE)) as AwsDdbClientModule;
+    libMod = (await import(AWS_DDB_LIB_MODULE)) as AwsDdbLibModule;
+  } catch {
+    throw new Error(
+      "--store dynamodb needs '@aws-sdk/client-dynamodb' and '@aws-sdk/lib-dynamodb', which are not installed. Run `npm install @aws-sdk/client-dynamodb @aws-sdk/lib-dynamodb`.",
+    );
+  }
+  const { DynamoDBClient, CreateTableCommand, waitUntilTableExists } = clientMod;
+  const { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand } = libMod;
+
+  // The SDK client connects lazily on first command, so construction never blocks on a live service.
+  const ddb = new DynamoDBClient({
+    ...(spec.dynamodbRegion !== undefined ? { region: spec.dynamodbRegion } : {}),
+    ...(spec.dynamodbEndpoint !== undefined ? { endpoint: spec.dynamodbEndpoint } : {}),
+  });
+  const table = spec.dynamodbTable;
+
+  if (spec.dynamodbCreateTable === true) {
+    await ensureDynamoTable(ddb, CreateTableCommand, waitUntilTableExists, table);
+  }
+
+  // The document client + the mechanical pass-through adapter the core documents (its `DynamoClientLike`
+  // input shapes are byte-for-byte the SDK command inputs).
+  const doc = DynamoDBDocumentClient.from(ddb);
+  const client: DynamoClientLike = {
+    get: (input: DynamoGetInput) => doc.send(new GetCommand(input)).then((r) => r.Item),
+    put: (input: DynamoPutInput) => doc.send(new PutCommand(input)).then(() => undefined),
+    delete: (input: DynamoDeleteInput) => doc.send(new DeleteCommand(input)).then(() => undefined),
+  };
+  const store = new DynamoStore({
+    client,
+    tableName: table,
+    ...(spec.dynamodbPrefix !== undefined ? { prefix: spec.dynamodbPrefix } : {}),
+  });
+  return {
+    store,
+    dispose: async () => {
+      ddb.destroy();
+    },
+  };
 }
 
 /**
@@ -146,6 +270,10 @@ export async function createStore(spec: StoreSpec): Promise<ResolvedStore> {
           await pool.end();
         },
       };
+    }
+    case "dynamodb": {
+      const { store, dispose } = await buildDynamoStore(spec);
+      return { store, mode, distributed: true, dispose };
     }
   }
 }

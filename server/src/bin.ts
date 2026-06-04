@@ -2,10 +2,10 @@
 /**
  * `throttlekit-server` CLI. Loads a `.throttlekit.yaml`/`.json` policy file and serves it over gRPC.
  *
- * Point multiple instances at one shared store — `--redis <url>` or `--postgres-url <url>` — to run a
- * coordinated fleet (one shared limit); omit both for a single-instance in-process memory store. Front
- * anything non-loopback with `--tls-cert/--tls-key` (add `--tls-ca` for mTLS) so nothing can poison a
- * shared budget.
+ * Point multiple instances at one shared store — `--redis <url>`, `--postgres-url <url>`, or
+ * `--dynamodb-table <name>` — to run a coordinated fleet (one shared limit); omit all for a
+ * single-instance in-process memory store. Front anything non-loopback with `--tls-cert/--tls-key`
+ * (add `--tls-ca` for mTLS) so nothing can poison a shared budget.
  */
 
 import { readFileSync } from "node:fs";
@@ -28,6 +28,11 @@ interface Args {
   postgresUrl?: string;
   postgresTable?: string;
   postgresPrefix?: string;
+  dynamodbTable?: string;
+  dynamodbRegion?: string;
+  dynamodbEndpoint?: string;
+  dynamodbPrefix?: string;
+  dynamodbCreateTable?: boolean;
   tlsCert?: string;
   tlsKey?: string;
   tlsCa?: string;
@@ -62,8 +67,8 @@ function parseArgs(argv: string[]): Args {
       }
       case "--store": {
         const v = argv[++i];
-        if (v !== "memory" && v !== "redis" && v !== "postgres") {
-          throw new Error(`--store must be memory|redis|postgres, got ${v}`);
+        if (v !== "memory" && v !== "redis" && v !== "postgres" && v !== "dynamodb") {
+          throw new Error(`--store must be memory|redis|postgres|dynamodb, got ${v}`);
         }
         args.store = v;
         break;
@@ -82,6 +87,21 @@ function parseArgs(argv: string[]): Args {
         break;
       case "--postgres-prefix":
         args.postgresPrefix = argv[++i];
+        break;
+      case "--dynamodb-table":
+        args.dynamodbTable = argv[++i];
+        break;
+      case "--dynamodb-region":
+        args.dynamodbRegion = argv[++i];
+        break;
+      case "--dynamodb-endpoint":
+        args.dynamodbEndpoint = argv[++i];
+        break;
+      case "--dynamodb-prefix":
+        args.dynamodbPrefix = argv[++i];
+        break;
+      case "--dynamodb-create-table":
+        args.dynamodbCreateTable = true;
         break;
       case "--tls-cert":
         args.tlsCert = argv[++i];
@@ -115,6 +135,11 @@ Options:
       --postgres-url <url>   share a Postgres store across instances (no Redis required)
       --postgres-table <t>   table holding limiter state (default throttlekit)
       --postgres-prefix <p>  key prefix for the shared Postgres store
+      --dynamodb-table <t>      back the fleet with a DynamoDB table (no Redis required)
+      --dynamodb-region <r>     AWS region (else AWS_REGION / the default credential chain)
+      --dynamodb-endpoint <url> override the endpoint (e.g. http://localhost:8000 for dynamodb-local)
+      --dynamodb-prefix <p>     key prefix for the shared DynamoDB store
+      --dynamodb-create-table   create the table if absent (dev convenience), then wait for it
       --tls-cert <path>   PEM server certificate  ┐ enable TLS
       --tls-key <path>    PEM server private key   ┘
       --tls-ca <path>     PEM CA bundle ⇒ require + verify client certs (mTLS)
@@ -156,6 +181,11 @@ async function main(): Promise<void> {
     postgresUrl: args.postgresUrl,
     postgresTable: args.postgresTable,
     postgresPrefix: args.postgresPrefix,
+    dynamodbTable: args.dynamodbTable,
+    dynamodbRegion: args.dynamodbRegion,
+    dynamodbEndpoint: args.dynamodbEndpoint,
+    dynamodbPrefix: args.dynamodbPrefix,
+    dynamodbCreateTable: args.dynamodbCreateTable,
   });
   const service = createRateLimiterServiceFromConfig(text, {
     ...(store !== undefined ? { store } : {}),

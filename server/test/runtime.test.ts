@@ -25,6 +25,10 @@ describe("runtime: store type resolution", () => {
     expect(resolveStoreType({ postgresUrl: "postgres://localhost:5432/db" })).toBe("postgres");
   });
 
+  it("infers dynamodb from a dynamodbTable", () => {
+    expect(resolveStoreType({ dynamodbTable: "throttlekit" })).toBe("dynamodb");
+  });
+
   it("an explicit store wins over inference", () => {
     expect(resolveStoreType({ store: "memory", redisUrl: "redis://localhost:6379" })).toBe(
       "memory",
@@ -37,6 +41,12 @@ describe("runtime: store type resolution", () => {
         redisUrl: "redis://localhost:6379",
         postgresUrl: "postgres://localhost:5432/db",
       }),
+    ).toThrow(/ambiguous/);
+  });
+
+  it("rejects an ambiguous postgres+dynamodb spec with no explicit store", () => {
+    expect(() =>
+      resolveStoreType({ postgresUrl: "postgres://localhost:5432/db", dynamodbTable: "t" }),
     ).toThrow(/ambiguous/);
   });
 });
@@ -76,6 +86,25 @@ describe("runtime: store selection", () => {
 
   it("rejects an explicit --store redis with no --redis url", async () => {
     await expect(createStore({ store: "redis" })).rejects.toThrow(/--redis/);
+  });
+
+  it("builds a DynamoDB store when a dynamodbTable is given (lazy client, no live service)", async () => {
+    const resolved = await createStore({
+      store: "dynamodb",
+      dynamodbTable: "tk_unit",
+      dynamodbRegion: "us-east-1",
+      dynamodbEndpoint: "http://127.0.0.1:1", // unreachable, but the AWS client connects lazily
+      dynamodbPrefix: "tk",
+      // dynamodbCreateTable omitted ⇒ no network: just construct the store + adapter.
+    });
+    expect(resolved.store).toBeDefined();
+    expect(resolved.mode).toBe("dynamodb");
+    expect(resolved.distributed).toBe(true);
+    await resolved.dispose(); // destroy the never-used client
+  });
+
+  it("rejects an explicit --store dynamodb with no --dynamodb-table", async () => {
+    await expect(createStore({ store: "dynamodb" })).rejects.toThrow(/--dynamodb-table/);
   });
 });
 
