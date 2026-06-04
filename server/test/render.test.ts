@@ -56,10 +56,9 @@ function sampleSnapshot(): LensSnapshot {
       {
         name: "unified-api",
         kind: "admitter",
-        analytics: admitterAnalytics(
-          { rate: 6, concurrency: 2, cost: 1, policy: 1 },
-          [{ key: "user-42", count: 312 }],
-        ),
+        analytics: admitterAnalytics({ rate: 6, concurrency: 2, cost: 1, policy: 1 }, [
+          { key: "user-42", count: 312 },
+        ]),
         limit: 5,
       },
     ],

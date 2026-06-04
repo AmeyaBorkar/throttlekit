@@ -325,8 +325,12 @@ export function renderFrame(snap: LensSnapshot, opts: RenderOptions): string[] {
 
   content.push(sectionHeader("BINDING AXIS  /  TOP DENIED KEYS", cols));
   const heroBudget = 5;
-  const left = bindingAxisPanel(snap, Math.floor(cols / 2), heroBudget);
-  const right = topKeysPanel(snap, Math.floor(cols / 2), heroBudget);
+  // Build each panel to the EXACT column width twoColumn will place it in (gutter 2), so the right
+  // column's count field isn't clipped by the final clamp.
+  const heroGutter = 2;
+  const leftW = Math.floor((cols - heroGutter) / 2);
+  const left = bindingAxisPanel(snap, leftW, heroBudget);
+  const right = topKeysPanel(snap, cols - heroGutter - leftW, heroBudget);
   content.push(...twoColumn(left, right, cols));
   content.push(BLANK);
 
