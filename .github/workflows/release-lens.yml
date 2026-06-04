@@ -1,0 +1,80 @@
+name: Release lens
+
+# Publishes the throttlekit-lens package to npm when a `lens-v*` tag is pushed, e.g.
+#   git tag lens-v0.1.0-experimental.0 && git push origin lens-v0.1.0-experimental.0
+# The Lens resolves `throttlekit` from the monorepo (its dev tooling points at the local source +
+# built declarations), so the core is built first, then the Lens is built/tested/published. It reuses
+# the repo's NPM_TOKEN secret; without it the job still builds + tests, then skips the publish.
+
+on:
+  push:
+    tags:
+      - "lens-v*"
+
+permissions:
+  contents: write # create the prerelease GitHub Release for the lens-v* tag
+  id-token: write # npm provenance attestations
+
+jobs:
+  publish:
+    name: Build & publish (lens)
+    runs-on: ubuntu-latest
+    env:
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+      # Build the core first so the Lens resolves `throttlekit` from dist/ (tsc paths) + src/ (vitest).
+      - run: npm ci
+      - run: npm run build
+      # Then the Lens package itself.
+      - run: npm install
+        working-directory: lens
+      - run: npm run lint
+        working-directory: lens
+      - run: npm run typecheck
+        working-directory: lens
+      - run: npm run build
+        working-directory: lens
+      - run: npm test
+        working-directory: lens
+      - name: Publish to npm (with provenance)
+        if: ${{ env.HAS_NPM_TOKEN == 'true' }}
+        run: npm publish --provenance --access public
+        working-directory: lens
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish skipped (no NPM_TOKEN)
+        if: ${{ env.HAS_NPM_TOKEN != 'true' }}
+        run: echo "::notice title=npm publish skipped::Set the NPM_TOKEN repository secret, then re-push the lens-v* tag to publish throttlekit-lens."
+      - name: Create (or update) the GitHub Release for this tag
+        # throttlekit-lens is @experimental and versions independently of the core, so its Release is
+        # always a pre-release. Idempotent: a re-pushed tag updates the Release.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#lens-v}"
+          NOTES=$(awk -v hdr="## [$VERSION]" '
+            index($0, hdr) == 1               { capture=1; next }
+            capture && index($0, "## [") == 1 { exit }
+            capture                           { print }
+          ' lens/CHANGELOG.md)
+          NOTES_FILE="$(mktemp)"
+          {
+            if printf '%s' "$NOTES" | grep -q '[^[:space:]]'; then
+              printf '%s\n\n' "$NOTES"
+            else
+              printf 'throttlekit-lens %s. See lens/CHANGELOG.md.\n\n' "$VERSION"
+            fi
+            printf 'Install: `npm i throttlekit-lens@%s`\n' "$VERSION"
+          } > "$NOTES_FILE"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "throttlekit-lens $VERSION" --notes-file "$NOTES_FILE" --prerelease
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "throttlekit-lens $VERSION" --notes-file "$NOTES_FILE" --prerelease --verify-tag
+          fi
