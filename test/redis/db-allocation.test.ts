@@ -9,8 +9,8 @@
  *
  * The suite invariant is ONE dedicated logical DB per Redis-backed test file. There are more
  * Redis-backed files than the 16 logical DBs stock Redis provides (and CI's service container
- * can't be given more), so exactly one pair must co-tenant a DB — that pair is sanctioned ONLY
- * because it is provably flush-free (neither file FLUSHDBs; keys are uniquely namespaced).
+ * can't be given more), so one logical DB is co-tenanted by a sanctioned GROUP — sanctioned ONLY
+ * because every file in it is provably flush-free (none FLUSHDBs; keys are uniquely namespaced).
  *
  * This test is a pure static scan (no Redis needed, never skipped). If you add a Redis-backed
  * test file, give it an unused DB number — or, if you must share, make BOTH co-tenants flush-free
@@ -29,7 +29,14 @@ const SELF = "db-allocation.test.ts";
 // The single sanctioned co-tenancy: logical DB -> the exact set of files allowed to share it.
 // Both are flush-free (no DB-global FLUSHDB) with disjoint, per-run/per-attempt key namespaces.
 const SANCTIONED_SHARE = new Map<number, ReadonlySet<string>>([
-  [7, new Set(["node-redis.test.ts", "weighted-fair-escrow-properties.test.ts"])],
+  [
+    7,
+    new Set([
+      "node-redis.test.ts",
+      "weighted-fair-escrow-properties.test.ts",
+      "cross-store-equivalence.test.ts",
+    ]),
+  ],
 ]);
 
 /** A client-option DB selector: ioredis `db: N` or node-redis `database: N` (with the colon). */
@@ -82,10 +89,14 @@ describe("Redis logical-DB allocation (static guard, no Redis required)", () => 
     ).toEqual([]);
   });
 
-  it("the sanctioned node-redis ↔ weighted-fair-escrow pair is still intact on DB 7", () => {
-    // Guards the other direction: if someone moves one of the pair off DB 7, the exception is
+  it("the sanctioned flush-free co-tenancy on DB 7 is still intact", () => {
+    // Guards the other direction: if someone moves one of the group off DB 7, the exception is
     // stale and should be removed — fail loudly so it can't silently mask a future real collision.
     const owners = [...(byDb.get(7) ?? new Set<string>())].sort();
-    expect(owners).toEqual(["node-redis.test.ts", "weighted-fair-escrow-properties.test.ts"]);
+    expect(owners).toEqual([
+      "cross-store-equivalence.test.ts",
+      "node-redis.test.ts",
+      "weighted-fair-escrow-properties.test.ts",
+    ]);
   });
 });
