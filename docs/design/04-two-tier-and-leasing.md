@@ -2,7 +2,7 @@
 
 > The distributed engine: how a fleet enforces one global limit without paying a network round trip per
 > request — and how the over-admission is held to a hard, *fleet-size-independent* bound. Internally this
-> is **GALE** (provable distributed leasing). Source: `src/twotier/`, `spec/`, `docs/FORMAL-MODEL.md`.
+> is **GALE** (*Globally-Accounted Learned Escrow*) — provable distributed leasing. Source: `src/twotier/`, `spec/`, `docs/FORMAL-MODEL.md`.
 
 ## Purpose
 

@@ -1,8 +1,8 @@
 # ThrottleKit — Design & Architecture
 
 > **Rate limiting you can prove — built on GALE and TALE.** A pluggable, framework-agnostic
-> toolkit for Node and the web, correct by construction: **GALE** gives a *machine-checked*,
-> fleet-size-independent overshoot bound on distributed leasing, and **TALE** a `max_tokens`-independent
+> toolkit for Node and the web, correct by construction: **GALE** (*Globally-Accounted Learned Escrow*) gives a *machine-checked*,
+> fleet-size-independent overshoot bound on distributed leasing, and **TALE** (*Temporally-Accounted Learned Escrow*) a `max_tokens`-independent
 > bound on LLM token budgets — with no network call on the hot path, and the fastest option in its
 > class, without sacrificing accuracy or developer ergonomics.
 

@@ -8,7 +8,7 @@
 
 **Beyond rate limiting — govern rate, concurrency, and cost, _provably_.** *Meter what your LLM spends. Prove what your fleet admits.* Counting requests is the easy 10%; ThrottleKit governs the three axes a real request must clear — **rate**, **concurrency**, and **cost** — each behind a bound you can prove.
 
-Two engines do the hard part. **GALE** (provable distributed leasing) holds global overshoot to a **fleet-size-independent** bound, **machine-checked in TLA⁺**. **TALE** (token-budget escrow) meters an LLM's output tokens — known only as they stream — and bounds them anyway. All on one small core: a **169 ns** in-process check (5.9M ops/s, effectively allocation-free), **zero runtime dependencies**, proven bit-identical across six stores.
+Two engines do the hard part. **GALE** (*Globally-Accounted Learned Escrow*) holds global overshoot to a **fleet-size-independent** bound, **machine-checked in TLA⁺**. **TALE** (*Temporally-Accounted Learned Escrow*) meters an LLM's output tokens — known only as they stream — and bounds them anyway. All on one small core: a **169 ns** in-process check (5.9M ops/s, effectively allocation-free), **zero runtime dependencies**, proven bit-identical across six stores.
 
 Most limiters just count requests — fine in one process, "probably fine" across a fleet, and silent on the two axes that actually cost you money: concurrency and tokens. ThrottleKit states its bounds, and proves them.
 

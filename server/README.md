@@ -2,7 +2,7 @@
 
 **Beyond rate limiting — over the wire.** The **gRPC service door** for
 [ThrottleKit](https://www.npmjs.com/package/throttlekit): run the proven core that governs **rate,
-concurrency, and cost** — its **GALE** (provable distributed leasing) and **TALE** (LLM token-budget escrow)
+concurrency, and cost** — its **GALE** (*Globally-Accounted Learned Escrow*) and **TALE** (*Temporally-Accounted Learned Escrow*)
 engines — as a network service so **polyglot clients** (Python, Go, …) get decisions **identical** to an
 embedded Node library, without re-implementing any algorithm or touching the raw Lua wire.
 
