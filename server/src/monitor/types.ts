@@ -157,7 +157,10 @@ export interface LensTenantBurnRow {
    * "(resets in Ns)" instead of the raw ETA. Always `false` when `etaToExhaustAt` is `null`.
    */
   etaCappedByWindow: boolean;
-  /** Why `burnPerSec` / `etaToExhaustAt` is `null`, when it is — so the view labels the cause honestly. */
+  /**
+   * Why burn is degraded — so the view labels the cause honestly: `"warming"` / `"window-too-short"`
+   * (`burnPerSec` is `null`, no usable rate yet) or `"idle"` (`burnPerSec` is `0`, samples but no burn).
+   */
   burnReason?: "warming" | "window-too-short" | "idle";
 }
 
@@ -208,6 +211,11 @@ export interface LensCostRoomSnapshot {
   costDenied?: number;
   /** Per-key cost-lane heavy hitters — absent for the same reason as {@link costDenied}. */
   topCostKeys?: Array<{ key: string; count: number }>;
+  /**
+   * Total tenants in the WFE roster this frame (may exceed `tenants.length`, which is bounded to the
+   * render candidate set). Lets the view render an honest "+N more" without carrying every row.
+   */
+  activeTenants?: number;
   /** The per-tenant ledger rows (bounded to the render candidate set + headroom). */
   tenants: LensTenantBurnRow[];
 }

@@ -31,8 +31,10 @@ import {
   withAdmissionAnalytics,
   withAnalytics,
 } from "throttlekit";
+import { isCostRoomSnapshot } from "./burn.js";
 import { RingBuffer } from "./ring.js";
 import type {
+  LensCostRoomSnapshot,
   LensDenialRow,
   LensFenceRow,
   LensGuardSnapshot,
@@ -224,11 +226,19 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
       const guardSnaps: LensGuardSnapshot[] = guards.map(({ name, guard }) =>
         guardSnapshot(name, guard),
       );
-      const stats: LensStatsSnapshot[] = customStats.map(({ name, kind, read }) => ({
-        name,
-        kind,
-        value: safeRead(read),
-      }));
+      // A "cost-room" source's read returns a fully-built LensCostRoomSnapshot (it owns its own burn
+      // accumulator); route those into `costRooms`. Every other custom stat feeds the generic `stats`
+      // array as before. A throwing/unavailable source is dropped honestly (safeRead → `{error}`).
+      const stats: LensStatsSnapshot[] = [];
+      const costRooms: LensCostRoomSnapshot[] = [];
+      for (const { name, kind, read } of customStats) {
+        const value = safeRead(read);
+        if (kind === "cost-room") {
+          if (isCostRoomSnapshot(value)) costRooms.push(value);
+        } else {
+          stats.push({ name, kind, value });
+        }
+      }
       const snap: LensSnapshot = {
         meta: { generatedAt: clock.now(), windowMs, mode: "process", lensVersion: MONITOR_VERSION },
         policies,
@@ -237,6 +247,7 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
         recentDenials: recentDenials.toArray(),
         recentFences: recentFences.toArray(),
       };
+      if (costRooms.length > 0) snap.costRooms = costRooms;
       if (options.nodeId !== undefined) snap.meta.nodeId = options.nodeId;
       if (health !== undefined) snap.health = health;
       return snap;
