@@ -4,11 +4,13 @@
  *   cd server && npm run build && node examples/tui-demo.mjs    # run in a REAL terminal; press q to quit
  *
  * It builds the same telemetry hub the server uses, taps a couple of rate limiters, a unified
- * (rate × concurrency) admitter, and a concurrency guard, then drives randomized load so the board
- * animates: throughput, the binding-axis hero, top denied keys, concurrency health, and the live feed.
+ * (rate × concurrency) admitter, a concurrency guard, and a weighted-fair-escrow budget, then drives
+ * randomized load so every view animates — press 1-5 / Tab to switch between Overview, Latency, and
+ * Fairness (throughput, the binding-axis hero, top denied keys, concurrency health, the live feed).
  */
 
 import { MemoryStore, adaptiveConcurrency, gcra, rateLimit, unifiedAdmission } from "throttlekit";
+import { weightedFairEscrow } from "throttlekit/twotier";
 import { createLensHub } from "../dist/monitor/hub.js";
 import { runTui } from "../dist/tui.js";
 
@@ -31,6 +33,14 @@ const unified = hub.trackAdmitter(
   }),
 );
 const checkout = hub.trackGuard("checkout", adaptiveConcurrency({ minLimit: 8, maxLimit: 8 }));
+
+// Weighted-fair-escrow: one shared budget split across tenants by weight (the Fairness view reads stats()).
+const fair = weightedFairEscrow({
+  limit: 1000,
+  windowMs: 60_000,
+  weightOf: (t) => ({ "tenant-aci": 3, "user-7": 2 })[t] ?? 1,
+});
+hub.trackStats("fair-api", "wfe", () => fair.stats());
 
 // Weighted keys — a few hot ones so the top-K and the feed look real.
 const keys = [
@@ -68,6 +78,10 @@ async function tick() {
       try {
         holds.shift().release();
       } catch {}
+
+  // Weighted-fair tenants: heavier tenants (tenant-aci ×3, user-7 ×2) push past their guaranteed share
+  // and borrow idle tenants' surplus — so the Fairness view shows green (within guarantee) + yellow (borrow).
+  for (let i = 0; i < 6; i++) fair.checkSync(pick(), 1 + ((Math.random() * 6) | 0));
 
   // Standalone concurrency guard: oscillate inflight for the concurrency-health panel.
   for (let i = 0; i < 3; i++) {

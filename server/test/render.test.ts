@@ -64,7 +64,23 @@ function sampleSnapshot(): LensSnapshot {
       },
     ],
     guards: [{ name: "checkout", limit: 8, inflight: 6, rttNoload: 12, lastRtt: 14 }],
-    stats: [],
+    stats: [
+      {
+        name: "fair-api",
+        kind: "wfe",
+        value: {
+          windowStart: 0,
+          limit: 1000,
+          effectiveLimit: 1000,
+          pool: 50,
+          totalUsed: 950,
+          tenants: [
+            { tenant: "tenant-a", weight: 3, used: 800 }, // guarantee 750 → borrowed +50
+            { tenant: "tenant-b", weight: 1, used: 150 }, // guarantee 250 → under
+          ],
+        },
+      },
+    ],
     recentDenials: [
       {
         at: 1_700_000_000_000,
@@ -173,7 +189,7 @@ describe("renderFrame", () => {
 
   it("switches body by tab — a not-yet-built tab hides the overview sections, shows a placeholder", () => {
     const opts = baseOpts(100, 24);
-    opts.view.tab = "fairness"; // still a placeholder tab
+    opts.view.tab = "capacity"; // still a placeholder tab
     const frame = renderFrame(sampleSnapshot(), opts).join("\n");
     // The tab strip still lists every view, but the overview sections are gone, replaced by an
     // honest placeholder pointing at the (reachable) monitoring docs.
@@ -203,6 +219,48 @@ describe("renderFrame", () => {
     expect(frame).toContain("1.0s"); // 999.5 rounds up into seconds, not "1000ms"
     expect(frame).not.toContain("1000ms");
     expect(frame).toContain("1.5s"); // max 1500
+  });
+
+  it("renders the Fairness view with per-tenant guaranteed vs borrowed", () => {
+    const opts = baseOpts(100, 24);
+    opts.view.tab = "fairness";
+    const frame = renderFrame(sampleSnapshot(), opts).join("\n");
+    expect(frame).toContain("FAIRNESS");
+    expect(frame).toContain("fair-api");
+    expect(frame).toContain("tenant-a");
+    expect(frame).toContain("+50"); // tenant-a borrowed 50 above its 750 guarantee
+  });
+
+  it("Fairness view survives a malformed wfe source without throwing (a bad row renders nothing)", () => {
+    const snap = sampleSnapshot();
+    snap.stats = [
+      {
+        name: "bad",
+        kind: "wfe",
+        // A non-core source could hand back garbage: a null row, negative weight/used.
+        value: {
+          effectiveLimit: 1000,
+          totalUsed: 0,
+          pool: 1000,
+          tenants: [null, { tenant: "x", weight: -1, used: -5 }],
+        },
+      },
+    ] as unknown as LensSnapshot["stats"];
+    const opts = baseOpts(80, 20);
+    opts.view.tab = "fairness";
+    const frame = renderFrame(snap, opts); // must not throw
+    expect(frame).toHaveLength(20);
+    for (const line of frame) expect(line.length).toBe(80);
+  });
+
+  it("Fairness view shows an honest empty state with no wfe sources", () => {
+    const snap = sampleSnapshot();
+    snap.stats = [];
+    const opts = baseOpts(80, 20);
+    opts.view.tab = "fairness";
+    const frame = renderFrame(snap, opts).join("\n");
+    expect(frame).toContain("FAIRNESS");
+    expect(frame).toContain("no fair-share policies");
   });
 
   it("keeps the exact width invariant on every tab — at any size", () => {

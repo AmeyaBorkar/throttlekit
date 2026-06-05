@@ -309,6 +309,125 @@ function latencyBody(snap: LensSnapshot, cols: number): Line[] {
   return out;
 }
 
+/** The shape a `kind: "wfe"` stats source carries (a subset of the core's WeightedFairEscrowStats). */
+interface WfeStatsValue {
+  effectiveLimit: number;
+  totalUsed: number;
+  pool: number;
+  tenants: ReadonlyArray<{ tenant: string; weight: number; used: number }>;
+}
+
+/** Narrow an unknown `trackStats` value to the WFE shape — a malformed source renders nothing, not a crash. */
+function asWfe(v: unknown): WfeStatsValue | undefined {
+  if (v === null || typeof v !== "object") return undefined;
+  const o = v as Record<string, unknown>;
+  if (typeof o.effectiveLimit !== "number" || !Array.isArray(o.tenants)) return undefined;
+  return o as unknown as WfeStatsValue;
+}
+
+/**
+ * The Fairness view: for each weighted-fair-escrow policy, per-tenant guaranteed share vs used vs
+ * borrowed against the shared budget L. The guaranteed share gᵢ = ⌊wᵢ/ΣW · L_effective⌋ is recomputed
+ * over the active set (ΣW = total weight of the reporting tenants); the bar splits each tenant's use
+ * into the part within its guarantee (green) and the part borrowed from idle tenants' surplus (yellow).
+ */
+function fairnessBody(snap: LensSnapshot, cols: number): Line[] {
+  const wfes = snap.stats.filter((s) => s.kind === "wfe");
+  if (wfes.length === 0) {
+    return [
+      sectionHeader("FAIRNESS  ·  weighted-fair-escrow", cols),
+      BLANK,
+      [seg("  (no fair-share policies reporting)", "dim")],
+      [
+        seg(
+          `  weighted-fair-escrow splits one budget across tenants by weight — ${DOCS_URL}`,
+          "gray",
+        ),
+      ],
+    ];
+  }
+  const out: Line[] = [];
+  const nameW = 18;
+  const numW = 7;
+  for (const s of wfes) {
+    out.push(sectionHeader(`FAIRNESS  ·  ${s.name}`, cols));
+    const w = asWfe(s.value);
+    if (w === undefined) {
+      out.push([seg("  (stats unavailable)", "dim")]);
+      continue;
+    }
+    const L = w.effectiveLimit;
+    out.push([
+      seg(`  L ${compact(L)}`, "dim"),
+      seg(`   used ${compact(w.totalUsed)}`, "dim"),
+      seg(`   free ${compact(w.pool)}`, w.pool > 0 ? "green" : "yellow"),
+    ]);
+    // Coerce each tenant defensively — trackStats takes an arbitrary thunk, so a non-core source could
+    // hand a malformed row; a bad element must render nothing, never throw (which would collapse every tab).
+    const tenants = (w.tenants as readonly unknown[]).map((raw) => {
+      const t = (raw ?? {}) as { tenant?: unknown; weight?: unknown; used?: unknown };
+      return {
+        tenant: String(t.tenant ?? "?"),
+        weight: Math.max(0, Number(t.weight) || 0),
+        used: Math.max(0, Number(t.used) || 0),
+      };
+    });
+    if (tenants.length === 0) {
+      out.push([seg("  (no active tenants this window)", "dim")]);
+      continue;
+    }
+    // ΣW covers ALL reporting tenants (not just the rendered top-K). Use the core's exact operation order
+    // — ⌊w·L/ΣW⌋ (multiply-then-divide) — so the displayed guarantee is bit-identical to the core's gᵢ
+    // (divide-then-multiply drifts by ±1 in ~0.1% of float cases).
+    const totalWeight = tenants.reduce((a, t) => a + t.weight, 0) || 1;
+    const withGuar = tenants.map((t) => ({ ...t, guar: Math.floor((t.weight * L) / totalWeight) }));
+    // Rank by max(used, guarantee), so a starved high-weight tenant (low used, high guar — the textbook
+    // unfairness signal) stays visible rather than sorting to the bottom behind busy borrowers.
+    withGuar.sort((a, b) => Math.max(b.used, b.guar) - Math.max(a.used, a.guar));
+    const rows = withGuar.slice(0, 10);
+    const barW = Math.max(6, Math.min(28, cols - nameW - numW * 3 - 4));
+    out.push([
+      seg("  tenant".padEnd(nameW), "dim"),
+      seg("used".padStart(numW), "dim"),
+      seg("guar".padStart(numW), "dim"),
+      seg("borrow".padStart(numW), "dim"),
+    ]);
+    for (const t of rows) {
+      const within = Math.min(t.used, t.guar);
+      const borrow = Math.max(0, t.used - t.guar);
+      const greenW = L > 0 ? Math.max(0, Math.min(barW, Math.round((within / L) * barW))) : 0;
+      const yellowW =
+        L > 0 ? Math.max(0, Math.min(barW - greenW, Math.round((borrow / L) * barW))) : 0;
+      const emptyW = Math.max(0, barW - greenW - yellowW);
+      const name = `  ${t.tenant}`;
+      out.push([
+        seg(name.length > nameW ? `${name.slice(0, nameW - 1)}…` : name.padEnd(nameW)),
+        seg(compact(t.used).padStart(numW)),
+        seg(compact(t.guar).padStart(numW), "dim"),
+        seg(
+          (borrow > 0 ? `+${compact(borrow)}` : "—").padStart(numW),
+          borrow > 0 ? "yellow" : "dim",
+        ),
+        seg("  "),
+        seg(BAR_FULL.repeat(greenW), "green"),
+        seg(BAR_FULL.repeat(yellowW), "yellow"),
+        seg(BAR_EMPTY.repeat(emptyW), "gray"),
+      ]);
+    }
+    const hidden = withGuar.slice(10);
+    if (hidden.length > 0) {
+      const starved = hidden.filter((t) => t.used < t.guar).length;
+      out.push([
+        seg(
+          `  … +${hidden.length} more${starved > 0 ? ` (${starved} below guarantee)` : ""}`,
+          "dim",
+        ),
+      ]);
+    }
+  }
+  return out;
+}
+
 /** The binding-axis hero for the first unified admitter (the niche nobody else renders). */
 function bindingAxisPanel(snap: LensSnapshot, width: number, budget: number): Line[] {
   const admitter = snap.policies.find((p) => p.kind === "admitter");
@@ -463,6 +582,8 @@ export function renderFrame(snap: LensSnapshot, opts: RenderOptions): string[] {
     }
   } else if (opts.view.tab === "latency") {
     content.push(...latencyBody(snap, cols));
+  } else if (opts.view.tab === "fairness") {
+    content.push(...fairnessBody(snap, cols));
   } else {
     content.push(...placeholderBody(opts.view.tab));
   }

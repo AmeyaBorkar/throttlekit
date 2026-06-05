@@ -53,17 +53,19 @@ Render `LensPolicySnapshot.latency` — **already populated** by the hub (`hub.t
 ring per policy). MVP is render-only (avg/max/n per policy). Optional: upgrade the hub ring from avg/max to a
 **p50/p99 histogram** (the samples are already retained). No core changes.
 
-### T3 — Fairness (WFE) view
+### T3 — Fairness (WFE) view  — **view DONE; server source split to #284**
 Per-tenant **guaranteed-share vs used vs borrowed**. Core data is ready and rich
-(`WeightedFairEscrowStats`: `tenants[{tenant,weight,used}]`, `effectiveLimit`, `pool`, `totalUsed`). Work is
-all server-side glue + render:
-- **Config:** add a `fairEscrow:` policy block to `server/src/config.ts` (today it supports
-  rate / `twoTier` / `tokenBudget` / `concurrency` — **no WFE**), built from the core's
-  `weightedFairEscrow()`.
-- **Wire:** `wireMonitor` calls `hub.trackStats(name, "wfe", () => limiter.stats())` (it never calls
-  `trackStats` today).
-- **Render:** the `stats[]` array by `kind:"wfe"` → share/used/borrowed bars; compute guaranteed share =
-  `floor(weight/Σweight · effectiveLimit)`, borrowed = `used − guaranteed`.
+(`WeightedFairEscrowStats`: `tenants[{tenant,weight,used}]`, `effectiveLimit`, `pool`, `totalUsed`).
+- **Render (DONE, #278):** `stats[]` by `kind:"wfe"` → per-tenant bars; guaranteed = `floor(weight/ΣW ·
+  effectiveLimit)` over the reporting tenants, borrowed = `max(0, used − guaranteed)`; the bar splits each
+  tenant's use into green (within guarantee) + yellow (borrowed surplus). Renders from any
+  `hub.trackStats(name, "wfe", …)` source (wired in the demo).
+- **Finding:** in the installed `throttlekit@1.1.0`, `WeightedFairEscrowLimiter` is **not** a `Limiter`
+  (it has `check`/`checkSync(tenant,cost)`/`reset`/`stats()` but no `.strategy`/`.peek`/`.checkMany`/
+  `.forecast`), so it can't flow through the server's `createEnforcer` / `trackLimiter` limiter path.
+- **Server source (→ #284):** add a `fairEscrow:` config block + a dedicated service path (route
+  `check(policy,key,cost)` → `wfe.check(key,cost)`, key = tenant) + `wireMonitor` `trackStats`. This is the
+  only way the **server** populates the Fairness view; tracked separately because WFE needs a new surface.
 
 ### T4 — Capacity & Forecast view
 Per-policy remaining + a "refilled in X ms" ETA. Core `Forecast {spendableNow, nextReplenishAt, fullAt}`
