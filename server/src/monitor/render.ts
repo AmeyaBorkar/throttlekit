@@ -13,14 +13,16 @@
 
 import type { AdmissionAnalyticsSnapshot } from "throttlekit";
 import type {
+  LensCostRoomSnapshot,
   LensDenialRow,
   LensGuardSnapshot,
   LensPolicySnapshot,
   LensSnapshot,
+  LensTenantBurnRow,
 } from "./types.js";
 
 /** A dashboard tab. The body below the persistent header/throughput strip is per-tab. */
-export type TabId = "overview" | "latency" | "fairness" | "capacity" | "guarantee";
+export type TabId = "overview" | "latency" | "fairness" | "capacity" | "guarantee" | "cost";
 
 /**
  * The tabs in display + cycle order. Exported so the shell (`tui.ts`) maps number keys / Tab to them
@@ -33,6 +35,7 @@ export const TABS: readonly { readonly id: TabId; readonly label: string }[] = [
   { id: "fairness", label: "Fairness" },
   { id: "capacity", label: "Capacity" },
   { id: "guarantee", label: "Guarantee" },
+  { id: "cost", label: "Cost Room" },
 ];
 
 /** Live view state owned by the shell and threaded through each render. */
@@ -503,6 +506,144 @@ function forecastUnavailableLabel(p: LensPolicySnapshot): string {
   }
 }
 
+/** The honest label for a degraded (`null`) per-tenant burn rate. */
+function burnReasonLabel(r: LensTenantBurnRow["burnReason"]): string {
+  switch (r) {
+    case "window-too-short":
+      return "win<1.3s";
+    case "idle":
+      return "idle";
+    default:
+      return "warming";
+  }
+}
+
+/** One Cost Room tenant row: the work-conserving ledger + burn + floor-ETA + a used-vs-guarantee bar. */
+function costRoomRow(
+  t: LensTenantBurnRow,
+  L: number,
+  now: number,
+  windowEdge: number | null,
+  w: { nameW: number; ledgerW: number; burnW: number; etaW: number; barW: number },
+): Line {
+  // Coerce defensively — the renderer must never throw (a throw collapses every tab).
+  const tenant = String(t.tenant ?? "?");
+  const used = Math.max(0, Number(t.used) || 0);
+  const guar = Math.max(0, Number(t.guaranteed) || 0);
+  const borrow = Math.max(0, Number(t.borrowed) || 0);
+  const name = `  ${tenant}`;
+  const ledger = `${compact(used)} / ${compact(guar)}${borrow > 0 ? ` (+${compact(borrow)})` : ""}`;
+
+  // Burn: a number/s, or the honest degradation reason (warming / window-too-short / idle).
+  const bps = t.burnPerSec;
+  let burn: Seg;
+  if (typeof bps !== "number") burn = seg(burnReasonLabel(t.burnReason).padStart(w.burnW), "dim");
+  else if (bps === 0) burn = seg("idle".padStart(w.burnW), "dim");
+  else burn = seg(`${compact(bps)}/s`.padStart(w.burnW), "cyan");
+
+  // ETA to the guarantee floor (borrowing not counted). When the budget refills first, show the window
+  // reset instead of the (false) raw ETA — the load-bearing honesty clamp.
+  let eta: Seg;
+  if (typeof t.etaToExhaustAt !== "number") eta = seg("—".padStart(w.etaW), "dim");
+  else if (t.etaCappedByWindow && windowEdge !== null)
+    eta = seg(`resets ${etaMs(windowEdge, now)}`.padStart(w.etaW), "dim");
+  else eta = seg(`~${etaMs(t.etaToExhaustAt, now)}`.padStart(w.etaW), "yellow");
+
+  // Bar: used within guarantee (green) + borrowed surplus (yellow) against the shared budget L.
+  const within = Math.min(used, guar);
+  const greenW = L > 0 ? Math.max(0, Math.min(w.barW, Math.round((within / L) * w.barW))) : 0;
+  const yellowW =
+    L > 0 ? Math.max(0, Math.min(w.barW - greenW, Math.round((borrow / L) * w.barW))) : 0;
+  const emptyW = Math.max(0, w.barW - greenW - yellowW);
+
+  return [
+    seg(name.length > w.nameW ? `${name.slice(0, w.nameW - 1)}…` : name.padEnd(w.nameW)),
+    seg(
+      ledger.length > w.ledgerW ? `${ledger.slice(0, w.ledgerW - 1)}…` : ledger.padEnd(w.ledgerW),
+    ),
+    burn,
+    eta,
+    seg("  "),
+    seg(BAR_FULL.repeat(greenW), "green"),
+    seg(BAR_FULL.repeat(yellowW), "yellow"),
+    seg(BAR_EMPTY.repeat(emptyW), "gray"),
+  ];
+}
+
+/**
+ * The Cost Room view (#282): per opted-in `fairEscrow` policy, a per-tenant cost-axis burn-down — the
+ * work-conserving ledger (used / guaranteed / +borrow), a window-aware burn rate, and an honestly-scoped
+ * ETA (to the guarantee floor, clamped to the window edge). The cost-DENIAL lane is dark on the server
+ * today (no cost axis is wired into the admitter, #291 P0), so it renders "cost lane not configured" — never
+ * a zeroed panel dressed as attribution. Pure projection over `snap.costRooms`; all math ran at snapshot time.
+ */
+function costRoomBody(snap: LensSnapshot, cols: number): Line[] {
+  const rooms: readonly LensCostRoomSnapshot[] = snap.costRooms ?? [];
+  if (rooms.length === 0) {
+    return [
+      sectionHeader("COST ROOM  ·  cost-axis burn-down", cols),
+      BLANK,
+      [
+        seg(
+          "  (no fairEscrow policy configured — add a `fairEscrow` policy to light this up)",
+          "dim",
+        ),
+      ],
+      [seg(`  per-tenant burn-down for the cost axis — ${DOCS_URL}`, "gray")],
+    ];
+  }
+  const now = snap.meta.generatedAt;
+  const nameW = 14;
+  const ledgerW = 22;
+  const burnW = 9;
+  const etaW = 12;
+  const out: Line[] = [];
+  for (const room of rooms) {
+    out.push(sectionHeader(`COST ROOM  ·  ${String(room.policy)}`, cols));
+    const windowStart = Number(room.windowStart);
+    const windowMs = Number(room.windowMs) || 0;
+    const finite = Number.isFinite(windowStart);
+    const windowEdge = finite ? windowStart + windowMs : null;
+    // Window / degradation chips — every condition a typed field, echoed verbatim.
+    out.push([
+      seg(`  window ${ms(windowMs)}`, "dim"),
+      seg(`  · resets ${windowEdge === null ? "—" : etaMs(windowEdge, now)}`, "dim"),
+      seg("  · single-node", "dim"),
+      seg(room.fairShareReliable ? "  · fair-share global" : "  · L1-only", "dim"),
+      seg(`  · ${String(room.unit ?? "units (cost)")}`, "gray"),
+    ]);
+    // Budget summary + the only true exhaustion number (pool ETA) + the dark cost-denial lane.
+    const pool = Number(room.pool) || 0;
+    const poolEta =
+      typeof room.poolEtaToExhaustAt === "number" ? `~${etaMs(room.poolEtaToExhaustAt, now)}` : "—";
+    out.push([
+      seg(`  L ${compact(Number(room.effectiveLimit) || 0)}`, "dim"),
+      seg(`   used ${compact(Number(room.totalUsed) || 0)}`, "dim"),
+      seg(`   pool ${compact(pool)}`, pool > 0 ? "green" : "yellow"),
+      seg(`   pool ETA ${poolEta}`, "dim"),
+      seg("   cost lane not configured", "gray"),
+    ]);
+    const rows = Array.isArray(room.tenants) ? room.tenants : [];
+    if (rows.length === 0) {
+      out.push([seg("  (no active tenants this window)", "dim")]);
+      continue;
+    }
+    out.push([
+      seg("  tenant".padEnd(nameW), "dim"),
+      seg("used / guar (+borrow)".padEnd(ledgerW), "dim"),
+      seg("burn/s".padStart(burnW), "dim"),
+      seg("eta(floor)".padStart(etaW), "dim"),
+    ]);
+    const L = Number(room.effectiveLimit) || 0;
+    const barW = Math.max(6, Math.min(24, cols - nameW - ledgerW - burnW - etaW - 4));
+    for (const t of rows)
+      out.push(costRoomRow(t, L, now, windowEdge, { nameW, ledgerW, burnW, etaW, barW }));
+    const total = Number(room.activeTenants) || rows.length;
+    if (total > rows.length) out.push([seg(`  … +${total - rows.length} more`, "dim")]);
+  }
+  return out;
+}
+
 /**
  * The Guarantee view: concurrency headroom to a known line — an OBSERVED-state readout, never a "the proof
  * is holding" needle. Per node it shows what this process sees now: each guard's inflight against its
@@ -749,6 +890,8 @@ export function renderFrame(snap: LensSnapshot, opts: RenderOptions): string[] {
     content.push(...capacityBody(snap, cols));
   } else if (opts.view.tab === "guarantee") {
     content.push(...guaranteeBody(snap, cols));
+  } else if (opts.view.tab === "cost") {
+    content.push(...costRoomBody(snap, cols));
   } else {
     content.push(...placeholderBody(opts.view.tab));
   }

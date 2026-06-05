@@ -188,7 +188,7 @@ describe("renderFrame", () => {
 
   it("renders the tab strip with every view label", () => {
     const frame = renderFrame(sampleSnapshot(), baseOpts(100, 24)).join("\n");
-    for (const label of ["Overview", "Latency", "Fairness", "Capacity", "Guarantee"]) {
+    for (const label of ["Overview", "Latency", "Fairness", "Capacity", "Guarantee", "Cost Room"]) {
       expect(frame).toContain(label);
     }
   });
@@ -361,7 +361,14 @@ describe("renderFrame", () => {
   });
 
   it("keeps the exact width invariant on every tab — at any size", () => {
-    for (const tab of ["overview", "latency", "fairness", "capacity", "guarantee"] as const) {
+    for (const tab of [
+      "overview",
+      "latency",
+      "fairness",
+      "capacity",
+      "guarantee",
+      "cost",
+    ] as const) {
       for (const [cols, rows] of [
         [40, 12],
         [80, 24],
@@ -375,5 +382,124 @@ describe("renderFrame", () => {
         for (const line of frame) expect(line.length).toBe(cols);
       }
     }
+  });
+});
+
+/** A snapshot with a populated Cost Room (#282) in varied per-tenant states. */
+function costRoomSnapshot(): LensSnapshot {
+  const now = 1_700_000_000_000;
+  return {
+    meta: { generatedAt: now, windowMs: 60_000, mode: "process", lensVersion: "t" },
+    policies: [],
+    guards: [],
+    stats: [],
+    recentDenials: [],
+    recentFences: [],
+    costRooms: [
+      {
+        policy: "budget",
+        windowStart: now - 5000, // 5s into a 60s window → resets in 55s
+        windowMs: 60_000,
+        limit: 1_000_000,
+        effectiveLimit: 1_000_000,
+        pool: 260_000,
+        totalUsed: 740_000,
+        unit: "tokens",
+        scope: "single-node",
+        fairShareReliable: false,
+        enforced: true,
+        poolEtaToExhaustAt: now + 88_000,
+        activeTenants: 40,
+        tenants: [
+          // borrowing past its floor; floor-ETA is beyond the window edge → clamped to the reset.
+          {
+            tenant: "acct-hot",
+            weight: 3,
+            used: 900_000,
+            guaranteed: 750_000,
+            borrowed: 150_000,
+            burnPerSec: 3200,
+            etaToExhaustAt: now + 120_000,
+            etaCappedByWindow: true,
+          },
+          // below its floor; floor-ETA within the window → shown as ~30s.
+          {
+            tenant: "acct-mid",
+            weight: 1,
+            used: 140_000,
+            guaranteed: 250_000,
+            borrowed: 0,
+            burnPerSec: 800,
+            etaToExhaustAt: now + 30_000,
+            etaCappedByWindow: false,
+          },
+          {
+            tenant: "acct-idle",
+            weight: 1,
+            used: 10_000,
+            guaranteed: 250_000,
+            borrowed: 0,
+            burnPerSec: 0,
+            etaToExhaustAt: null,
+            etaCappedByWindow: false,
+            burnReason: "idle",
+          },
+          {
+            tenant: "acct-warm",
+            weight: 1,
+            used: 5_000,
+            guaranteed: 250_000,
+            borrowed: 0,
+            burnPerSec: null,
+            etaToExhaustAt: null,
+            etaCappedByWindow: false,
+            burnReason: "warming",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("renderFrame — Cost Room tab", () => {
+  const costOpts = (cols: number, rows: number): RenderOptions => ({
+    ...baseOpts(cols, rows),
+    view: { scroll: 0, paused: false, tab: "cost" },
+  });
+
+  it("renders exactly `rows`×`cols` for the cost tab at any size, including degraded rows", () => {
+    for (const [cols, rows] of [
+      [40, 12],
+      [80, 24],
+      [120, 40],
+      [24, 8],
+      [200, 50],
+    ] as const) {
+      const frame = renderFrame(costRoomSnapshot(), costOpts(cols, rows));
+      expect(frame).toHaveLength(rows);
+      for (const line of frame) expect(line.length).toBe(cols);
+    }
+  });
+
+  it("shows the work-conserving ledger, burn, honest ETAs, and the dark cost lane", () => {
+    const frame = renderFrame(costRoomSnapshot(), costOpts(120, 30)).join("\n");
+    expect(frame).toContain("COST ROOM");
+    expect(frame).toContain("budget");
+    expect(frame).toContain("tokens"); // declared unit echoed verbatim, not hard-coded
+    expect(frame).toContain("cost lane not configured"); // dark on the server today (#291 P0)
+    expect(frame).toContain("pool ETA");
+    expect(frame).toContain("acct-hot");
+    expect(frame).toContain("(+150k)"); // borrow surfaced explicitly, never folded into used
+    expect(frame).toContain("resets"); // acct-hot's floor-ETA is past the window edge → reset clamp
+    expect(frame).toContain("idle"); // acct-idle: burn 0
+    expect(frame).toContain("warming"); // acct-warm: burn null
+    expect(frame).toContain("+36 more"); // 40 active − 4 rendered
+  });
+
+  it("degrades to an honest empty state when no fairEscrow policy is configured", () => {
+    const frame = renderFrame(sampleSnapshot(), costOpts(80, 20)); // sampleSnapshot has no costRooms
+    expect(frame).toHaveLength(20);
+    for (const line of frame) expect(line.length).toBe(80);
+    expect(frame.join("\n")).toContain("no fairEscrow policy configured");
   });
 });

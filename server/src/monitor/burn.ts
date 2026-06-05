@@ -308,6 +308,7 @@ export function buildCostRoom(
   const snap: LensCostRoomSnapshot = {
     policy,
     windowStart,
+    windowMs: opts.windowMs,
     limit,
     effectiveLimit,
     pool,

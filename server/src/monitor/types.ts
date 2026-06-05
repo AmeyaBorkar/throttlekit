@@ -178,6 +178,8 @@ export interface LensCostRoomSnapshot {
   policy: string;
   /** Window start (epoch-ms, `floor(now/windowMs)·windowMs`); `-Infinity` before the first check. */
   windowStart: number;
+  /** The policy's window width (ms) — with `windowStart`, gives the window edge for the "resets in Ns" readout. */
+  windowMs: number;
   /** Configured per-window budget `L`. */
   limit: number;
   /** Effective budget visible to this process (= `limit` in L1-only; lazily-leased in L2). */
