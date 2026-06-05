@@ -121,6 +121,21 @@ export interface FairEscrowConfig {
    * 100_000 (mirrors the token-budget meter), per the core's "set on public surfaces" guidance.
    */
   maxKeys?: number;
+  /**
+   * **Cost Room** (the `--tui` cost-axis burn-down view, #282). Default **on** for every `fairEscrow`
+   * policy — set `false` to opt out. Pure monitoring: a snapshot-time per-tenant burn ring read off this
+   * policy's `stats()`; no decision-path cost, no wire change.
+   */
+  costRoom?: boolean;
+  /** Cost Room: max tenants to keep a burn time-series for (independent of `maxKeys`). Default 64. */
+  costRoomMaxKeys?: number;
+  /** Cost Room: per-tenant burn-ring capacity. Default 16. */
+  costRoomRingSize?: number;
+  /**
+   * Cost Room: the declared unit label, echoed verbatim in the view (default `"units (cost)"`). Free-form
+   * so a policy metering tokens / requests / credits / USD labels it honestly — never assumed "tokens".
+   */
+  unit?: string;
 }
 
 /** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `concurrency` / `fairEscrow` blocks. */
@@ -144,6 +159,24 @@ export interface MeterPolicy {
 }
 
 /**
+ * Resolved Cost Room options for one `fairEscrow` policy (#282 P3) — what the monitor needs to register a
+ * burn-down source. Carried alongside {@link ServiceConfig.fairness} so the (config-free) wire layer can
+ * honor the per-policy opt-out + declared labels without re-parsing the config.
+ */
+export interface CostRoomConfig {
+  /** This policy's window width (ms) — the cost-room source's window edge. */
+  windowMs: number;
+  /** Whether the Cost Room is enabled for this policy (default on; `costRoom: false` opts out). */
+  enabled: boolean;
+  /** Declared unit label (echoed verbatim; default applied downstream). */
+  unit?: string;
+  /** Accumulator tenant cap (burn time-series). */
+  maxKeys?: number;
+  /** Per-tenant burn-ring capacity. */
+  ringSize?: number;
+}
+
+/**
  * The resolved policies a service serves: rate/two-tier {@link Limiter}s, token-budget
  * {@link MeterPolicy}s, and concurrency/unified {@link UnifiedAdmitter}s (the stateful admission axis).
  */
@@ -155,6 +188,8 @@ export interface ServiceConfig {
   guards: Record<string, ConcurrencyGuard>;
   /** Weighted-fair-escrow policies (served by `check`, key = tenant; not `Limiter`s). */
   fairness: Record<string, WeightedFairEscrowLimiter>;
+  /** Per-`fairEscrow`-policy Cost Room options (monitoring only); one entry per fairness policy. */
+  costRooms: Record<string, CostRoomConfig>;
 }
 
 /** Options for {@link buildLimitersFromConfig}: the core loader options plus an injectable clock. */
@@ -188,6 +223,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   const admitters: Record<string, UnifiedAdmitter> = {};
   const guards: Record<string, ConcurrencyGuard> = {};
   const fairness: Record<string, WeightedFairEscrowLimiter> = {};
+  const costRooms: Record<string, CostRoomConfig> = {};
   const rateLimitOnly: Record<string, LimiterSpec> = {};
 
   for (const [name, rawSpec] of Object.entries(limitersIn)) {
@@ -207,6 +243,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
       meters[name] = buildMeter(name, spec, options);
     } else if (spec != null && typeof spec === "object" && spec.fairEscrow !== undefined) {
       fairness[name] = buildFairEscrow(name, spec, options);
+      costRooms[name] = resolveCostRoom(name, spec.fairEscrow as FairEscrowConfig);
     } else if (spec != null && typeof spec === "object" && spec.concurrency !== undefined) {
       const built = buildAdmitter(name, spec, options, data);
       admitters[name] = built.admitter;
@@ -225,7 +262,37 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   };
   const rest = loadConfigObject({ ...data, limiters: rateLimitOnly }, coreOptions).limiters;
 
-  return { limiters: { ...rest, ...twoTierLimiters }, meters, admitters, guards, fairness };
+  return {
+    limiters: { ...rest, ...twoTierLimiters },
+    meters,
+    admitters,
+    guards,
+    fairness,
+    costRooms,
+  };
+}
+
+/**
+ * Resolve a `fairEscrow` policy's Cost Room options (#282 P3). Default-on; `costRoom: false` opts out.
+ * Validates the optional bounds so a bad config fails fast with a clear message rather than being silently
+ * clamped downstream.
+ */
+function resolveCostRoom(name: string, fe: FairEscrowConfig): CostRoomConfig {
+  const positiveInt = (label: string, v: number | undefined): number | undefined => {
+    if (v === undefined) return undefined;
+    if (typeof v !== "number" || !Number.isInteger(v) || v <= 0)
+      throw new ThrottleKitError(
+        `config.limiters[${name}].fairEscrow.${label}: must be a positive integer`,
+      );
+    return v;
+  };
+  const cr: CostRoomConfig = { windowMs: fe.windowMs, enabled: fe.costRoom !== false };
+  if (fe.unit !== undefined) cr.unit = fe.unit;
+  const maxKeys = positiveInt("costRoomMaxKeys", fe.costRoomMaxKeys);
+  if (maxKeys !== undefined) cr.maxKeys = maxKeys;
+  const ringSize = positiveInt("costRoomRingSize", fe.costRoomRingSize);
+  if (ringSize !== undefined) cr.ringSize = ringSize;
+  return cr;
 }
 
 /**

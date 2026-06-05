@@ -7,9 +7,10 @@
  * analyses the limiter + admitter policies; meter-only policies still serve over gRPC as usual.
  */
 
-import type { FailMode, Limiter, UnifiedAdmitter } from "throttlekit";
+import { type FailMode, type Limiter, type UnifiedAdmitter, systemClock } from "throttlekit";
 import { type ServerLoadOptions, buildServiceConfig } from "../config.js";
 import { type RateLimiterService, createRateLimiterService } from "../service.js";
+import { costRoomSource } from "./burn.js";
 import { type LensHub, createLensHub } from "./hub.js";
 
 /** A gRPC service whose policies are tapped into a live telemetry hub. */
@@ -30,11 +31,17 @@ export function wireMonitor(
   mode: string,
   nodeId?: string,
 ): TappedService {
-  const { limiters, meters, admitters, guards, fairness } = buildServiceConfig(
+  const { limiters, meters, admitters, guards, fairness, costRooms } = buildServiceConfig(
     configText,
     loadOptions,
   );
-  const hub = createLensHub(nodeId !== undefined ? { nodeId } : {});
+  // Keep the hub + cost-room sources on the same clock as the limiters (deterministic under an injected
+  // clock in tests; the system clock in production).
+  const clock = loadOptions.clock ?? systemClock;
+  const hub = createLensHub({
+    clock,
+    ...(nodeId !== undefined ? { nodeId } : {}),
+  });
 
   const tappedLimiters: Record<string, Limiter> = {};
   for (const [name, limiter] of Object.entries(limiters)) {
@@ -47,9 +54,29 @@ export function wireMonitor(
   // Each admitter encapsulates its concurrency guard; tracking the same instance surfaces it in the
   // Concurrency / Guarantee views (the tapped admitter still drives this very guard).
   for (const [name, guard] of Object.entries(guards)) hub.trackGuard(name, guard);
-  // Weighted-fair-escrow policies report their per-tenant state for the Fairness view.
-  for (const [name, wfe] of Object.entries(fairness))
+  // Weighted-fair-escrow policies report their per-tenant state for the Fairness view, and — unless the
+  // policy opted out (`costRoom: false`) — feed a Cost Room burn-down source through the same door (#282).
+  for (const [name, wfe] of Object.entries(fairness)) {
     hub.trackStats(name, "wfe", () => wfe.stats());
+    const cr = costRooms[name];
+    if (cr?.enabled) {
+      hub.trackStats(
+        name,
+        "cost-room",
+        costRoomSource(
+          name,
+          () => wfe.stats(),
+          {
+            windowMs: cr.windowMs,
+            ...(cr.unit !== undefined ? { unit: cr.unit } : {}),
+            ...(cr.maxKeys !== undefined ? { maxKeys: cr.maxKeys } : {}),
+            ...(cr.ringSize !== undefined ? { ringSize: cr.ringSize } : {}),
+          },
+          clock,
+        ),
+      );
+    }
+  }
   hub.setHealth({ backend: mode, failMode: fail });
 
   const service = createRateLimiterService({
