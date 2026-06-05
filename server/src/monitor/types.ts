@@ -46,8 +46,8 @@ export interface LensPolicySnapshot {
   analytics: AnalyticsSnapshot | AdmissionAnalyticsSnapshot;
   /** Most recently observed effective ceiling (drives the headroom / Guarantee readout). */
   limit?: number;
-  /** Recent admit-path latency over a small ring (the latency readout). */
-  latency?: { avgMs: number; maxMs: number; n: number };
+  /** Recent admit-path latency over a small ring (the Latency view); p50/p99 are nearest-rank. */
+  latency?: { avgMs: number; p50Ms: number; p99Ms: number; maxMs: number; n: number };
 }
 
 /** A concurrency guard's live health (from `ConcurrencyGuard.stats()`; distributed extras when present). */

@@ -23,6 +23,10 @@ describe("createLensHub", () => {
     expect(a.allowed).toBeGreaterThan(0);
     expect(snap.recentDenials.length).toBeGreaterThan(0);
     expect(snap.recentDenials.every((d) => d.policy === "api" && !d.allowed)).toBe(true);
+    // The latency summary is populated from the same tap (one sample per checkSync).
+    const lat = p?.latency;
+    expect(lat?.n).toBe(5);
+    expect(lat?.p99Ms).toBeGreaterThanOrEqual(lat?.p50Ms ?? 0);
   });
 
   it("surfaces the health block set by the host", () => {

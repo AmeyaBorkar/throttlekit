@@ -90,6 +90,11 @@ const LANE_COLOR: Record<string, Color> = {
 /** Where a not-yet-built tab points users — a stable, reachable URL, not a working-tree repo path
  * (research/ is not in the package, so a local path would be a dead pointer for npm installs). */
 const DOCS_URL = "https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens";
+/** The Latency view flags a policy's p99 yellow only when its tail is heavy relative to the policy's own
+ * median AND above a small absolute floor — matching the dashboard's relative-coloring convention (the
+ * concurrency panel yellows at inflight ≥ limit, not at a bare magnitude). */
+const LATENCY_TAIL_MULTIPLE = 10;
+const LATENCY_WARN_FLOOR_MS = 25;
 
 function seg(t: string, c?: Color): Seg {
   return c === undefined ? { t } : { t, c };
@@ -137,6 +142,25 @@ function compact(n: number): string {
 
 function pct(frac: number): string {
   return `${Math.round(frac * 100)}%`;
+}
+
+/**
+ * Compact milliseconds: 0.42 → "0.42ms", 12.5 → "12.5ms", 240 → "240ms", 1500 → "1.5s". Each branch tests
+ * the value AT THE PRECISION IT WILL PRINT, so a sample that rounds up across a magnitude boundary (e.g.
+ * 999.5 → "1.0s", not "1000ms") is shown by the right bracket rather than the one below it.
+ */
+function ms(v: number): string {
+  const r1 = Number(v.toFixed(2));
+  if (r1 < 10) return `${r1.toFixed(2)}ms`;
+  const r2 = Number(v.toFixed(1));
+  if (r2 < 100) return `${r2.toFixed(1)}ms`;
+  if (Math.round(v) < 1000) return `${Math.round(v)}ms`;
+  return `${(v / 1000).toFixed(1)}s`;
+}
+
+/** True when a policy's latency tail is worth flagging: heavy vs its own median AND above the floor. */
+function latencyWarn(p50: number, p99: number): boolean {
+  return p99 >= LATENCY_WARN_FLOOR_MS && p99 >= LATENCY_TAIL_MULTIPLE * p50;
 }
 
 function bar(frac: number, width: number): string {
@@ -242,6 +266,47 @@ function placeholderBody(tab: TabId): Line[] {
     [seg("  — lands in a later throttlekit-server build —", "dim")],
     [seg(`  see ${DOCS_URL}`, "gray")],
   ];
+}
+
+/**
+ * The Latency view: per-policy admit-path latency (avg / p50 / p99 / max) over the hub's sample ring.
+ * A policy with no samples this window renders an honest "no samples" row rather than fabricated zeros.
+ */
+function latencyBody(snap: LensSnapshot, cols: number): Line[] {
+  const nameW = 16;
+  const colW = 9;
+  const out: Line[] = [
+    sectionHeader("LATENCY  ·  admit-path", cols),
+    [
+      seg("policy".padEnd(nameW), "dim"),
+      seg("avg".padStart(colW), "dim"),
+      seg("p50".padStart(colW), "dim"),
+      seg("p99".padStart(colW), "dim"),
+      seg("max".padStart(colW), "dim"),
+      seg("n".padStart(7), "dim"),
+    ],
+  ];
+  if (snap.policies.length === 0) {
+    out.push([seg("(no policies configured)", "dim")]);
+    return out;
+  }
+  for (const p of snap.policies) {
+    const name = p.name.length > nameW ? `${p.name.slice(0, nameW - 1)}…` : p.name.padEnd(nameW);
+    const lat = p.latency;
+    if (lat === undefined) {
+      out.push([seg(name), seg("— no samples yet —", "dim")]);
+      continue;
+    }
+    out.push([
+      seg(name),
+      seg(ms(lat.avgMs).padStart(colW)),
+      seg(ms(lat.p50Ms).padStart(colW)),
+      seg(ms(lat.p99Ms).padStart(colW), latencyWarn(lat.p50Ms, lat.p99Ms) ? "yellow" : undefined),
+      seg(ms(lat.maxMs).padStart(colW), "dim"),
+      seg(compact(lat.n).padStart(7), "dim"),
+    ]);
+  }
+  return out;
 }
 
 /** The binding-axis hero for the first unified admitter (the niche nobody else renders). */
@@ -396,6 +461,8 @@ export function renderFrame(snap: LensSnapshot, opts: RenderOptions): string[] {
     } else {
       for (const row of visible) content.push(denialLine(row));
     }
+  } else if (opts.view.tab === "latency") {
+    content.push(...latencyBody(snap, cols));
   } else {
     content.push(...placeholderBody(opts.view.tab));
   }

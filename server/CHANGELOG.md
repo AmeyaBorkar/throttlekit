@@ -8,9 +8,11 @@ core's public, frozen API and versions independently of it (it is pre-1.0 / expe
 
 ### Added
 
-- **Tabbed views in the `--tui` dashboard.** Press `1`–`5` or `Tab` / `Shift-Tab` to switch views.
-  **Overview** is the live board today; **Latency**, **Fairness**, **Capacity**, and **Guarantee** are
-  landing panel-by-panel (see `research/dashboard/ROADMAP.md`).
+- **Tabbed views in the `--tui` dashboard.** Press `1`–`5` or `Tab` / `Shift-Tab` to switch views (see
+  `research/dashboard/ROADMAP.md` for the panel roadmap). **Overview** and **Latency** are live;
+  **Fairness**, **Capacity**, and **Guarantee** are landing panel-by-panel.
+- **Latency view** — per-policy admit-path latency (avg / p50 / p99 / max) over the hub's rolling sample
+  ring; p50/p99 are nearest-rank, and a policy with no samples this window shows an honest "no samples" row.
 
 ## [0.1.0-experimental.6] — 2026-06-05
 

@@ -43,7 +43,7 @@ import type {
 } from "./types.js";
 
 /** The hub/dashboard version, stamped into every snapshot's `meta.lensVersion`. */
-export const MONITOR_VERSION = "0.2.0-experimental.0";
+export const MONITOR_VERSION = "0.2.0-experimental.1";
 
 /** How many recent admit-path latencies to retain per policy for the latency readout. */
 const LATENCY_RING = 256;
@@ -256,9 +256,23 @@ function withMeta(policy: LensPolicySnapshot, meta: PolicyMeta): LensPolicySnaps
       sum += v;
       if (v > max) max = v;
     }
-    policy.latency = { avgMs: sum / lat.length, maxMs: max, n: lat.length };
+    const sorted = [...lat].sort((a, b) => a - b);
+    policy.latency = {
+      avgMs: sum / lat.length,
+      p50Ms: percentile(sorted, 50),
+      p99Ms: percentile(sorted, 99),
+      maxMs: max,
+      n: lat.length,
+    };
   }
   return policy;
+}
+
+/** Nearest-rank percentile of an ascending-sorted sample (empty → 0). */
+function percentile(sorted: readonly number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[idx] ?? 0;
 }
 
 /** Drop the `undefined` per-axis entries so the row's `perAxis` only carries real decisions. */

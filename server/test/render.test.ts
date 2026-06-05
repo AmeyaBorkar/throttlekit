@@ -52,6 +52,7 @@ function sampleSnapshot(): LensSnapshot {
           { key: "ip-10.0.0.7", count: 96 },
           { key: "user-7", count: 40 },
         ]),
+        latency: { avgMs: 0.42, p50Ms: 0.31, p99Ms: 12.5, maxMs: 48, n: 1200 },
       },
       {
         name: "unified-api",
@@ -170,15 +171,38 @@ describe("renderFrame", () => {
     }
   });
 
-  it("switches body by tab — a non-overview tab hides the overview sections", () => {
+  it("switches body by tab — a not-yet-built tab hides the overview sections, shows a placeholder", () => {
     const opts = baseOpts(100, 24);
-    opts.view.tab = "latency";
+    opts.view.tab = "fairness"; // still a placeholder tab
     const frame = renderFrame(sampleSnapshot(), opts).join("\n");
     // The tab strip still lists every view, but the overview sections are gone, replaced by an
     // honest placeholder pointing at the (reachable) monitoring docs.
     expect(frame).not.toContain("BINDING AXIS");
     expect(frame).not.toContain("DENIALS (live)");
     expect(frame).toContain("wiki");
+  });
+
+  it("renders the Latency view with per-policy avg/p50/p99 and an honest 'no samples' row", () => {
+    const opts = baseOpts(100, 24);
+    opts.view.tab = "latency";
+    const frame = renderFrame(sampleSnapshot(), opts).join("\n");
+    expect(frame).toContain("LATENCY");
+    expect(frame).toContain("p99");
+    expect(frame).toContain("api");
+    expect(frame).toContain("12.5ms"); // api p99
+    expect(frame).toContain("no samples yet"); // unified-api carries no latency in the sample
+  });
+
+  it("formats latency magnitudes at the boundary without leaking 4-digit ms (999.5 → 1.0s)", () => {
+    const snap = sampleSnapshot();
+    const p = snap.policies[0];
+    if (p) p.latency = { avgMs: 5, p50Ms: 5, p99Ms: 999.5, maxMs: 1500, n: 10 };
+    const opts = baseOpts(120, 24);
+    opts.view.tab = "latency";
+    const frame = renderFrame(snap, opts).join("\n");
+    expect(frame).toContain("1.0s"); // 999.5 rounds up into seconds, not "1000ms"
+    expect(frame).not.toContain("1000ms");
+    expect(frame).toContain("1.5s"); // max 1500
   });
 
   it("keeps the exact width invariant on every tab — at any size", () => {
