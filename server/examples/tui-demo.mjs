@@ -6,7 +6,7 @@
  * It builds the same telemetry hub the server uses, taps a couple of rate limiters, a unified
  * (rate × concurrency) admitter, a concurrency guard, and a weighted-fair-escrow budget, then drives
  * randomized load so every view animates — press 1-5 / Tab to switch between Overview, Latency, Fairness,
- * and Capacity (throughput, the binding-axis hero, top denied keys, concurrency health, the live feed).
+ * Capacity, and Guarantee (throughput, the binding-axis hero, top denied keys, concurrency health, feed).
  */
 
 import { MemoryStore, adaptiveConcurrency, gcra, rateLimit, unifiedAdmission } from "throttlekit";

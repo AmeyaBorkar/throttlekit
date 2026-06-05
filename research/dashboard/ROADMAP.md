@@ -76,17 +76,19 @@ blocking. Render remaining p50/p99 + ETA.
 
 ### T5 — Guarantee view (+ fence feed)
 The flagship deferred panel — framed as **headroom to a known line**, never "proof holding". Three parts:
-- **(a) Invariant chips** — `Σinflight ≤ L_global` straight from guard snapshots (quick), plus escrow
-  conservation where available. *Server gap:* `wireMonitor` taps no standalone guards (the guard lives
-  inside each `unifiedAdmission`; `trackGuard` is never called in server mode), so this needs the admitter to
-  surface its guard's `stats()` (or `wireMonitor` to extract + `trackGuard` it).
-- **(b) Admitted-vs-ceiling** — per-key admitted-this-window vs the design-time ceiling `Limit + N·(B-1)`
-  (collapses to exactly `Limit` when `windowCoupled`). **Net-new:** the hub must accumulate per-(key,window)
-  **allow** counts (today it tallies only denies for top-K); a small `computeOvershootCeiling(limit, N, B,
-  windowCoupled)` helper (N from `guard.nodes`, B from burst, `windowCoupled` from the `twoTier` block).
-- **(c) Fence feed** — wire a distributed guard's `onFenced` → `hub.recordFence`; render `recentFences`
-  (already in the snapshot, never rendered).
-- Link the chips to the TLA+ leasing specs under `spec/` (Gale*Leasing.tla) + the BFS twin.
+- **(a) Invariant chips (DONE, #280)** — per-node `inflight <= node ceiling` (`share ?? limit`) + no
+  self-fence, from `snap.guards`.
+- **(c) Fence feed (DONE, #280)** — renders `snap.recentFences` (was in the snapshot, never rendered).
+- **Headroom (DONE, #280)** — per-guard `headroom = ceiling − inflight`, framed as headroom to the proven
+  line, with the TLA+/fleet caveat in the footer.
+- **(b) Admitted-vs-ceiling — DEFERRED to the Fleet view (#283).** The per-key two-tier overshoot ceiling
+  `Limit + N·(B-1)` and the fleet `Σinflight ≤ L_global` are **fleet** properties: a single process only
+  ever sees its own (non-overshooting) allows, so this is meaningless single-node and belongs to fleet
+  aggregation.
+- **Server source (→ #285).** In server mode `wireMonitor` taps no standalone guards — `UnifiedAdmitter`
+  exposes only `admit`/`admitSync`/`lastDecisions()` (no guard, no guard `stats()`), so the guard is
+  encapsulated. Surfacing concurrency-guard stats over the service door (a core enhancement or via
+  `lastDecisions().concurrency`) is what makes Guarantee + the Concurrency panel populate on the server.
 
 ---
 

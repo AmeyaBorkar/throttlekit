@@ -193,15 +193,14 @@ describe("renderFrame", () => {
     }
   });
 
-  it("switches body by tab — a not-yet-built tab hides the overview sections, shows a placeholder", () => {
+  it("switches body by tab — a non-overview tab hides the overview sections", () => {
     const opts = baseOpts(100, 24);
-    opts.view.tab = "guarantee"; // still a placeholder tab
+    opts.view.tab = "guarantee";
     const frame = renderFrame(sampleSnapshot(), opts).join("\n");
-    // The tab strip still lists every view, but the overview sections are gone, replaced by an
-    // honest placeholder pointing at the (reachable) monitoring docs.
+    // The tab strip still lists every view, but the overview sections are gone — the active body changes.
     expect(frame).not.toContain("BINDING AXIS");
     expect(frame).not.toContain("DENIALS (live)");
-    expect(frame).toContain("wiki");
+    expect(frame).toContain("GUARANTEE");
   });
 
   it("renders the Latency view with per-policy avg/p50/p99 and an honest 'no samples' row", () => {
@@ -291,6 +290,74 @@ describe("renderFrame", () => {
     opts.view.tab = "capacity";
     const frame = renderFrame(snap, opts).join("\n");
     expect(frame).toContain("(async store)"); // not "(async / no traffic)"
+  });
+
+  it("renders the Guarantee view as observed node status + per-guard headroom (no proof verdict)", () => {
+    const opts = baseOpts(100, 24);
+    opts.view.tab = "guarantee";
+    const frame = renderFrame(sampleSnapshot(), opts).join("\n");
+    expect(frame).toContain("GUARANTEE");
+    expect(frame).toContain("this node now");
+    expect(frame).toContain("within slice"); // checkout inflight 6 <= enforced ceiling 8
+    expect(frame).toContain("checkout");
+    expect(frame).toContain("headroom");
+    expect(frame).not.toContain("PASS"); // observed-state language, never a proof "PASS" needle
+  });
+
+  it("Guarantee view uses the ENFORCED ceiling (g.limit), not the raw share, to judge over-slice", () => {
+    const snap = sampleSnapshot();
+    // share 8 > limit 4, inflight 6: the enforced ceiling is 4, so inflight 6 is OVER its slice — it would
+    // read "within" if the panel wrongly used `share` as the line.
+    snap.guards = [
+      {
+        name: "g",
+        limit: 4,
+        inflight: 6,
+        rttNoload: 1,
+        lastRtt: 1,
+        share: 8,
+        lGlobal: 24,
+        nodes: 3,
+      },
+    ];
+    const opts = baseOpts(110, 24);
+    opts.view.tab = "guarantee";
+    const frame = renderFrame(snap, opts).join("\n");
+    expect(frame).toContain("draining over slice");
+  });
+
+  it("Guarantee view shows a fenced guard (enforced ceiling 0) as fenced while it drains", () => {
+    const snap = sampleSnapshot();
+    // A real fenced guard reports limit:0 (effectiveLimit short-circuits) with a stale nonzero share.
+    snap.guards = [
+      {
+        name: "g",
+        limit: 0,
+        inflight: 2,
+        rttNoload: 1,
+        lastRtt: 1,
+        share: 4,
+        lGlobal: 12,
+        nodes: 3,
+        fenced: true,
+      },
+    ];
+    const opts = baseOpts(110, 24);
+    opts.view.tab = "guarantee";
+    const frame = renderFrame(snap, opts).join("\n");
+    expect(frame).toContain("FENCED");
+    expect(frame).toContain("fenced"); // the self-fence status row
+    expect(frame).toContain("draining over slice"); // inflight 2 > enforced ceiling 0
+  });
+
+  it("Guarantee view shows an honest empty state with no guards", () => {
+    const snap = sampleSnapshot();
+    snap.guards = [];
+    const opts = baseOpts(80, 20);
+    opts.view.tab = "guarantee";
+    const frame = renderFrame(snap, opts).join("\n");
+    expect(frame).toContain("GUARANTEE");
+    expect(frame).toContain("no concurrency guards");
   });
 
   it("keeps the exact width invariant on every tab — at any size", () => {

@@ -503,6 +503,92 @@ function forecastUnavailableLabel(p: LensPolicySnapshot): string {
   }
 }
 
+/**
+ * The Guarantee view: concurrency headroom to a known line — an OBSERVED-state readout, never a "the proof
+ * is holding" needle. Per node it shows what this process sees now: each guard's inflight against its
+ * **enforced** ceiling (`stats().limit` = min(share, local.limit), 0 when fenced), how many guards are
+ * draining over their slice (a bounded, in-spec transient after a share decrease), self-fence status, and
+ * the live self-fence feed. The PROVEN bound — `Σ inflight ≤ L_global`, machine-checked in TLA+ for the
+ * acknowledged-handoff protocol — is a fleet property one process can't evaluate (cited in the footer; it
+ * lives in the Fleet view), as is the per-key two-tier overshoot ceiling `Limit + N·(B-1)`.
+ */
+function guaranteeBody(snap: LensSnapshot, cols: number): Line[] {
+  const guards = snap.guards;
+  const out: Line[] = [sectionHeader("GUARANTEE  ·  concurrency bounds", cols)];
+  if (guards.length === 0) {
+    out.push(
+      BLANK,
+      [seg("  (no concurrency guards reporting)", "dim")],
+      [
+        seg(
+          `  the sum(inflight) <= L_global occupancy bound is machine-checked in TLA+ — ${DOCS_URL}`,
+          "gray",
+        ),
+      ],
+    );
+    return out;
+  }
+  // What this node OBSERVES now — not a proof verdict (the proven fleet bound is the footer). The enforced
+  // ceiling is the guard's own stats().limit = min(share, local.limit) (0 when fenced); the raw coordinator
+  // `share` can exceed it, so share is a separate informational column, never the rendered line.
+  const overSlice = guards.filter((g) => g.inflight > g.limit);
+  const fenced = guards.filter((g) => g.fenced === true);
+  out.push(
+    [seg("  this node now", "bold")],
+    [
+      seg("    within slice".padEnd(18), "dim"),
+      overSlice.length === 0
+        ? seg(`${guards.length}/${guards.length}`, "green")
+        : seg(
+            `${guards.length - overSlice.length}/${guards.length} · ${overSlice.length} draining over slice`,
+            "yellow",
+          ),
+    ],
+    [
+      seg("    self-fence".padEnd(18), "dim"),
+      fenced.length === 0 ? seg("none", "green") : seg(`${fenced.length} fenced`, "red"),
+    ],
+    BLANK,
+    [seg("  headroom to the line", "bold")],
+    [
+      seg("    guard".padEnd(18), "dim"),
+      seg("inflight".padStart(9), "dim"),
+      seg("ceiling".padStart(9), "dim"),
+      seg("headroom".padStart(10), "dim"),
+      seg("  fleet", "dim"),
+    ],
+  );
+  for (const g of guards) {
+    const ceiling = g.limit; // the ENFORCED ceiling: min(share, local.limit), 0 when fenced
+    const headroom = ceiling - g.inflight;
+    const rawName = `    ${g.name}`;
+    const line: Line = [
+      seg(rawName.length > 18 ? `${rawName.slice(0, 17)}…` : rawName.padEnd(18)),
+      seg(String(g.inflight).padStart(9), g.inflight > ceiling ? "yellow" : undefined),
+      seg(String(ceiling).padStart(9)),
+      seg(String(headroom).padStart(10), headroom < 0 ? "yellow" : "green"),
+    ];
+    if (g.share !== undefined) line.push(seg(`  share ${g.share}`, "dim"));
+    if (g.lGlobal !== undefined) line.push(seg(` L_g ${g.lGlobal}·${g.nodes ?? "?"}n`, "dim"));
+    if (g.fenced === true) line.push(seg("  FENCED", "red"));
+    out.push(line);
+  }
+  out.push(BLANK, [seg("  self-fence events", "bold")]);
+  const fences = snap.recentFences.slice().reverse().slice(0, 5);
+  if (fences.length === 0) {
+    out.push([seg("    (none — no partitions this window)", "dim")]);
+  } else {
+    for (const fr of fences) out.push([seg(`    ${clock(fr.at)}  ${fr.guard}`, "gray")]);
+  }
+  out.push(BLANK, [
+    seg(
+      "  bound: sum(inflight) <= L_global is machine-checked in TLA+ (acknowledged-handoff); live fleet sum → Fleet view",
+      "dim",
+    ),
+  ]);
+  return out;
+}
+
 /** The binding-axis hero for the first unified admitter (the niche nobody else renders). */
 function bindingAxisPanel(snap: LensSnapshot, width: number, budget: number): Line[] {
   const admitter = snap.policies.find((p) => p.kind === "admitter");
@@ -661,6 +747,8 @@ export function renderFrame(snap: LensSnapshot, opts: RenderOptions): string[] {
     content.push(...fairnessBody(snap, cols));
   } else if (opts.view.tab === "capacity") {
     content.push(...capacityBody(snap, cols));
+  } else if (opts.view.tab === "guarantee") {
+    content.push(...guaranteeBody(snap, cols));
   } else {
     content.push(...placeholderBody(opts.view.tab));
   }

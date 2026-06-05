@@ -19,6 +19,11 @@ core's public, frozen API and versions independently of it (it is pre-1.0 / expe
 - **Capacity view** — per-policy non-consuming forecast for the hottest key: how many requests are spendable
   now, when capacity next returns (`+1 in`), and when it is fully replenished (`full in`). Synchronous-store
   limiters only; an async store / admitter / no-traffic policy renders "n/a" honestly.
+- **Guarantee view** — concurrency **headroom to a known line** as an observed-state readout (never a
+  "proof holding" needle): each guard's inflight vs its **enforced** ceiling (`min(share, local.limit)`),
+  how many guards are draining over their slice, self-fence status, and the live self-fence feed. Renders
+  from tracked concurrency guards; the proven `Σinflight <= L_global` bound (machine-checked in TLA+ for the
+  acknowledged-handoff protocol) and the per-key two-tier overshoot are fleet properties (the Fleet view).
 
 ## [0.1.0-experimental.6] — 2026-06-05
 
