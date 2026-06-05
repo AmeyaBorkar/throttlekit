@@ -53,7 +53,7 @@ Render `LensPolicySnapshot.latency` — **already populated** by the hub (`hub.t
 ring per policy). MVP is render-only (avg/max/n per policy). Optional: upgrade the hub ring from avg/max to a
 **p50/p99 histogram** (the samples are already retained). No core changes.
 
-### T3 — Fairness (WFE) view  — **view DONE; server source split to #284**
+### T3 — Fairness (WFE) view  — **DONE (view #278, served on the server #284)**
 Per-tenant **guaranteed-share vs used vs borrowed**. Core data is ready and rich
 (`WeightedFairEscrowStats`: `tenants[{tenant,weight,used}]`, `effectiveLimit`, `pool`, `totalUsed`).
 - **Render (DONE, #278):** `stats[]` by `kind:"wfe"` → per-tenant bars; guaranteed = `floor(weight/ΣW ·
@@ -63,9 +63,10 @@ Per-tenant **guaranteed-share vs used vs borrowed**. Core data is ready and rich
 - **Finding:** in the installed `throttlekit@1.1.0`, `WeightedFairEscrowLimiter` is **not** a `Limiter`
   (it has `check`/`checkSync(tenant,cost)`/`reset`/`stats()` but no `.strategy`/`.peek`/`.checkMany`/
   `.forecast`), so it can't flow through the server's `createEnforcer` / `trackLimiter` limiter path.
-- **Server source (→ #284):** add a `fairEscrow:` config block + a dedicated service path (route
-  `check(policy,key,cost)` → `wfe.check(key,cost)`, key = tenant) + `wireMonitor` `trackStats`. This is the
-  only way the **server** populates the Fairness view; tracked separately because WFE needs a new surface.
+- **Server source (DONE, #284):** a `fairEscrow:` config block builds a core `weightedFairEscrow` (L1-only,
+  `maxKeys`-bounded) served by a dedicated fair-limiter path (route `check(policy,key,cost)` →
+  `wfe.check(key,cost)`, key = tenant; wrong ops → UNIMPLEMENTED); `wireMonitor` `trackStats`-es it. The
+  Fairness view now populates on the server. (L2 / fleet-shared fair budget remains a follow-up.)
 
 ### T4 — Capacity & Forecast view
 Per-policy remaining + a "refilled in X ms" ETA. Core `Forecast {spendableNow, nextReplenishAt, fullAt}`
@@ -85,10 +86,11 @@ The flagship deferred panel — framed as **headroom to a known line**, never "p
   `Limit + N·(B-1)` and the fleet `Σinflight ≤ L_global` are **fleet** properties: a single process only
   ever sees its own (non-overshooting) allows, so this is meaningless single-node and belongs to fleet
   aggregation.
-- **Server source (→ #285).** In server mode `wireMonitor` taps no standalone guards — `UnifiedAdmitter`
-  exposes only `admit`/`admitSync`/`lastDecisions()` (no guard, no guard `stats()`), so the guard is
-  encapsulated. Surfacing concurrency-guard stats over the service door (a core enhancement or via
-  `lastDecisions().concurrency`) is what makes Guarantee + the Concurrency panel populate on the server.
+- **Server source (DONE, #285).** `UnifiedAdmitter` exposes no guard/`stats()`, but `buildAdmitter` already
+  *creates* the `adaptiveConcurrency` guard — so it now returns it, `buildServiceConfig` collects it, and
+  `wireMonitor` `trackGuard`-s the same instance the tapped admitter drives. Guarantee + the Concurrency
+  panel now populate on the server (no core change needed). Distributed-guard `onFenced` wiring stays a
+  follow-up (the server builds local `adaptiveConcurrency`, which doesn't fence).
 
 ---
 
