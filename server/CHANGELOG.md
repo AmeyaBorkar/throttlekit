@@ -4,7 +4,7 @@ All notable changes to **throttlekit-server** are documented here. The format fo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This server tracks the frozen `throttlekit` 1.0
 core's public, frozen API and versions independently of it (it is pre-1.0 / experimental).
 
-## [Unreleased]
+## [0.1.0-experimental.7] — 2026-06-05
 
 ### Added
 
