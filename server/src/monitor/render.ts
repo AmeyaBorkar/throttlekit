@@ -14,12 +14,30 @@
 import type { AdmissionAnalyticsSnapshot } from "throttlekit";
 import type { LensDenialRow, LensGuardSnapshot, LensSnapshot } from "./types.js";
 
+/** A dashboard tab. The body below the persistent header/throughput strip is per-tab. */
+export type TabId = "overview" | "latency" | "fairness" | "capacity" | "guarantee";
+
+/**
+ * The tabs in display + cycle order. Exported so the shell (`tui.ts`) maps number keys / Tab to them
+ * without re-declaring the list. `overview` is today's board; the rest land panel-by-panel (see
+ * `research/dashboard/ROADMAP.md`).
+ */
+export const TABS: readonly { readonly id: TabId; readonly label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "latency", label: "Latency" },
+  { id: "fairness", label: "Fairness" },
+  { id: "capacity", label: "Capacity" },
+  { id: "guarantee", label: "Guarantee" },
+];
+
 /** Live view state owned by the shell and threaded through each render. */
 export interface ViewState {
   /** Scroll offset (rows) into the denial feed, 0 = newest. */
   scroll: number;
   /** Whether the live feed is frozen. */
   paused: boolean;
+  /** The active tab; selects which body the frame renders below the persistent strip. */
+  tab: TabId;
 }
 
 /** Everything the pure renderer needs for one frame. */
@@ -69,6 +87,9 @@ const LANE_COLOR: Record<string, Color> = {
   cost: "green",
   policy: "gray",
 };
+/** Where a not-yet-built tab points users — a stable, reachable URL, not a working-tree repo path
+ * (research/ is not in the package, so a local path would be a dead pointer for npm installs). */
+const DOCS_URL = "https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens";
 
 function seg(t: string, c?: Color): Seg {
   return c === undefined ? { t } : { t, c };
@@ -202,6 +223,27 @@ function sectionHeader(title: string, cols: number): Line {
   return [seg("─", "gray"), seg(label, "bold"), seg(rule, "gray")];
 }
 
+/** The tab bar: every tab, the active one accented. `clamp` truncates it on a narrow terminal. */
+function tabStrip(active: TabId, cols: number): Line {
+  const line: Line = [seg(" ")];
+  TABS.forEach((t, i) => {
+    if (i > 0) line.push(seg(" │ ", "gray"));
+    line.push(seg(t.label, t.id === active ? "cyan" : "dim"));
+  });
+  return clamp(line, cols);
+}
+
+/** The body for a tab that hasn't been built yet — an honest placeholder, not a crash or a blank. */
+function placeholderBody(tab: TabId): Line[] {
+  const label = TABS.find((t) => t.id === tab)?.label ?? tab;
+  return [
+    BLANK,
+    [seg(`  ${label}`, "bold")],
+    [seg("  — lands in a later throttlekit-server build —", "dim")],
+    [seg(`  see ${DOCS_URL}`, "gray")],
+  ];
+}
+
 /** The binding-axis hero for the first unified admitter (the niche nobody else renders). */
 function bindingAxisPanel(snap: LensSnapshot, width: number, budget: number): Line[] {
   const admitter = snap.policies.find((p) => p.kind === "admitter");
@@ -302,6 +344,8 @@ function statusBar(opts: RenderOptions, nodeId: string | undefined): Line {
   const left: Line = [
     seg("q", "bold"),
     seg(" quit  ", "dim"),
+    seg("1-5/Tab", "bold"),
+    seg(" views  ", "dim"),
     seg("↑↓", "bold"),
     seg(" scroll  ", "dim"),
   ];
@@ -321,34 +365,39 @@ export function renderFrame(snap: LensSnapshot, opts: RenderOptions): string[] {
   const content: Line[] = [];
   content.push(headerLine(snap, opts));
   content.push(throughputLine(snap, opts));
-  content.push(BLANK);
+  // The tab strip takes the row that used to be blank, so the overview's layout is unchanged.
+  content.push(tabStrip(opts.view.tab, cols));
 
-  content.push(sectionHeader("BINDING AXIS  /  TOP DENIED KEYS", cols));
-  const heroBudget = 5;
-  // Build each panel to the EXACT column width twoColumn will place it in (gutter 2), so the right
-  // column's count field isn't clipped by the final clamp.
-  const heroGutter = 2;
-  const leftW = Math.floor((cols - heroGutter) / 2);
-  const left = bindingAxisPanel(snap, leftW, heroBudget);
-  const right = topKeysPanel(snap, cols - heroGutter - leftW, heroBudget);
-  content.push(...twoColumn(left, right, cols));
-  content.push(BLANK);
+  if (opts.view.tab === "overview") {
+    content.push(sectionHeader("BINDING AXIS  /  TOP DENIED KEYS", cols));
+    const heroBudget = 5;
+    // Build each panel to the EXACT column width twoColumn will place it in (gutter 2), so the right
+    // column's count field isn't clipped by the final clamp.
+    const heroGutter = 2;
+    const leftW = Math.floor((cols - heroGutter) / 2);
+    const left = bindingAxisPanel(snap, leftW, heroBudget);
+    const right = topKeysPanel(snap, cols - heroGutter - leftW, heroBudget);
+    content.push(...twoColumn(left, right, cols));
+    content.push(BLANK);
 
-  content.push(sectionHeader("CONCURRENCY", cols));
-  content.push(...concurrencyLines(snap.guards));
-  content.push(BLANK);
+    content.push(sectionHeader("CONCURRENCY", cols));
+    content.push(...concurrencyLines(snap.guards));
+    content.push(BLANK);
 
-  content.push(sectionHeader(opts.view.paused ? "DENIALS (paused)" : "DENIALS (live)", cols));
+    content.push(sectionHeader(opts.view.paused ? "DENIALS (paused)" : "DENIALS (live)", cols));
 
-  // The denial feed is the flex panel: it takes whatever is left above the pinned status bar.
-  const feedBudget = Math.max(0, rows - 1 - content.length);
-  const feed = snap.recentDenials.slice().reverse();
-  const start = Math.max(0, Math.min(opts.view.scroll, Math.max(0, feed.length - feedBudget)));
-  const visible = feed.slice(start, start + feedBudget);
-  if (visible.length === 0) {
-    content.push([seg("(no denials yet — drive some traffic)", "dim")]);
+    // The denial feed is the flex panel: it takes whatever is left above the pinned status bar.
+    const feedBudget = Math.max(0, rows - 1 - content.length);
+    const feed = snap.recentDenials.slice().reverse();
+    const start = Math.max(0, Math.min(opts.view.scroll, Math.max(0, feed.length - feedBudget)));
+    const visible = feed.slice(start, start + feedBudget);
+    if (visible.length === 0) {
+      content.push([seg("(no denials yet — drive some traffic)", "dim")]);
+    } else {
+      for (const row of visible) content.push(denialLine(row));
+    }
   } else {
-    for (const row of visible) content.push(denialLine(row));
+    content.push(...placeholderBody(opts.view.tab));
   }
 
   // Pin the status bar to the last row; pad/truncate the content above it to fill exactly rows-1.

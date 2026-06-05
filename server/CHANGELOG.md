@@ -4,6 +4,14 @@ All notable changes to **throttlekit-server** are documented here. The format fo
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This server tracks the frozen `throttlekit` 1.0
 core's public, frozen API and versions independently of it (it is pre-1.0 / experimental).
 
+## [Unreleased]
+
+### Added
+
+- **Tabbed views in the `--tui` dashboard.** Press `1`–`5` or `Tab` / `Shift-Tab` to switch views.
+  **Overview** is the live board today; **Latency**, **Fairness**, **Capacity**, and **Guarantee** are
+  landing panel-by-panel (see `research/dashboard/ROADMAP.md`).
+
 ## [0.1.0-experimental.6] — 2026-06-05
 
 ### Changed

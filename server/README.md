@@ -158,7 +158,7 @@ your terminal, alongside gRPC — no browser, no metrics backend:
 
 ```bash
 throttlekit-server --config .throttlekit.yaml --tui
-#  → gRPC on :50051  +  a live dashboard in your terminal (q quit · ↑↓ scroll · p pause)
+#  → gRPC on :50051  +  a live dashboard (q quit · 1-5/Tab switch views · ↑↓ scroll · p pause)
 ```
 
 It taps every limiter and unified admitter into an in-process hub (synchronous, exception-swallowing, O(1)
@@ -166,6 +166,9 @@ It taps every limiter and unified admitter into an in-process hub (synchronous, 
 attribution**: for a unified policy, *which* of rate / concurrency / cost (or the joint-LP `policy` lane) is
 throttling each key right now. It works for **every** policy — a plain `gcra` limiter gets the board and the
 "why throttled" attribution by policy + key; the axis lane lights up for unified admitters.
+
+The dashboard is organized into **views** — press `1`–`5` or `Tab` / `Shift-Tab` to switch. **Overview** is
+the live board today; **Latency**, **Fairness**, **Capacity**, and **Guarantee** are landing panel-by-panel.
 
 A TUI owns the terminal, so it is **opt-in** and needs an interactive TTY (a non-TTY warns and serves
 without it). For **headless / production** monitoring, emit OpenTelemetry → Grafana instead — including the

@@ -9,7 +9,7 @@
  */
 
 import type { LensHub } from "./monitor/hub.js";
-import { type ViewState, renderFrame } from "./monitor/render.js";
+import { TABS, type TabId, type ViewState, renderFrame } from "./monitor/render.js";
 
 /** True only when both ends are a real interactive terminal (else the alt-screen / raw-mode dance fails). */
 export function canRunTui(): boolean {
@@ -46,7 +46,7 @@ export function runTui(hub: LensHub, opts: RunTuiOptions): RunningTui {
   const out = process.stdout;
   const input = process.stdin;
   const color = out.isTTY === true && !process.env.NO_COLOR;
-  const view: ViewState = { scroll: 0, paused: false };
+  const view: ViewState = { scroll: 0, paused: false, tab: "overview" };
   const denyHistory: number[] = [];
   let prevDenied = 0;
   let frozen = hub.snapshot();
@@ -81,6 +81,23 @@ export function runTui(hub: LensHub, opts: RunTuiOptions): RunningTui {
 
   const timer = setInterval(paint, opts.intervalMs ?? 250);
 
+  /**
+   * Jump to a tab, resetting the feed scroll only when the view actually changes — so re-pressing the
+   * current view's number key doesn't throw away the user's scroll position.
+   */
+  const goToTab = (id: TabId): void => {
+    if (id === view.tab) return;
+    view.tab = id;
+    view.scroll = 0;
+  };
+
+  /** Move the active tab by `dir` (wrapping). */
+  const switchTab = (dir: number): void => {
+    const i = TABS.findIndex((t) => t.id === view.tab);
+    const next = TABS[(i + dir + TABS.length) % TABS.length];
+    if (next !== undefined) goToTab(next.id);
+  };
+
   const onKey = (data: Buffer): void => {
     const k = data.toString("utf8");
     if (k === "q" || k === "\x03") {
@@ -100,7 +117,17 @@ export function runTui(hub: LensHub, opts: RunTuiOptions): RunningTui {
       view.scroll = 1_000_000; // oldest (clamped by the renderer)
     else if (k === "G")
       view.scroll = 0; // newest
-    else if (k === "p") {
+    else if (k === "\t")
+      switchTab(1); // Tab → next view
+    else if (k === "\x1b[Z")
+      switchTab(-1); // Shift-Tab → previous view
+    else if (k.length === 1 && k >= "1" && k <= "9") {
+      // A single digit jumps to that view. The `length === 1` guard keeps coalesced reads (e.g. a digit
+      // arriving in the same chunk as a following arrow) out of this branch so they aren't swallowed.
+      const t = TABS[Number(k) - 1];
+      if (t === undefined) return; // out-of-range digit: no-op
+      goToTab(t.id);
+    } else if (k === "p") {
       view.paused = !view.paused;
       if (view.paused) frozen = hub.snapshot();
     } else return;

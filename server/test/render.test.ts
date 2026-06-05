@@ -84,7 +84,7 @@ const baseOpts = (cols: number, rows: number): RenderOptions => ({
   rows,
   now: 1_700_000_000_000,
   denyHistory: [1, 3, 2, 5, 8, 4],
-  view: { scroll: 0, paused: false },
+  view: { scroll: 0, paused: false, tab: "overview" },
   color: false,
 });
 
@@ -161,5 +161,40 @@ describe("renderFrame", () => {
     const opts = baseOpts(80, 20);
     opts.color = true;
     expect(renderFrame(sampleSnapshot(), opts).join("")).toContain("\x1b[");
+  });
+
+  it("renders the tab strip with every view label", () => {
+    const frame = renderFrame(sampleSnapshot(), baseOpts(100, 24)).join("\n");
+    for (const label of ["Overview", "Latency", "Fairness", "Capacity", "Guarantee"]) {
+      expect(frame).toContain(label);
+    }
+  });
+
+  it("switches body by tab — a non-overview tab hides the overview sections", () => {
+    const opts = baseOpts(100, 24);
+    opts.view.tab = "latency";
+    const frame = renderFrame(sampleSnapshot(), opts).join("\n");
+    // The tab strip still lists every view, but the overview sections are gone, replaced by an
+    // honest placeholder pointing at the (reachable) monitoring docs.
+    expect(frame).not.toContain("BINDING AXIS");
+    expect(frame).not.toContain("DENIALS (live)");
+    expect(frame).toContain("wiki");
+  });
+
+  it("keeps the exact width invariant on every tab — at any size", () => {
+    for (const tab of ["overview", "latency", "fairness", "capacity", "guarantee"] as const) {
+      for (const [cols, rows] of [
+        [40, 12],
+        [80, 24],
+        [24, 8],
+        [200, 50],
+      ] as const) {
+        const opts = baseOpts(cols, rows);
+        opts.view.tab = tab;
+        const frame = renderFrame(sampleSnapshot(), opts);
+        expect(frame).toHaveLength(rows);
+        for (const line of frame) expect(line.length).toBe(cols);
+      }
+    }
   });
 });
