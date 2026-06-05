@@ -53,6 +53,12 @@ function sampleSnapshot(): LensSnapshot {
           { key: "user-7", count: 40 },
         ]),
         latency: { avgMs: 0.42, p50Ms: 0.31, p99Ms: 12.5, maxMs: 48, n: 1200 },
+        forecast: {
+          key: "ip-10.0.0.7",
+          spendableNow: 0,
+          nextReplenishAt: 1_700_000_000_240, // +240ms from `now`
+          fullAt: 1_700_000_001_200, // +1.2s from `now`
+        },
       },
       {
         name: "unified-api",
@@ -189,7 +195,7 @@ describe("renderFrame", () => {
 
   it("switches body by tab — a not-yet-built tab hides the overview sections, shows a placeholder", () => {
     const opts = baseOpts(100, 24);
-    opts.view.tab = "capacity"; // still a placeholder tab
+    opts.view.tab = "guarantee"; // still a placeholder tab
     const frame = renderFrame(sampleSnapshot(), opts).join("\n");
     // The tab strip still lists every view, but the overview sections are gone, replaced by an
     // honest placeholder pointing at the (reachable) monitoring docs.
@@ -261,6 +267,30 @@ describe("renderFrame", () => {
     const frame = renderFrame(snap, opts).join("\n");
     expect(frame).toContain("FAIRNESS");
     expect(frame).toContain("no fair-share policies");
+  });
+
+  it("renders the Capacity view with a forecast row and an n/a fallback", () => {
+    const opts = baseOpts(110, 24);
+    opts.view.tab = "capacity";
+    const frame = renderFrame(sampleSnapshot(), opts).join("\n");
+    expect(frame).toContain("CAPACITY");
+    expect(frame).toContain("ip-10.0.0.7"); // api's hottest key
+    expect(frame).toContain("240ms"); // next +1 in
+    expect(frame).toContain("1.2s"); // full in
+    expect(frame).toContain("(admitter)"); // unified-api carries no forecast
+  });
+
+  it("Capacity view labels an unavailable forecast by its reason, not a one-size-fits-all string", () => {
+    const snap = sampleSnapshot();
+    const p = snap.policies[0];
+    if (p) {
+      p.forecast = undefined;
+      p.forecastUnavailable = "async";
+    }
+    const opts = baseOpts(110, 24);
+    opts.view.tab = "capacity";
+    const frame = renderFrame(snap, opts).join("\n");
+    expect(frame).toContain("(async store)"); // not "(async / no traffic)"
   });
 
   it("keeps the exact width invariant on every tab — at any size", () => {

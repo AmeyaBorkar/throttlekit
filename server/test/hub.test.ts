@@ -27,6 +27,21 @@ describe("createLensHub", () => {
     const lat = p?.latency;
     expect(lat?.n).toBe(5);
     expect(lat?.p99Ms).toBeGreaterThanOrEqual(lat?.p50Ms ?? 0);
+    // The Capacity forecast covers the hottest (top-denied) key on a synchronous store.
+    expect(p?.forecast?.key).toBe("k");
+    expect(typeof p?.forecast?.spendableNow).toBe("number");
+    expect(typeof p?.forecast?.fullAt).toBe("number");
+  });
+
+  it("reports an idle limiter's forecast as unavailable: 'idle' (no traffic yet)", () => {
+    const hub = createLensHub();
+    hub.trackLimiter(
+      "api",
+      rateLimit({ strategy: gcra({ limit: 2, periodMs: 60_000 }), store: new MemoryStore() }),
+    );
+    const p = hub.snapshot().policies[0]; // no checks driven → no hot key
+    expect(p?.forecast).toBeUndefined();
+    expect(p?.forecastUnavailable).toBe("idle");
   });
 
   it("surfaces the health block set by the host", () => {

@@ -167,9 +167,9 @@ attribution**: for a unified policy, *which* of rate / concurrency / cost (or th
 throttling each key right now. It works for **every** policy — a plain `gcra` limiter gets the board and the
 "why throttled" attribution by policy + key; the axis lane lights up for unified admitters.
 
-The dashboard is organized into **views** — press `1`–`5` or `Tab` / `Shift-Tab` to switch. **Overview** (the
-live board) and **Latency** (per-policy avg / p50 / p99 / max admit-path latency) are live today; **Fairness**,
-**Capacity**, and **Guarantee** are landing panel-by-panel.
+The dashboard is organized into **views** — press `1`–`5` or `Tab` / `Shift-Tab` to switch. **Overview**,
+**Latency** (avg / p50 / p99 / max admit-path latency), and **Capacity** (per-key spendable + refill ETA) are
+live; **Fairness** renders once a weighted-fair-escrow policy is served, and **Guarantee** is landing.
 
 A TUI owns the terminal, so it is **opt-in** and needs an interactive TTY (a non-TTY warns and serves
 without it). For **headless / production** monitoring, emit OpenTelemetry → Grafana instead — including the

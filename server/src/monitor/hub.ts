@@ -43,7 +43,7 @@ import type {
 } from "./types.js";
 
 /** The hub/dashboard version, stamped into every snapshot's `meta.lensVersion`. */
-export const MONITOR_VERSION = "0.2.0-experimental.1";
+export const MONITOR_VERSION = "0.2.0-experimental.2";
 
 /** How many recent admit-path latencies to retain per policy for the latency readout. */
 const LATENCY_RING = 256;
@@ -103,7 +103,15 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
   const recentLimit = options.recentLimit ?? 200;
   const clock = options.clock ?? systemClock;
 
-  const limiters: Array<{ name: string; analytics: AnalyticsLimiter; meta: PolicyMeta }> = [];
+  // `source` is the original (pre-analytics) limiter, forecast via `forecastSync` for the Capacity view.
+  // The analytics/tap wrappers DO forward `forecastSync` (forwardIntrospection) as of throttlekit 1.1.0;
+  // using `source` is just the canonical, wrapper-independent choice — not a workaround for a dropped method.
+  const limiters: Array<{
+    name: string;
+    analytics: AnalyticsLimiter;
+    meta: PolicyMeta;
+    source: Limiter;
+  }> = [];
   const admitters: Array<{
     name: string;
     analytics: AdmissionAnalyticsAdmitter;
@@ -133,7 +141,7 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
     trackLimiter(name, limiter) {
       const analytics = withAnalytics(limiter, { windowMs, topK, clock });
       const meta: PolicyMeta = { lastLimit: 0, lat: new RingBuffer<number>(LATENCY_RING) };
-      limiters.push({ name, analytics, meta });
+      limiters.push({ name, analytics, meta, source: limiter });
       // tapDecisions feeds the live denial stream + side metrics; withAnalytics holds the snapshot.
       return tapDecisions(analytics, (e: DecisionEvent) => {
         meta.lastLimit = e.decision.limit;
@@ -199,18 +207,16 @@ export function createLensHub(options: LensHubOptions = {}): LensHub {
 
     snapshot(): LensSnapshot {
       const policies: LensPolicySnapshot[] = [];
-      for (const { name, analytics, meta } of limiters) {
-        policies.push(
-          withMeta(
-            {
-              name,
-              kind: "limiter",
-              strategy: analytics.strategy.name,
-              analytics: analytics.analytics(),
-            },
-            meta,
-          ),
+      for (const { name, analytics, meta, source } of limiters) {
+        const a = analytics.analytics();
+        const policy = withMeta(
+          { name, kind: "limiter", strategy: analytics.strategy.name, analytics: a },
+          meta,
         );
+        const fc = forecastHot(source, a);
+        if ("unavailable" in fc) policy.forecastUnavailable = fc.unavailable;
+        else policy.forecast = fc;
+        policies.push(policy);
       }
       for (const { name, analytics, meta } of admitters) {
         policies.push(withMeta({ name, kind: "admitter", analytics: analytics.analytics() }, meta));
@@ -273,6 +279,35 @@ function percentile(sorted: readonly number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
   return sorted[idx] ?? 0;
+}
+
+/**
+ * Forecast the hottest key's near-future capacity for the Capacity view, or — when no sync forecast is
+ * available — *why*, so the view can label it honestly: `"async"` (an async store has no sync forecast),
+ * `"idle"` (no traffic yet, hence no hot key), `"unsupported"` (the limiter exposes no forecast at all).
+ */
+function forecastHot(
+  limiter: Limiter,
+  snap: { topDenied: ReadonlyArray<{ key: string }>; topRequested: ReadonlyArray<{ key: string }> },
+): NonNullable<LensPolicySnapshot["forecast"]> | { unavailable: "async" | "idle" | "unsupported" } {
+  if (limiter.forecastSync === undefined) return { unavailable: "unsupported" };
+  // The throttled key (top-denied) is the most useful capacity readout; fall back to the busiest key.
+  const key = snap.topDenied[0]?.key ?? snap.topRequested[0]?.key;
+  if (key === undefined) return { unavailable: "idle" };
+  try {
+    const f = limiter.forecastSync(key);
+    return {
+      key,
+      spendableNow: f.spendableNow,
+      nextReplenishAt: f.nextReplenishAt,
+      fullAt: f.fullAt,
+    };
+  } catch (err) {
+    // forecastSync throws on an async store ("requires a synchronous store") or a strategy with no
+    // forecast — distinguish them so the view never tells a busy async-store operator "no traffic".
+    const msg = err instanceof Error ? err.message : "";
+    return { unavailable: /synchronous store|async/i.test(msg) ? "async" : "unsupported" };
+  }
 }
 
 /** Drop the `undefined` per-axis entries so the row's `perAxis` only carries real decisions. */

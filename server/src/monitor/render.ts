@@ -12,7 +12,12 @@
  */
 
 import type { AdmissionAnalyticsSnapshot } from "throttlekit";
-import type { LensDenialRow, LensGuardSnapshot, LensSnapshot } from "./types.js";
+import type {
+  LensDenialRow,
+  LensGuardSnapshot,
+  LensPolicySnapshot,
+  LensSnapshot,
+} from "./types.js";
 
 /** A dashboard tab. The body below the persistent header/throughput strip is per-tab. */
 export type TabId = "overview" | "latency" | "fairness" | "capacity" | "guarantee";
@@ -161,6 +166,11 @@ function ms(v: number): string {
 /** True when a policy's latency tail is worth flagging: heavy vs its own median AND above the floor. */
 function latencyWarn(p50: number, p99: number): boolean {
   return p99 >= LATENCY_WARN_FLOOR_MS && p99 >= LATENCY_TAIL_MULTIPLE * p50;
+}
+
+/** A relative ETA from an absolute epoch-ms target: "now" once reached, else the compact ms distance. */
+function etaMs(at: number, now: number): string {
+  return at - now <= 0 ? "now" : ms(at - now);
 }
 
 function bar(frac: number, width: number): string {
@@ -428,6 +438,71 @@ function fairnessBody(snap: LensSnapshot, cols: number): Line[] {
   return out;
 }
 
+/**
+ * The Capacity view: per policy, a non-consuming forecast for the hottest key — how many requests are
+ * spendable now, when capacity next returns, and when it is fully replenished. A policy without a forecast
+ * (an async store, an admitter, or no traffic yet) renders "n/a" honestly rather than a fabricated number.
+ */
+function capacityBody(snap: LensSnapshot, cols: number): Line[] {
+  const nameW = 16;
+  const keyW = 18;
+  const numW = 9;
+  // Anchor ETAs to when the forecast was taken (snapshot time), NOT the render wall clock — so a paused
+  // (frozen) snapshot's ETAs stay consistent with its frozen spendable count instead of drifting to "now".
+  const at = snap.meta.generatedAt;
+  const out: Line[] = [
+    sectionHeader("CAPACITY  ·  forecast for the hottest key", cols),
+    [
+      seg("  policy".padEnd(nameW), "dim"),
+      seg("key".padEnd(keyW), "dim"),
+      seg("spendable".padStart(numW), "dim"),
+      seg("+1 in".padStart(numW), "dim"),
+      seg("full in".padStart(numW), "dim"),
+    ],
+  ];
+  if (snap.policies.length === 0) {
+    out.push([seg("  (no policies configured)", "dim")]);
+    return out;
+  }
+  for (const p of snap.policies) {
+    const rawName = `  ${p.name}`;
+    const name = rawName.length > nameW ? `${rawName.slice(0, nameW - 1)}…` : rawName.padEnd(nameW);
+    const f = p.forecast;
+    if (f === undefined) {
+      out.push([
+        seg(name),
+        seg(forecastUnavailableLabel(p).padEnd(keyW), "dim"),
+        seg("n/a".padStart(numW), "dim"),
+        seg("n/a".padStart(numW), "dim"),
+        seg("n/a".padStart(numW), "dim"),
+      ]);
+      continue;
+    }
+    const key = f.key.length > keyW - 1 ? `${f.key.slice(0, keyW - 2)}…` : f.key.padEnd(keyW);
+    out.push([
+      seg(name),
+      seg(key),
+      seg(compact(f.spendableNow).padStart(numW), f.spendableNow > 0 ? "green" : "yellow"),
+      seg(etaMs(f.nextReplenishAt, at).padStart(numW), "dim"),
+      seg(etaMs(f.fullAt, at).padStart(numW), "dim"),
+    ]);
+  }
+  return out;
+}
+
+/** The honest reason a policy has no forecast — distinguishing an async store from idle / no-forecast. */
+function forecastUnavailableLabel(p: LensPolicySnapshot): string {
+  if (p.kind === "admitter") return "(admitter)";
+  switch (p.forecastUnavailable) {
+    case "async":
+      return "(async store)";
+    case "unsupported":
+      return "(no forecast)";
+    default:
+      return "(no traffic yet)";
+  }
+}
+
 /** The binding-axis hero for the first unified admitter (the niche nobody else renders). */
 function bindingAxisPanel(snap: LensSnapshot, width: number, budget: number): Line[] {
   const admitter = snap.policies.find((p) => p.kind === "admitter");
@@ -584,6 +659,8 @@ export function renderFrame(snap: LensSnapshot, opts: RenderOptions): string[] {
     content.push(...latencyBody(snap, cols));
   } else if (opts.view.tab === "fairness") {
     content.push(...fairnessBody(snap, cols));
+  } else if (opts.view.tab === "capacity") {
+    content.push(...capacityBody(snap, cols));
   } else {
     content.push(...placeholderBody(opts.view.tab));
   }

@@ -48,6 +48,18 @@ export interface LensPolicySnapshot {
   limit?: number;
   /** Recent admit-path latency over a small ring (the Latency view); p50/p99 are nearest-rank. */
   latency?: { avgMs: number; p50Ms: number; p99Ms: number; maxMs: number; n: number };
+  /**
+   * Near-future capacity forecast for the policy's hottest key (the Capacity view). Present only for a
+   * limiter on a **synchronous** store (`forecastSync`) with observed traffic — an async store (Redis /
+   * Postgres) or an admitter leaves it absent, which the view renders as "n/a". Epoch-ms timestamps.
+   */
+  forecast?: { key: string; spendableNow: number; nextReplenishAt: number; fullAt: number };
+  /**
+   * When a limiter has no `forecast` this snapshot, *why* — so the Capacity view labels it honestly
+   * instead of conflating distinct causes: `"async"` (an async store has no sync forecast), `"idle"` (no
+   * traffic yet, so no hot key), `"unsupported"` (the strategy/limiter exposes no forecast at all).
+   */
+  forecastUnavailable?: "async" | "idle" | "unsupported";
 }
 
 /** A concurrency guard's live health (from `ConcurrencyGuard.stats()`; distributed extras when present). */

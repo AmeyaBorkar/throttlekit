@@ -16,6 +16,9 @@ core's public, frozen API and versions independently of it (it is pre-1.0 / expe
   against the shared budget (green = within the tenant's guarantee, yellow = borrowed idle surplus). Renders
   from any `trackStats(name, "wfe", …)` hub source; serving a `fairEscrow` policy over the gRPC server door
   is a follow-up.
+- **Capacity view** — per-policy non-consuming forecast for the hottest key: how many requests are spendable
+  now, when capacity next returns (`+1 in`), and when it is fully replenished (`full in`). Synchronous-store
+  limiters only; an async store / admitter / no-traffic policy renders "n/a" honestly.
 
 ## [0.1.0-experimental.6] — 2026-06-05
 
