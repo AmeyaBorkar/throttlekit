@@ -170,8 +170,9 @@ throttling each key right now. It works for **every** policy — a plain `gcra` 
 The dashboard is organized into **five views** — press `1`–`5` or `Tab` / `Shift-Tab` to switch:
 **Overview**, **Latency** (avg / p50 / p99 / max admit-path latency), **Capacity** (per-key spendable +
 refill ETA), **Fairness** (per-tenant weighted-fair-escrow share), and **Guarantee** (concurrency headroom
-to each guard's enforced ceiling + self-fence status). Fairness and Guarantee populate from a weighted-fair-escrow
-policy and from concurrency guards respectively — surfacing those over the gRPC service door is in progress.
+to each guard's enforced ceiling + self-fence status). Fairness lights up for a `fairEscrow` policy (served
+by `check`, the key being the tenant); Guarantee lights up for any `concurrency` policy (the admitter's
+guard is surfaced to the dashboard).
 
 A TUI owns the terminal, so it is **opt-in** and needs an interactive TTY (a non-TTY warns and serves
 without it). For **headless / production** monitoring, emit OpenTelemetry → Grafana instead — including the

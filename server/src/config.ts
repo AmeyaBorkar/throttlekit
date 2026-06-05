@@ -31,6 +31,7 @@ import {
 import type {
   AdaptiveConcurrencyOptions,
   Clock,
+  ConcurrencyGuard,
   Limiter,
   Strategy,
   TokenBudgetMeter,
@@ -43,7 +44,13 @@ import {
   loadConfigObject,
   parseYaml,
 } from "throttlekit/config";
-import { type LeaseOptions, type TwoTierMode, twoTier } from "throttlekit/twotier";
+import {
+  type LeaseOptions,
+  type TwoTierMode,
+  type WeightedFairEscrowLimiter,
+  twoTier,
+  weightedFairEscrow,
+} from "throttlekit/twotier";
 
 /** The optional `twoTier` block on a policy spec — turns a rate-limit policy into a two-tier limiter. */
 export interface TwoTierConfig {
@@ -95,11 +102,33 @@ export interface ConcurrencyConfig {
   backoffRatio?: number;
 }
 
-/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `concurrency` blocks. */
+/**
+ * The optional `fairEscrow` block — turns a policy into a **weighted-fair-escrow** limiter: one shared
+ * per-window budget split across tenants in proportion to weight, idle tenants' surplus reclaimed by
+ * backlogged ones. The request `key` IS the tenant. The decision is the core's `weightedFairEscrow` (one
+ * oracle). Single-process (L1-only) on the server today; a fleet-shared (L2) fair budget is a follow-up.
+ */
+export interface FairEscrowConfig {
+  /** Global per-window budget `L` (> 0). */
+  limit: number;
+  /** Window width in ms (epoch-aligned). */
+  windowMs: number;
+  /** Per-tenant weights (each must be > 0); a tenant not listed defaults to weight 1. */
+  weights?: Record<string, number>;
+  /**
+   * Max distinct tenants to keep per-window state for, FIFO-evicting beyond it. The request `key` is the
+   * tenant and comes off the wire untrusted, so this bounds memory growth on a public surface. Default
+   * 100_000 (mirrors the token-budget meter), per the core's "set on public surfaces" guidance.
+   */
+  maxKeys?: number;
+}
+
+/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `concurrency` / `fairEscrow` blocks. */
 export type ServerLimiterSpec = LimiterSpec & {
   twoTier?: TwoTierConfig;
   tokenBudget?: TokenBudgetConfig;
   concurrency?: ConcurrencyConfig;
+  fairEscrow?: FairEscrowConfig;
 };
 
 /**
@@ -122,6 +151,10 @@ export interface ServiceConfig {
   limiters: Record<string, Limiter>;
   meters: Record<string, MeterPolicy>;
   admitters: Record<string, UnifiedAdmitter>;
+  /** The concurrency guard inside each admitter, exposed for monitoring (the admitter encapsulates it). */
+  guards: Record<string, ConcurrencyGuard>;
+  /** Weighted-fair-escrow policies (served by `check`, key = tenant; not `Limiter`s). */
+  fairness: Record<string, WeightedFairEscrowLimiter>;
 }
 
 /** Options for {@link buildLimitersFromConfig}: the core loader options plus an injectable clock. */
@@ -153,14 +186,31 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   const meters: Record<string, MeterPolicy> = {};
   const twoTierLimiters: Record<string, Limiter> = {};
   const admitters: Record<string, UnifiedAdmitter> = {};
+  const guards: Record<string, ConcurrencyGuard> = {};
+  const fairness: Record<string, WeightedFairEscrowLimiter> = {};
   const rateLimitOnly: Record<string, LimiterSpec> = {};
 
   for (const [name, rawSpec] of Object.entries(limitersIn)) {
     const spec = rawSpec as ServerLimiterSpec;
+    // The kind blocks are mutually exclusive — a policy is one of them. Reject a spec that declares more
+    // than one loudly (the dispatch below is first-match-wins, which would otherwise silently drop the rest).
+    if (spec != null && typeof spec === "object") {
+      const kinds = [spec.tokenBudget, spec.fairEscrow, spec.concurrency, spec.twoTier].filter(
+        (b) => b !== undefined,
+      ).length;
+      if (kinds > 1)
+        throw new ThrottleKitError(
+          `config.limiters[${name}]: a policy may declare at most one of tokenBudget / fairEscrow / concurrency / twoTier`,
+        );
+    }
     if (spec != null && typeof spec === "object" && spec.tokenBudget !== undefined) {
       meters[name] = buildMeter(name, spec, options);
+    } else if (spec != null && typeof spec === "object" && spec.fairEscrow !== undefined) {
+      fairness[name] = buildFairEscrow(name, spec, options);
     } else if (spec != null && typeof spec === "object" && spec.concurrency !== undefined) {
-      admitters[name] = buildAdmitter(name, spec, options, data);
+      const built = buildAdmitter(name, spec, options, data);
+      admitters[name] = built.admitter;
+      guards[name] = built.guard; // expose the encapsulated guard for the Concurrency / Guarantee views
     } else if (spec != null && typeof spec === "object" && spec.twoTier !== undefined) {
       twoTierLimiters[name] = buildTwoTier(name, spec, options, defaultPrefix);
     } else {
@@ -175,7 +225,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   };
   const rest = loadConfigObject({ ...data, limiters: rateLimitOnly }, coreOptions).limiters;
 
-  return { limiters: { ...rest, ...twoTierLimiters }, meters, admitters };
+  return { limiters: { ...rest, ...twoTierLimiters }, meters, admitters, guards, fairness };
 }
 
 /**
@@ -259,10 +309,10 @@ function buildAdmitter(
   spec: ServerLimiterSpec,
   options: ServerLoadOptions,
   data: ConfigFile,
-): UnifiedAdmitter {
+): { admitter: UnifiedAdmitter; guard: ConcurrencyGuard } {
   const cc = spec.concurrency ?? {};
   const clock = options.clock;
-  const concurrency = adaptiveConcurrency({ ...cc, ...(clock !== undefined ? { clock } : {}) });
+  const guard = adaptiveConcurrency({ ...cc, ...(clock !== undefined ? { clock } : {}) });
 
   // Optional rate axis (→ unified). Built like a plain policy so it gets the store + prefix defaults;
   // the core loader ignores the extra `concurrency` field (as it does `twoTier`).
@@ -283,9 +333,44 @@ function buildAdmitter(
     rate = built;
   }
 
-  return unifiedAdmission({
-    concurrency,
+  const admitter = unifiedAdmission({
+    concurrency: guard,
     ...(rate !== undefined ? { rate } : {}),
+    ...(clock !== undefined ? { clock } : {}),
+  });
+  return { admitter, guard };
+}
+
+/**
+ * Build a weighted-fair-escrow limiter from a policy's `fairEscrow` block. The request key is the tenant;
+ * a tenant not in `weights` gets weight 1. Single-process (L1-only) — no `l2`, so `check` never throws.
+ */
+function buildFairEscrow(
+  name: string,
+  spec: ServerLimiterSpec,
+  options: ServerLoadOptions,
+): WeightedFairEscrowLimiter {
+  const fe = spec.fairEscrow as FairEscrowConfig;
+  if (fe.limit === undefined || fe.windowMs === undefined)
+    throw new ThrottleKitError(
+      `config.limiters[${name}].fairEscrow: both \`limit\` and \`windowMs\` are required`,
+    );
+  const weights = fe.weights ?? {};
+  // The core validates weights > 0 lazily inside `check` and throws — but on this L1-only path that throw
+  // would be swallowed by the service's fail-mode catch, masking the config bug. Reject it up front instead.
+  for (const [tenant, w] of Object.entries(weights)) {
+    if (typeof w !== "number" || !(w > 0))
+      throw new ThrottleKitError(
+        `config.limiters[${name}].fairEscrow.weights[${tenant}]: weight must be a positive number`,
+      );
+  }
+  const clock = options.clock;
+  return weightedFairEscrow({
+    limit: fe.limit,
+    windowMs: fe.windowMs,
+    weightOf: (tenant) => weights[tenant] ?? 1,
+    // Bound untrusted per-tenant growth (the request key is the tenant) — mirrors the meter's maxKeys.
+    l1: { maxKeys: fe.maxKeys ?? 100_000 },
     ...(clock !== undefined ? { clock } : {}),
   });
 }

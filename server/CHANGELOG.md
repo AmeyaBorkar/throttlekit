@@ -14,8 +14,7 @@ core's public, frozen API and versions independently of it (it is pre-1.0 / expe
   ring; p50/p99 are nearest-rank, and a policy with no samples this window shows an honest "no samples" row.
 - **Fairness view** — for a weighted-fair-escrow source, per-tenant guaranteed share vs used vs borrowed
   against the shared budget (green = within the tenant's guarantee, yellow = borrowed idle surplus). Renders
-  from any `trackStats(name, "wfe", …)` hub source; serving a `fairEscrow` policy over the gRPC server door
-  is a follow-up.
+  from any `trackStats(name, "wfe", …)` hub source — including a server `fairEscrow` policy (below).
 - **Capacity view** — per-policy non-consuming forecast for the hottest key: how many requests are spendable
   now, when capacity next returns (`+1 in`), and when it is fully replenished (`full in`). Synchronous-store
   limiters only; an async store / admitter / no-traffic policy renders "n/a" honestly.
@@ -24,6 +23,11 @@ core's public, frozen API and versions independently of it (it is pre-1.0 / expe
   how many guards are draining over their slice, self-fence status, and the live self-fence feed. Renders
   from tracked concurrency guards; the proven `Σinflight <= L_global` bound (machine-checked in TLA+ for the
   acknowledged-handoff protocol) and the per-key two-tier overshoot are fleet properties (the Fleet view).
+- **Fairness and Guarantee populate on the server.** A new `fairEscrow` policy block serves a
+  weighted-fair-escrow limiter over the gRPC `Check` RPC — the request key is the **tenant**, per-tenant
+  state is bounded by `maxKeys` (default 100_000, mirroring the token-budget meter), and configured weights
+  must be positive — feeding the Fairness view. Each `concurrency` policy's encapsulated guard is surfaced
+  to the Concurrency + Guarantee views. (Both already worked for embedded / demo use.)
 
 ## [0.1.0-experimental.6] — 2026-06-05
 

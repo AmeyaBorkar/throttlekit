@@ -22,6 +22,7 @@ import type {
   TokenBudgetMeter,
   UnifiedAdmitter,
 } from "throttlekit";
+import type { WeightedFairEscrowLimiter } from "throttlekit/twotier";
 import { type MeterPolicy, type ServerLoadOptions, buildServiceConfig } from "./config.js";
 
 /** Per-call options for {@link RateLimiterService.admit} (the concurrency / unified axes). */
@@ -103,6 +104,12 @@ export interface RateLimiterServiceOptions {
    */
   admitters?: Record<string, UnifiedAdmitter>;
   /**
+   * Weighted-fair-escrow policies, each a prebuilt {@link WeightedFairEscrowLimiter}, served by `check`
+   * with the request `key` as the tenant. A policy name is a limiter, meter, admitter, **or** a fair
+   * limiter — they share one namespace.
+   */
+  fairLimiters?: Record<string, WeightedFairEscrowLimiter>;
+  /**
    * Store-outage policy applied to every policy's `check`/`checkMany`: `"open"` admits, `"closed"`
    * denies. Default `"open"`. (A returned `Decision` is always authoritative; this only governs what
    * happens when the backing store throws.)
@@ -173,6 +180,12 @@ function storeErrorDecision(limiter: Limiter, allowed: boolean): Decision {
   return { allowed, limit, remaining: allowed ? limit : 0, resetAt: 0, retryAfterMs: 0 };
 }
 
+/** Synthesize a fail-mode `Decision` for a fair-escrow policy whose `check` threw (only possible L2-backed). */
+function fairErrorDecision(wfe: WeightedFairEscrowLimiter, allowed: boolean): Decision {
+  const limit = wfe.stats().limit;
+  return { allowed, limit, remaining: allowed ? limit : 0, resetAt: 0, retryAfterMs: 0 };
+}
+
 /**
  * Build a {@link RateLimiterService} from a registry of named limiters. Each limiter is wrapped in the
  * core's `Enforcer` so the `FailMode` is applied inside `check`/`checkMany`.
@@ -203,6 +216,17 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     order.push(name);
     admitters.set(name, admitter);
   }
+  // Weighted-fair-escrow policies — served by `check` (key = tenant). Not `Limiter`s, so they bypass the
+  // enforcer path: an L1-only WFE never throws, and the fail mode covers an L2-backed one.
+  const fairLimiters = new Map<string, WeightedFairEscrowLimiter>();
+  for (const [name, wfe] of Object.entries(options.fairLimiters ?? {})) {
+    if (enforcers.has(name) || meters.has(name) || admitters.has(name))
+      throw new ThrottleKitError(
+        `policy ${JSON.stringify(name)} is declared as more than one of limiter / meter / admitter / fairEscrow`,
+      );
+    order.push(name);
+    fairLimiters.set(name, wfe);
+  }
   const clock: Clock = options.clock ?? { now: () => Date.now() };
   const leaseTtlMs = options.leaseTtlMs ?? 2000;
   /** Held concurrency slots keyed by opaque lease id; `release` is the core admission's lifecycle hook. */
@@ -216,16 +240,16 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
   function resolveLimiter(policy: string, op: string): Enforcer {
     const enforcer = enforcers.get(policy);
     if (enforcer !== undefined) return enforcer;
-    if (meters.has(policy) || admitters.has(policy))
+    if (meters.has(policy) || admitters.has(policy) || fairLimiters.has(policy))
       throw new OperationNotSupportedError(op, policy);
     throw new PolicyNotFoundError(policy, order);
   }
 
-  /** Resolve the admitter for an `admit`; a limiter/meter policy can't serve it. */
+  /** Resolve the admitter for an `admit`; a limiter/meter/fair policy can't serve it. */
   function resolveAdmitter(policy: string): UnifiedAdmitter {
     const admitter = admitters.get(policy);
     if (admitter !== undefined) return admitter;
-    if (enforcers.has(policy) || meters.has(policy))
+    if (enforcers.has(policy) || meters.has(policy) || fairLimiters.has(policy))
       throw new OperationNotSupportedError("admit", policy);
     throw new PolicyNotFoundError(policy, order);
   }
@@ -234,7 +258,7 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
   function resolveMeter(policy: string, key: string): TokenBudgetMeter {
     const entry = meters.get(policy);
     if (entry === undefined) {
-      if (enforcers.has(policy) || admitters.has(policy))
+      if (enforcers.has(policy) || admitters.has(policy) || fairLimiters.has(policy))
         throw new OperationNotSupportedError("debit", policy);
       throw new PolicyNotFoundError(policy, order);
     }
@@ -256,6 +280,15 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     },
 
     async check(policy, key, cost = 1): Promise<Decision> {
+      const fair = fairLimiters.get(policy);
+      if (fair !== undefined) {
+        // The fair-escrow decision is the core's `weightedFairEscrow` (one oracle); the key is the tenant.
+        try {
+          return await fair.check(key, cost);
+        } catch {
+          return fairErrorDecision(fair, fail === "open");
+        }
+      }
       const enforcer = resolveLimiter(policy, "check");
       const r = await enforcer.enforce(key, cost);
       // `decision` is present for "ok"/"limited"; undefined only when the store threw ("error").
@@ -376,11 +409,12 @@ export function createRateLimiterServiceFromConfig(
   options: RateLimiterServiceConfigOptions = {},
 ): RateLimiterService {
   const { fail, leaseTtlMs, ...loadOptions } = options;
-  const { limiters, meters, admitters } = buildServiceConfig(text, loadOptions);
+  const { limiters, meters, admitters, fairness } = buildServiceConfig(text, loadOptions);
   return createRateLimiterService({
     limiters,
     meters,
     admitters,
+    fairLimiters: fairness,
     ...(fail !== undefined ? { fail } : {}),
     // The admitters' guards already got `clock` via loadOptions; the lease table needs it too so a
     // test's ManualClock drives both the admission decision and the reclaim sweep.

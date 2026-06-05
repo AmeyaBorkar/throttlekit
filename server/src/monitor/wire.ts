@@ -30,7 +30,10 @@ export function wireMonitor(
   mode: string,
   nodeId?: string,
 ): TappedService {
-  const { limiters, meters, admitters } = buildServiceConfig(configText, loadOptions);
+  const { limiters, meters, admitters, guards, fairness } = buildServiceConfig(
+    configText,
+    loadOptions,
+  );
   const hub = createLensHub(nodeId !== undefined ? { nodeId } : {});
 
   const tappedLimiters: Record<string, Limiter> = {};
@@ -41,12 +44,19 @@ export function wireMonitor(
   for (const [name, admitter] of Object.entries(admitters)) {
     tappedAdmitters[name] = hub.trackAdmitter(name, admitter);
   }
+  // Each admitter encapsulates its concurrency guard; tracking the same instance surfaces it in the
+  // Concurrency / Guarantee views (the tapped admitter still drives this very guard).
+  for (const [name, guard] of Object.entries(guards)) hub.trackGuard(name, guard);
+  // Weighted-fair-escrow policies report their per-tenant state for the Fairness view.
+  for (const [name, wfe] of Object.entries(fairness))
+    hub.trackStats(name, "wfe", () => wfe.stats());
   hub.setHealth({ backend: mode, failMode: fail });
 
   const service = createRateLimiterService({
     limiters: tappedLimiters,
     meters,
     admitters: tappedAdmitters,
+    fairLimiters: fairness,
     fail,
   });
   return { service, hub };
