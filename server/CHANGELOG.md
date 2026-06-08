@@ -5,6 +5,29 @@ All notable changes to **throttlekit-server** are documented here. The format fo
 core's public, frozen API and versions independently of it (0.x maturity; the gRPC wire is frozen and
 conformance-tested against the golden vectors).
 
+## [0.2.0] — 2026-06-09
+
+### Added
+
+- **Deterministic What-If Replay (`@experimental`, opt-in, default-OFF).** A new `--tui` **Replay** tab
+  answers *"how many requests would this config change have flipped?"* against real traffic. Enable a
+  top-level `replay:` block and the server runs an isolated, deterministic (`ManualClock`) **shadow** of each
+  leaf-rate policy's live arrival stream — a post-decision, O(1), never-throw tail over the shadow's **own**
+  store (it can never change, delay, or break a production decision), bounded at `maxSteps` (default 50,000)
+  so a distinct-key flood can't exhaust memory (the trace is then flagged *truncated* and the what-if refuses
+  rather than understating). Press `r` to replay an operator-configured candidate (`set` / `scale` / `swap`)
+  and read the directional allow↔deny **flip ledger**, or an honest empty / truncated / refused state. Built
+  entirely on the published `throttlekit/testkit` (no core change). Keys are redacted before entering a
+  shadow; the flip count is candidate-vs-deterministic-baseline over the recorded traffic — **not** a replay
+  of production's exact decisions. Replay is a `--tui` feature (configuring `replay:` without `--tui` warns)
+  and is distinct from **capture** (the durable forensic record). See the README's *What-If Replay* section.
+
+### Changed
+
+- The monitor snapshot stamp `0.2.0` → `0.3.0` (the additive `replay` panel field). The `--tui` dashboard now
+  has **seven** views — added **Replay**, and the README now documents the **Cost Room** view (shipped in
+  0.1.0) alongside the rest.
+
 ## [0.1.0] — 2026-06-09
 
 Graduated out of the `-experimental` prerelease tag: the gRPC wire is frozen and conformance-tested against

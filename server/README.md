@@ -160,7 +160,7 @@ your terminal, alongside gRPC — no browser, no metrics backend:
 
 ```bash
 throttlekit-server --config .throttlekit.yaml --tui
-#  → gRPC on :50051  +  a live dashboard (q quit · 1-5/Tab switch views · ↑↓ scroll · p pause)
+#  → gRPC on :50051  +  a live dashboard (q quit · 1-7/Tab switch · ↑↓ scroll · p pause · r what-if)
 ```
 
 It taps every limiter and unified admitter into an in-process hub (synchronous, exception-swallowing, O(1)
@@ -169,12 +169,13 @@ attribution**: for a unified policy, *which* of rate / concurrency / cost (or th
 throttling each key right now. It works for **every** policy — a plain `gcra` limiter gets the board and the
 "why throttled" attribution by policy + key; the axis lane lights up for unified admitters.
 
-The dashboard is organized into **five views** — press `1`–`5` or `Tab` / `Shift-Tab` to switch:
-**Overview**, **Latency** (avg / p50 / p99 / max admit-path latency), **Capacity** (per-key spendable +
-refill ETA), **Fairness** (per-tenant weighted-fair-escrow share), and **Guarantee** (concurrency headroom
-to each guard's enforced ceiling + self-fence status). Fairness lights up for a `fairEscrow` policy (served
-by `check`, the key being the tenant); Guarantee lights up for any `concurrency` policy (the admitter's
-guard is surfaced to the dashboard).
+The dashboard is organized into **seven views** — press `1`–`7` or `Tab` / `Shift-Tab` to switch:
+**Overview**, **Latency** (avg / p50 / p99 / max admit-path latency), **Fairness** (per-tenant
+weighted-fair-escrow share), **Capacity** (per-key spendable + refill ETA), **Guarantee** (concurrency
+headroom to each guard's enforced ceiling + self-fence status), **Cost Room** (per-tenant cost-axis
+burn-down for a `fairEscrow` policy), and **Replay** (deterministic what-if — see below). Fairness +
+Cost Room light up for a `fairEscrow` policy (served by `check`, the key being the tenant); Guarantee lights
+up for any `concurrency` policy (the admitter's guard is surfaced to the dashboard).
 
 A TUI owns the terminal, so it is **opt-in** and needs an interactive TTY (a non-TTY warns and serves
 without it). For **headless / production** monitoring, emit OpenTelemetry → Grafana instead — including the
@@ -225,6 +226,38 @@ trace; admitter/meter/fair-escrow segments are forensic-only. **Keys and tenants
 secret, under `per-trace-salt` scopes are opaque and re-salt each server run, under `drop` identity is erased.
 With **no tenant rule** capture drops to **counts-only** (per-policy tallies, no per-key rows). Tenant
 isolation is only as correct as your `tenant` rule. Capture is wired in the standard (non-`--tui`) serve path.
+
+## What-If Replay (experimental, opt-in, default-OFF)
+
+Ask *"how many requests would this config change have flipped?"* against your **real traffic**, live in the
+`--tui` dashboard's **Replay** tab. Enable it with a top-level `replay:` block (opt-in, OFF by default — it
+records redacted keys):
+
+```yaml
+replay:
+  enabled: true                    # anything but an explicit true is OFF
+  policies: api, search            # leaf-rate policies to shadow (comma-separated; omit ⇒ all leaf-rate)
+  maxSteps: 50000                  # per-policy recording cap = the memory bound
+  redaction: { mode: per-trace-salt }   # keys are redacted before entering a shadow (default per-trace-salt)
+  candidate:                       # the what-if the `r` key runs
+    policy: api
+    set: { limit: 200 }            # set / scale / swap — the testkit candidate DSL
+```
+
+Run with `--tui`, open the **Replay** tab (`7`), and press **`r`** to replay the configured candidate over the
+traffic recorded so far. The pane shows the directional **allow↔deny flip ledger** — e.g. *"42 would flip
+(0 allow→deny, 42 deny→allow)"* — or an honest **empty / truncated / refused** state, never a faked number.
+
+**How it works — and what it isn't.** For each shadowed leaf-rate policy the server runs an isolated
+**shadow** of the live arrival stream through a cold, deterministic (`ManualClock`) copy of the limiter, built
+on the published `throttlekit/testkit` replay primitives. The shadow is a **post-decision tail** over its
+**own** store, so it can never change, delay, or break a production decision; it stops recording at `maxSteps`,
+so a distinct-key flood can't exhaust memory (the trace is then honestly flagged *truncated* and the what-if
+refuses rather than understating). The flip count is **candidate-spec vs the deterministic baseline over this
+traffic shape** — *not* a replay of production's exact decisions (a Redis-backed or warm production node
+decides differently from the cold shadow). Keys are redacted before they enter a shadow. Replay is a `--tui`
+feature (the what-if is a keybind); configuring `replay:` without `--tui` warns. It is **distinct from
+capture** above: capture is the durable, forensic record; replay is the in-memory, deterministic what-if.
 
 ## Embed it (Node)
 
