@@ -99,20 +99,43 @@ The flagship deferred panel — framed as **headroom to a known line**, never "p
 Each starts with a short design note; none is blocked by T1 (they're separate tracks, though T7 would render
 as a TUI view if T1 lands first).
 
-### T6 — What-If Replay
-Record a bounded ring-buffer of decisions (the hub already has `RingBuffer` and sees every decision) →
-**deterministic bit-exact replay** of `(key, cost, at)` against a *candidate* policy using the exported
-`ManualClock` → a divergence report (allow/deny diffs, remaining/retry deltas). The deterministic oracle is
-what makes this uniquely possible. Likely a `throttlekit` **testkit** addition (`DecisionRecorder` +
-`DecisionReplayer`); a TUI trigger comes later. **Not** the live click-to-snapshot drawer — this is true
-replay.
+### T6 — What-If Replay — **DESIGN DONE** (`designs/281-what-if-replay.md`, 2026-06-05)
+Record a bounded ring-buffer of decisions → **deterministic bit-exact replay** of `(key, cost, at)` against a
+*candidate* policy using `ManualClock` → a divergence report (allow/deny flips, remaining/retry deltas). A
+`throttlekit` **testkit** addition under `src/testkit/replay/`. Key design outcomes (adversarial panel, 9
+agents, source-verified):
+- **Scope narrowed to what is actually sound:** leaf `Limiter`, **synchronous** check methods, `ManualClock`
+  only. The "binding-axis flipped" hero is **retracted as structurally unreplayable** — the concurrency axis
+  is an in-flight count mutated by acquire/**release** pairs, and releases are completions, never decisions in
+  any trace → `CONCURRENCY_AXIS_UNREPLAYABLE` HARD refusal. joint-LP online-learning admitters likewise HARD.
+- **Fail-loud, never lie:** an exhaustive hazard→guard taxonomy (HARD/WARN) refuses unsound traces *before*
+  any diff, plus an **identity self-check** (replay vs the recorded spec must be zero-divergence) as a runtime
+  refusal precondition with coverage disjoint from the static guards.
+- **One core change only:** `export { buildStrategy }` from `src/config`. Everything else net-new + `@experimental`.
+  **No wire/proto, no hot-path.** P0 load-bearing gate = cross-store Memory-vs-Redis bit-exactness (port 6380).
+- Grounding corrections: **six** config strategies (not seven — `leakyBucket` is a `Shaper`, no `Decision`);
+  `MemoryStore` needs the same `ManualClock` + `sweepIntervalMs:0`; redaction reuses `src/security/keys.ts`.
+- **Open decisions for the user** are listed in the note (§11): v1 = library-only P1; `buildStrategy` export
+  vs copied switch; redaction default; sync-only recording; `leakyBucket` stays out; in-repo golden fixtures.
 
-### T7 — LLM Token-Budget Control Room
-Per-tenant **cost burn-down + forecast-to-exhaustion + weighted fair-share on the cost axis**. Core has the
-cost-lane analytics (`deniedByLane.cost`) and the `tokenBudget` / `distributedTokenBudget` meters; burn-rate
-and ETA are a client-side roll-up over `remaining` deltas. Ties to the **TALE** research direction — keep all
-framing as engineering; the TALE paper stays local until arXiv. Could be a TUI view (`5`/`tokens`) or a
-focused mode.
+### T7 — LLM Token-Budget Control Room — **DESIGN DONE** (`designs/282-token-budget-control-room.md`, 2026-06-05)
+Per-tenant **cost burn-down + forecast-to-exhaustion + weighted fair-share on the cost axis** — a new `Cost
+Room` TUI tab. Key design outcomes (adversarial panel, 9 agents, source-verified):
+- **One source that actually has a per-tenant roster:** `WeightedFairEscrowStats`. The only net-new
+  accumulation is a **bounded per-tenant burn ring** sampled at `snapshot()` time (O(1), never-throw, its own
+  `maxKeys`, ranked to render candidates). Reuses the existing `trackStats` door — **no new hub method, no
+  decision-path tap, no wire/proto, no core change.**
+- **The load-bearing correctness guard:** `etaCappedByWindow` — an ETA past the window edge is *false* (the
+  budget refills first) → render `(resets in Ns)`. Burn-rate = Prometheus-style span-rate with a window-roll
+  reset so a budget reset never reads as negative burn.
+- **Honesty is typed, not commented:** every degradation (warming / window-too-short / idle / async /
+  single-node / L1-only / **cost-lane-dark**) is a typed field the renderer echoes — structurally can't
+  over-claim. The **cost lane is dark on the server today** (`buildAdmitter` wires no `cost:` axis) → ships as
+  optional-absent ("cost lane not configured"), not a faked panel.
+- **TALE framing guardrail** enforced on all copy (mechanism words only; no optimal/learned/predict/regret/
+  bound/proof; no paper hint). The competitor-delta table stays in the note (UNVERIFIED), never in shipped copy.
+- **Open decisions for the user** (note §11): whether v1 wires a real server cost axis; `costRoom` default-on
+  vs opt-in; required vs defaulted `unit` label; redaction seam on/deferred.
 
 ### T8 — Fleet-global aggregation
 Merge additive per-axis/per-policy counters + **`MergeableSketch`** top-K across nodes; compute the **true
