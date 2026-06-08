@@ -39,6 +39,8 @@ export {
   type SegmentStoreOptions,
   createSegmentStore,
 } from "./store.js";
+export { type FlushLoop, type FlushResult, createFlushLoop } from "./flush.js";
+export { captureService } from "./tap.js";
 export { type AuditLog, createAuditLog } from "./audit.js";
 export {
   type CaptureCliAction,
