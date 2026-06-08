@@ -172,3 +172,9 @@ export function runStoreConformance(
     });
   });
 }
+
+/**
+ * What-If Replay (#281) — deterministic decision recorder + replayer primitives. Opt-in
+ * `@experimental` surface; see `./replay` for the full doc.
+ */
+export * from "./replay";

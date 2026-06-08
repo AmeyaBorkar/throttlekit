@@ -138,7 +138,20 @@ function buildLimiter(
   });
 }
 
-function buildStrategy(name: string, spec: LimiterSpec): Strategy {
+/**
+ * Build a {@link Strategy} from one declarative {@link LimiterSpec} — the same constructor
+ * {@link loadConfigObject} uses internally, exposed as a low-level building block. `name` is used
+ * only for error context; the returned strategy is a pure function of `spec`.
+ *
+ * The motivating consumer is the **replay testkit** (`throttlekit/testkit` replay primitives), which
+ * rebuilds the exact leaf limiter a decision trace was recorded over by re-running this on the
+ * trace's recorded spec. Because the build is pure, the same spec always yields a behaviourally
+ * identical strategy — the precondition for deterministic replay.
+ *
+ * @experimental Outside the `1.x` SemVer freeze (see STABILITY.md). The signature is expected to be
+ * stable, but it is opt-in and may change in a minor.
+ */
+export function buildStrategy(name: string, spec: LimiterSpec): Strategy {
   const where = `config.limiters[${name}]`;
   // Resolve a window in ms from either `period` (duration string|ms) or an explicit ms field.
   const periodOrMs = (msField: number | undefined, label: string): number => {

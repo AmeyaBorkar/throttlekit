@@ -81,6 +81,11 @@ depend on their exact shape.
 - **Sketches & analytics:** `sketchRateLimit`, `mergeableSketch`, `withAnalytics`, and the admission
   observability taps `admissionTap` / `withAdmissionAnalytics` (the in-process telemetry that powers the
   ThrottleKit Lens dashboard — both read only state `unifiedAdmission` already computes).
+- **What-If Replay testkit:** the replay primitives on `throttlekit/testkit` (`recordLimiter`, `replay`,
+  `candidateField`, `rebuildLimiter`, the trace/fingerprint/divergence types and `ReplayRefusedError`),
+  and the one additive building block they rest on, `buildStrategy` on `throttlekit/config`. Library-only,
+  read-only over the existing pure algorithms; the trace format (`TRACE_FORMAT_VERSION`) is versioned and
+  rejects incompatible traces. Their shapes may change in a minor.
 
 ## Explicitly out of scope at `1.0`
 
