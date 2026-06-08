@@ -1,7 +1,8 @@
 import type { AdmissionAnalyticsSnapshot, AnalyticsSnapshot } from "throttlekit";
 import { describe, expect, it } from "vitest";
 import { type RenderOptions, renderFrame } from "../src/monitor/render.js";
-import type { LensSnapshot } from "../src/monitor/types.js";
+import type { LensReplaySnapshot, LensSnapshot } from "../src/monitor/types.js";
+import type { ReplayDivergenceSnapshot } from "../src/replay/whatif.js";
 
 function limiterAnalytics(
   allowed: number,
@@ -501,5 +502,109 @@ describe("renderFrame — Cost Room tab", () => {
     expect(frame).toHaveLength(20);
     for (const line of frame) expect(line.length).toBe(80);
     expect(frame.join("\n")).toContain("no fairEscrow policy configured");
+  });
+});
+
+describe("renderFrame — Replay tab", () => {
+  const replayOpts = (cols: number, rows: number): RenderOptions => ({
+    ...baseOpts(cols, rows),
+    view: { scroll: 0, paused: false, tab: "replay" },
+  });
+
+  const result = (over: Partial<ReplayDivergenceSnapshot> = {}): ReplayDivergenceSnapshot => ({
+    policy: "search",
+    candidateName: "configured",
+    state: "ok",
+    steps: 12,
+    flippedAllowToDeny: 0,
+    flippedDenyToAllow: 2,
+    flippedTotal: 2,
+    divergent: 12,
+    total: 12,
+    ...over,
+  });
+
+  const snapWithReplay = (replay: LensReplaySnapshot | undefined): LensSnapshot => ({
+    meta: { generatedAt: 1_700_000_000_000, windowMs: 60_000, mode: "process", lensVersion: "t" },
+    policies: [],
+    guards: [],
+    stats: [],
+    recentDenials: [],
+    recentFences: [],
+    ...(replay !== undefined ? { replay } : {}),
+  });
+
+  const enabled = (over: Partial<LensReplaySnapshot> = {}): LensReplaySnapshot => ({
+    enabled: true,
+    shadows: [{ policy: "search", steps: 12, truncated: false, poisoned: false }],
+    candidate: { policy: "search", label: "limit=15" },
+    ...over,
+  });
+
+  it("renders exactly `rows`×`cols` for the replay tab at any size and state", () => {
+    const states: LensReplaySnapshot[] = [
+      enabled({ lastResult: result() }),
+      enabled({
+        lastResult: result({
+          state: "truncated",
+          refusal: { reason: "trace-truncated", message: "x" },
+        }),
+      }),
+      enabled({ shadows: [], candidate: undefined }),
+      { enabled: false, shadows: [] },
+    ];
+    for (const cols of [40, 80, 120] as const) {
+      for (const rows of [10, 24] as const) {
+        for (const r of states) {
+          const frame = renderFrame(snapWithReplay(r), replayOpts(cols, rows));
+          expect(frame).toHaveLength(rows);
+          for (const line of frame) expect(line.length).toBe(cols);
+        }
+      }
+    }
+  });
+
+  it("shows the directional flip ledger for an `ok` result", () => {
+    const frame = renderFrame(
+      snapWithReplay(enabled({ lastResult: result() })),
+      replayOpts(100, 24),
+    );
+    const joined = frame.join("\n");
+    expect(joined).toContain("would flip");
+    expect(joined).toContain("2 deny->allow");
+    expect(joined).toContain("limit=15"); // the configured candidate label
+    expect(joined).toContain("not production's exact decisions"); // the honest non-claim footer
+  });
+
+  it("shows an honest off-placeholder when replay is disabled or absent", () => {
+    for (const snap of [
+      snapWithReplay({ enabled: false, shadows: [] }),
+      snapWithReplay(undefined),
+    ]) {
+      const frame = renderFrame(snap, replayOpts(80, 20));
+      expect(frame).toHaveLength(20);
+      for (const line of frame) expect(line.length).toBe(80);
+      expect(frame.join("\n")).toContain("deterministic capture off");
+    }
+  });
+
+  it("shows an honest refusal for a truncated shadow result", () => {
+    const r = enabled({
+      lastResult: result({ state: "truncated", flippedTotal: 0, flippedDenyToAllow: 0 }),
+    });
+    const joined = renderFrame(snapWithReplay(r), replayOpts(100, 24)).join("\n");
+    expect(joined).toContain("truncated");
+    expect(joined).not.toContain("would flip"); // a refusal must NOT render a flip number
+  });
+
+  it("prompts to configure a candidate when none is set, and to press r when no result yet", () => {
+    const noCandidate = renderFrame(
+      snapWithReplay(enabled({ candidate: undefined })),
+      replayOpts(90, 24),
+    ).join("\n");
+    expect(noCandidate).toContain("no candidate configured");
+
+    const noResult = renderFrame(snapWithReplay(enabled()), replayOpts(90, 24)).join("\n");
+    expect(noResult).toContain("press");
   });
 });

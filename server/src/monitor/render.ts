@@ -22,7 +22,14 @@ import type {
 } from "./types.js";
 
 /** A dashboard tab. The body below the persistent header/throughput strip is per-tab. */
-export type TabId = "overview" | "latency" | "fairness" | "capacity" | "guarantee" | "cost";
+export type TabId =
+  | "overview"
+  | "latency"
+  | "fairness"
+  | "capacity"
+  | "guarantee"
+  | "cost"
+  | "replay";
 
 /**
  * The tabs in display + cycle order. Exported so the shell (`tui.ts`) maps number keys / Tab to them
@@ -36,6 +43,7 @@ export const TABS: readonly { readonly id: TabId; readonly label: string }[] = [
   { id: "capacity", label: "Capacity" },
   { id: "guarantee", label: "Guarantee" },
   { id: "cost", label: "Cost Room" },
+  { id: "replay", label: "Replay" },
 ];
 
 /** Live view state owned by the shell and threaded through each render. */
@@ -645,6 +653,115 @@ function costRoomBody(snap: LensSnapshot, cols: number): Line[] {
 }
 
 /**
+ * The Replay view (#290/#299): deterministic-capture status + the last on-demand what-if. Per leaf-rate
+ * policy it shows the shadow's recorded step count + honest state (recording / truncated / poisoned); for
+ * the operator-configured candidate it shows the last `r`-triggered divergence — the directional admit/deny
+ * flip ledger when it replayed, or the honest refusal (empty / truncated / refused) otherwise. The footer
+ * carries the load-bearing non-claim: the flips are candidate-vs-baseline over THIS traffic, not a replay of
+ * production's exact decisions. Pure projection over `snap.replay`; the what-if ran in the shell off the
+ * decision path. Absent/disabled ⇒ an honest "deterministic capture off" placeholder, never a faked panel.
+ */
+function replayBody(snap: LensSnapshot, cols: number): Line[] {
+  const r = snap.replay;
+  if (r === undefined || !r.enabled) {
+    return [
+      sectionHeader("REPLAY  ·  deterministic what-if", cols),
+      BLANK,
+      [seg("  (deterministic capture off — add a `replay:` block to record + compare)", "dim")],
+      [
+        seg(
+          `  records a leaf-rate policy's decisions, then replays a candidate — ${DOCS_URL}`,
+          "gray",
+        ),
+      ],
+    ];
+  }
+
+  const out: Line[] = [sectionHeader("REPLAY  ·  deterministic what-if", cols)];
+
+  // Shadow status — one row per shadowed leaf-rate policy.
+  if (r.shadows.length === 0) {
+    out.push([seg("  (no leaf-rate policy shadowed — check `replay.policies`)", "dim")]);
+  } else {
+    out.push([
+      seg("  policy".padEnd(20), "dim"),
+      seg("steps".padStart(9), "dim"),
+      seg("state".padStart(13), "dim"),
+    ]);
+    for (const s of r.shadows.slice(0, 8)) {
+      const state = s.poisoned ? "poisoned" : s.truncated ? "truncated" : "recording";
+      const color: Color = s.poisoned ? "red" : s.truncated ? "yellow" : "green";
+      const name = `  ${s.policy}`;
+      out.push([
+        seg(name.length > 20 ? `${name.slice(0, 19)}…` : name.padEnd(20)),
+        seg(compact(s.steps).padStart(9), "dim"),
+        seg(state.padStart(13), color),
+      ]);
+    }
+    if (r.shadows.length > 8) out.push([seg(`  … +${r.shadows.length - 8} more`, "dim")]);
+  }
+
+  out.push(BLANK);
+
+  // The configured candidate + its last what-if result.
+  if (r.candidate === undefined) {
+    out.push([
+      seg("  (no candidate configured — add `replay.candidate` to run a what-if with ", "dim"),
+      seg("r", "bold"),
+      seg(")", "dim"),
+    ]);
+    return out;
+  }
+  out.push([
+    seg("  candidate  ", "dim"),
+    seg(`${r.candidate.policy}  `, "cyan"),
+    seg(r.candidate.label, "bold"),
+  ]);
+
+  const res = r.lastResult;
+  if (res === undefined) {
+    out.push(BLANK, [seg("  press ", "dim"), seg("r", "bold"), seg(" to run the what-if", "dim")]);
+    return out;
+  }
+
+  out.push(BLANK);
+  if (res.state === "ok") {
+    out.push([seg("  result", "bold"), seg(`   ${compact(res.total)} decisions replayed`, "dim")]);
+    out.push([
+      seg("    would flip".padEnd(20), "dim"),
+      seg(String(res.flippedTotal), res.flippedTotal > 0 ? "yellow" : "green"),
+      seg(
+        `  (${res.flippedAllowToDeny} allow->deny, ${res.flippedDenyToAllow} deny->allow)`,
+        "dim",
+      ),
+    ]);
+    out.push([
+      seg("    any-field diffs".padEnd(20), "dim"),
+      seg(compact(res.divergent), "dim"),
+      seg("  (incl. remaining/limit shifts — context)", "gray"),
+    ]);
+  } else {
+    const label =
+      res.state === "empty"
+        ? "no decisions recorded yet — drive traffic, then press r"
+        : res.state === "truncated"
+          ? "shadow truncated (hit maxSteps) — a what-if would understate; refused"
+          : res.state === "poisoned"
+            ? "shadow poisoned by a redaction collision — refused"
+            : `refused: ${res.refusal?.reason ?? "unknown"}`;
+    out.push([seg("  result  ", "bold"), seg(label, res.state === "empty" ? "dim" : "yellow")]);
+  }
+
+  out.push(BLANK, [
+    seg(
+      "  candidate vs the deterministic baseline over THIS traffic — not production's exact decisions",
+      "dim",
+    ),
+  ]);
+  return out;
+}
+
+/**
  * The Guarantee view: concurrency headroom to a known line — an OBSERVED-state readout, never a "the proof
  * is holding" needle. Per node it shows what this process sees now: each guard's inflight against its
  * **enforced** ceiling (`stats().limit` = min(share, local.limit), 0 when fenced), how many guards are
@@ -830,7 +947,7 @@ function statusBar(opts: RenderOptions, nodeId: string | undefined): Line {
   const left: Line = [
     seg("q", "bold"),
     seg(" quit  ", "dim"),
-    seg("1-5/Tab", "bold"),
+    seg("1-7/Tab", "bold"),
     seg(" views  ", "dim"),
     seg("↑↓", "bold"),
     seg(" scroll  ", "dim"),
@@ -892,6 +1009,8 @@ export function renderFrame(snap: LensSnapshot, opts: RenderOptions): string[] {
     content.push(...guaranteeBody(snap, cols));
   } else if (opts.view.tab === "cost") {
     content.push(...costRoomBody(snap, cols));
+  } else if (opts.view.tab === "replay") {
+    content.push(...replayBody(snap, cols));
   } else {
     content.push(...placeholderBody(opts.view.tab));
   }

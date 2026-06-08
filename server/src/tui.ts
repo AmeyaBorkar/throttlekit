@@ -10,6 +10,9 @@
 
 import type { LensHub } from "./monitor/hub.js";
 import { TABS, type TabId, type ViewState, renderFrame } from "./monitor/render.js";
+import type { LensReplaySnapshot, LensSnapshot } from "./monitor/types.js";
+import { type ReplayDivergenceSnapshot, describeCandidate } from "./replay/whatif.js";
+import type { WiredReplay } from "./replay/wire.js";
 
 /** True only when both ends are a real interactive terminal (else the alt-screen / raw-mode dance fails). */
 export function canRunTui(): boolean {
@@ -28,6 +31,12 @@ export interface RunTuiOptions {
   intervalMs?: number;
   /** Called when the user quits (q / Ctrl-C) — wire this to the server's graceful shutdown. */
   onQuit: () => void;
+  /**
+   * The wired deterministic-capture machinery (#290/#299), when an enabled `replay:` block is configured.
+   * Drives the Replay tab's shadow status; the `r` key runs the configured what-if. Omit ⇒ the Replay tab
+   * shows an honest "deterministic capture off" placeholder.
+   */
+  replay?: WiredReplay;
 }
 
 const ALT_ON = "\x1b[?1049h";
@@ -49,12 +58,40 @@ export function runTui(hub: LensHub, opts: RunTuiOptions): RunningTui {
   const view: ViewState = { scroll: 0, paused: false, tab: "overview" };
   const denyHistory: number[] = [];
   let prevDenied = 0;
-  let frozen = hub.snapshot();
   let stopped = false;
+
+  // Deterministic-capture (#290): the Replay tab reads live shadow status + the last `r`-triggered what-if.
+  const replay = opts.replay;
+  let lastReplay: ReplayDivergenceSnapshot | undefined;
+  const buildReplaySnapshot = (): LensReplaySnapshot | undefined => {
+    if (replay === undefined) return undefined;
+    const shadows = [...replay.shadows.entries()].map(([policy, s]) => ({
+      policy,
+      steps: s.steps,
+      truncated: s.truncated,
+      poisoned: s.poisoned,
+    }));
+    const cc = replay.config.candidate;
+    return {
+      enabled: replay.enabled,
+      shadows,
+      ...(cc !== undefined
+        ? { candidate: { policy: cc.policy, label: describeCandidate(cc.candidate) } }
+        : {}),
+      ...(lastReplay !== undefined ? { lastResult: lastReplay } : {}),
+    };
+  };
+  // The hub snapshot, augmented with the Replay panel (additive — absent when no replay is wired).
+  const snapshotWithReplay = (): LensSnapshot => {
+    const base = hub.snapshot();
+    const rs = buildReplaySnapshot();
+    return rs !== undefined ? { ...base, replay: rs } : base;
+  };
+  let frozen = snapshotWithReplay();
 
   const paint = (): void => {
     if (stopped) return;
-    const snap = view.paused ? frozen : hub.snapshot();
+    const snap = view.paused ? frozen : snapshotWithReplay();
     if (!view.paused) {
       // Per-frame new denials = the sparkline's "activity" signal (resets cleanly each analytics window).
       let denied = 0;
@@ -129,7 +166,17 @@ export function runTui(hub: LensHub, opts: RunTuiOptions): RunningTui {
       goToTab(t.id);
     } else if (k === "p") {
       view.paused = !view.paused;
-      if (view.paused) frozen = hub.snapshot();
+      if (view.paused) frozen = snapshotWithReplay();
+    } else if (k === "r") {
+      // Run the configured what-if (off the decision path, over the shadow's isolated store) and show it on
+      // the Replay tab. A no-op what-if (no replay/candidate wired) just navigates there — the tab explains
+      // what to configure. Refresh the frozen snapshot if paused so the new result is visible.
+      if (replay !== undefined) {
+        const res = replay.runConfiguredWhatIf();
+        if (res !== undefined) lastReplay = res;
+        if (view.paused) frozen = snapshotWithReplay();
+      }
+      goToTab("replay");
     } else return;
     paint();
   };

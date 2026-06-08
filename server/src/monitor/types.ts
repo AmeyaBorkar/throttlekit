@@ -11,6 +11,7 @@ import type {
   Decision,
   UnifiedAxis,
 } from "throttlekit";
+import type { ReplayDivergenceSnapshot } from "../replay/whatif.js";
 
 /** Per-process (one instance) or fleet-merged (reserved; the TUI renders a single process today). */
 export type LensMode = "process" | "fleet";
@@ -222,6 +223,35 @@ export interface LensCostRoomSnapshot {
   tenants: LensTenantBurnRow[];
 }
 
+/** One leaf-rate policy's deterministic-capture shadow status (the Replay tab, #290/#299). */
+export interface LensReplayShadowRow {
+  /** The policy name. */
+  policy: string;
+  /** Decisions recorded in the shadow so far (≤ the configured `maxSteps`). */
+  steps: number;
+  /** The shadow hit its cap — its trace is a faithful prefix, and a what-if over it refuses (honest). */
+  truncated: boolean;
+  /** A redaction collision poisoned the shadow (astronomically rare) — a what-if refuses it. */
+  poisoned: boolean;
+}
+
+/**
+ * The **Replay** panel (#290): deterministic-capture status + the last on-demand what-if. Optional +
+ * additive on {@link LensSnapshot.replay}; the shell builds it each frame from the wired replay machinery
+ * (shadow statuses) plus the latest `r`-triggered result. Absent unless `replay:` is enabled, so every
+ * existing consumer is untouched. Design: `research/dashboard/designs/290-server-replay.md`.
+ */
+export interface LensReplaySnapshot {
+  /** Whether deterministic capture is enabled (an opt-in `replay:` block). */
+  enabled: boolean;
+  /** Per-leaf-rate-policy shadow status. */
+  shadows: LensReplayShadowRow[];
+  /** The operator's configured what-if (policy + a human label like `limit=200`), if any. */
+  candidate?: { policy: string; label: string };
+  /** The most recent what-if result (from the `r` keybind), if one has been run this session. */
+  lastResult?: ReplayDivergenceSnapshot;
+}
+
 /** The full snapshot the hub produces each frame; the TUI renders it. */
 export interface LensSnapshot {
   meta: LensMeta;
@@ -236,4 +266,9 @@ export interface LensSnapshot {
    * Optional + additive: absent when no policy opts in, so older renderers/consumers ignore it.
    */
   costRooms?: LensCostRoomSnapshot[];
+  /**
+   * The Replay panel — deterministic-capture status + the last what-if (#290/#299). Optional + additive:
+   * absent unless the shell wires an enabled `replay:` block, so older consumers ignore it.
+   */
+  replay?: LensReplaySnapshot;
 }

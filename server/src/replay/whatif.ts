@@ -52,6 +52,17 @@ export interface ReplayDivergenceSnapshot {
   readonly refusal?: { readonly reason: ReplayRefusal | "poisoned"; readonly message: string };
 }
 
+/** A short human label for a configured candidate's deltas — e.g. `limit=200`, `limit×2`, `→tokenBucket`. */
+export function describeCandidate(cand: Candidate): string {
+  const parts = cand.ops.map((op) => {
+    if (op.kind === "set")
+      return `${String(op.path)}=${typeof op.value === "string" ? op.value : String(op.value)}`;
+    if (op.kind === "scale") return `${String(op.path)}×${op.factor}`;
+    return `→${op.strategy}`;
+  });
+  return parts.length > 0 ? parts.join(", ") : "(no-op)";
+}
+
 /** Count `allowed` flips by direction over the divergent steps. */
 function directional(steps: ReturnType<typeof replay>["divergence"]["steps"]): {
   a2d: number;

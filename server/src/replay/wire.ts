@@ -33,6 +33,16 @@ function parseConfig(text: string): ParsedConfig {
   return data ?? {};
 }
 
+/** Resolve only the replay config from a text (no shadow build) — for a quick enabled-check in the bin. */
+export function replayConfigFromText(
+  text: string,
+  options: { env?: Record<string, string | undefined> } = {},
+): ReplayConfig {
+  return resolveReplayConfig(parseConfig(text).replay, {
+    ...(options.env !== undefined ? { env: options.env } : {}),
+  });
+}
+
 /** A policy is leaf-rate iff it names a strategy and declares no server-only kind block. */
 function isLeafRate(spec: unknown): spec is LimiterSpec {
   if (spec === null || typeof spec !== "object") return false;

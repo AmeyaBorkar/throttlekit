@@ -9,6 +9,7 @@ export { type Shadow, type ShadowOptions, createShadow } from "./shadow.js";
 export {
   type ReplayDivergenceSnapshot,
   type WhatIfState,
+  describeCandidate,
   runWhatIf,
 } from "./whatif.js";
 export {
@@ -21,6 +22,7 @@ export {
 export {
   type WiredReplay,
   type WireReplayOptions,
+  replayConfigFromText,
   wireReplay,
 } from "./wire.js";
 export { replayService } from "./tap.js";

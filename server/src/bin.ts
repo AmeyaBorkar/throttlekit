@@ -17,6 +17,8 @@ import { type WiredCapture, captureConfigFromText, wireCapture } from "./capture
 import { serve } from "./grpc.js";
 import type { LensHub } from "./monitor/hub.js";
 import { wireMonitor } from "./monitor/wire.js";
+import { replayService } from "./replay/tap.js";
+import { type WiredReplay, replayConfigFromText, wireReplay } from "./replay/wire.js";
 import { createServerCredentials, createStore, isSecure } from "./runtime.js";
 import type { StoreType } from "./runtime.js";
 import type { RateLimiterService } from "./service.js";
@@ -168,7 +170,9 @@ Subcommands:
   capture <list|export|sweep>   admin for the opt-in decision-capture store (try \`capture --help\`)
 
 Serves throttlekit.v1.RateLimiter. A denial is a normal Decision (allowed:false), not an RPC error.
-Capture is opt-in via the config \`capture:\` block (default OFF) and active in this (non-TUI) serve path.`;
+Capture is opt-in via the config \`capture:\` block (default OFF) and active in this (non-TUI) serve path.
+Deterministic What-If Replay is opt-in via the \`replay:\` block (default OFF) and active with --tui — the
+Replay tab shows shadow status; press \`r\` to run the configured candidate what-if over recorded traffic.`;
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -325,6 +329,7 @@ async function main(): Promise<void> {
   let hub: LensHub | undefined;
   let service: RateLimiterService;
   let capture: WiredCapture | undefined;
+  let replay: WiredReplay | undefined;
   if (tui) {
     // Capture is not composed with the live dashboard in this version — warn (best-effort) so an operator
     // who enabled both isn't silently left without capture. A malformed capture block surfaces non-TUI.
@@ -340,9 +345,25 @@ async function main(): Promise<void> {
       );
     }
     const wired = wireMonitor(text, loadOptions, args.fail, mode, `${args.host}:${args.port}`);
-    service = wired.service;
     hub = wired.hub;
+    // Deterministic What-If Replay (#290/#299): build the shadows + feed tap, compose them around the
+    // monitored service (post-decision, over the shadow's own store — production decisions are untouched),
+    // and hand the wired machinery to the TUI for the Replay tab + the `r` trigger. Off ⇒ a no-op wrap.
+    replay = wireReplay(text);
+    service = replayService(wired.service, replay);
   } else {
+    // Replay is a --tui feature (the what-if is a keybind); warn if it's configured without the dashboard.
+    let replayWanted = false;
+    try {
+      replayWanted = replayConfigFromText(text).enabled;
+    } catch {
+      /* a malformed replay block becomes fatal on the --tui path (where it's used) */
+    }
+    if (replayWanted) {
+      console.warn(
+        "warning: `replay:` (deterministic capture) is configured but needs --tui; run with --tui for the Replay tab.",
+      );
+    }
     // wireCapture returns the plain service when capture is disabled (the default) — zero overhead.
     capture = wireCapture(text, loadOptions, args.fail);
     service = capture.service;
@@ -391,6 +412,7 @@ async function main(): Promise<void> {
     tuiHandle = runTui(hub, {
       nodeId: `${args.host}:${args.port}`,
       onQuit: () => shutdown("quit"),
+      ...(replay?.enabled ? { replay } : {}),
     });
   } else {
     console.log(
