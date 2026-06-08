@@ -11,3 +11,16 @@ export {
   type WhatIfState,
   runWhatIf,
 } from "./whatif.js";
+export {
+  type ConfiguredCandidate,
+  type ReplayConfig,
+  type ResolveReplayOptions,
+  DEFAULT_MAX_STEPS,
+  resolveReplayConfig,
+} from "./config.js";
+export {
+  type WiredReplay,
+  type WireReplayOptions,
+  wireReplay,
+} from "./wire.js";
+export { replayService } from "./tap.js";
