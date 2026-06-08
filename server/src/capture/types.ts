@@ -26,7 +26,8 @@ export type RedactionMode =
   /** HMAC with a per-**run** random salt — privacy-maximal, uncorrelatable across server *runs* (a restart
    *  re-salts). One run shares one salt (not cross-*segment* unlinkable within a run). */
   | "per-trace-salt"
-  /** Replace every key with a constant placeholder — erases per-key identity entirely. */
+  /** Replace every key **and tenant** with a constant placeholder — erases identity entirely; all tenants
+   *  collapse into one scope (no per-tenant attribution or per-tenant ring bounding). */
   | "drop";
 
 /**
@@ -154,13 +155,17 @@ export interface DurableConfig {
   readonly dir: string;
   /** 64-hex (32-byte) AES-256-GCM key, resolved from config/env. No plaintext-on-disk mode exists. */
   readonly encryptionKeyHex: string;
-  /** Max events per segment before it rotates to a new immutable file. */
+  /** Reserved — currently **unused**; per-segment size is bounded by `retention.ringSize` (a ring = a segment). */
   readonly segmentMaxEvents: number;
 }
 
 /** Resolved retention bounds (all positive integers). */
 export interface RetentionConfig {
-  /** Time-to-live (ms) for a durable segment — enforced at write (a past-TTL segment is purged). */
+  /**
+   * Time-to-live (ms) for a durable segment, measured from its **first decision** (`createdAt`), not from
+   * write time. `sweep` (run on every write + the admin `sweep`) deletes past-TTL segments; a read refuses
+   * one. Keep it comfortably above the flush interval so a segment isn't born already-expired.
+   */
   readonly ttlMs: number;
   /** Max distinct scopes (tenants) tracked at once; FIFO-evicted beyond it. */
   readonly maxScopes: number;

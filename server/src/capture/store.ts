@@ -2,9 +2,10 @@
  * The durable **encrypted** segment store. Each {@link CaptureSegment} is serialized and sealed with
  * **AES-256-GCM** before it touches the disk — there is **no plaintext-on-disk mode**. The GCM auth tag
  * makes every read **tamper-evident** (a modified or wrong-key blob fails the integrity check and throws,
- * never returns silently-wrong data). Retention is enforced at write **and** read: a segment past its TTL
- * is purged and unreadable. Filenames carry only an opaque `createdAt` timestamp + random suffix — **no
- * tenant id or key ever appears in a filename** (the scope lives only inside the ciphertext).
+ * never returns silently-wrong data). Retention is enforced by `sweep` (on every write + the admin sweep);
+ * a read **refuses** a past-TTL segment but never deletes it, so a read-only `list`/`export` can't silently
+ * purge. Filenames carry only an opaque `createdAt` timestamp + random suffix — **no tenant id or key ever
+ * appears in a filename** (the scope lives only inside the ciphertext).
  *
  * I/O happens at **flush time** (off the decision path), never on the emit path — `record()` is purely
  * in-memory; this store is driven by the flush loop draining the recorder.
@@ -32,7 +33,10 @@ export interface SegmentStore {
   write(segment: CaptureSegment): Promise<string>;
   /** List stored segment handles (timestamps only — **no decryption**), oldest first. */
   list(): Promise<SegmentRef[]>;
-  /** Decrypt a segment by id. Throws on tamper / wrong key / past-TTL (which also purges it). */
+  /**
+   * Decrypt a segment by id. Throws on tamper / wrong key / past-TTL. Does **not** delete — only `sweep`
+   * (and `write`'s pre-sweep) deletes, so a read-only `list`/`export` never silently purges + skips its audit.
+   */
   read(id: string): Promise<CaptureSegment>;
   /** Purge every past-TTL segment; returns the count removed. */
   sweep(): Promise<number>;
@@ -108,14 +112,10 @@ export function createSegmentStore(
     async read(id): Promise<CaptureSegment> {
       const ref = (await listRefs()).find((r) => r.id === id);
       if (ref === undefined) throw new Error(`segment ${JSON.stringify(id)} not found`);
-      if (isExpired(ref.createdAt)) {
-        try {
-          await unlink(join(dir, id));
-        } catch {
-          /* already gone */
-        }
-        throw new Error(`segment ${JSON.stringify(id)} is past its TTL and was purged`);
-      }
+      // Refuse a past-TTL segment WITHOUT deleting it — only sweep() (and write()'s pre-sweep) delete, so a
+      // read-only list/export never silently purges + skips its audit. The next flush's sweep removes it.
+      if (isExpired(ref.createdAt))
+        throw new Error(`segment ${JSON.stringify(id)} is past its TTL`);
       const blob = await readFile(join(dir, id));
       if (blob.length < IV_BYTES + TAG_BYTES)
         throw new Error(`segment ${JSON.stringify(id)} is corrupt (truncated blob)`);

@@ -6,7 +6,10 @@
  *
  * A live capture stamps `clock:"system"`, so the projected trace is **replay-refused** (`non-manual-clock`)
  * by the P1 guards until the deterministic-capture mode (a follow-on) supplies `"manual"`-equivalent timing.
- * The projection is faithful regardless, so it is ready the moment that mode lands.
+ * The forensic identity the server registers is intentionally **lossy** (a minimal `{strategy, limit}` spec;
+ * no `windowMs`/`period`/`ttl`), which is fine while every capture is `clock:"system"` (refused first); the
+ * deterministic-capture follow-on must enrich the registered spec/strategy before a projected trace could
+ * actually rebuild and replay.
  */
 
 import type { CaptureSegment, ReplayTraceJSON } from "./types.js";

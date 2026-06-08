@@ -102,13 +102,15 @@ describe("#289 P3.3 — durable AES-256-GCM segment store", () => {
     await expect(wrong.read(id)).rejects.toThrow();
   });
 
-  it("enforces TTL at read (a past-TTL segment is purged and unreadable)", async () => {
+  it("refuses a past-TTL segment on read WITHOUT deleting it (only sweep deletes)", async () => {
     let now = 1000;
     const s = makeStore({ now: () => now }, 5000);
     const id = await s.write(sampleSegment(1000));
     now = 7000; // > 1000 + 5000 ⇒ expired
     await expect(s.read(id)).rejects.toThrow(/past its TTL/);
-    expect(await s.list()).toHaveLength(0); // the read purged it
+    expect(await s.list()).toHaveLength(1); // read did NOT purge — a read-only action never deletes
+    expect(await s.sweep()).toBe(1); // sweep is the only deleter
+    expect(await s.list()).toHaveLength(0);
   });
 
   it("sweep purges past-TTL segments; write sweeps first", async () => {
