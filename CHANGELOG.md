@@ -8,6 +8,23 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [1.3.0] — 2026-06-09
+
+### Added
+
+- **What-If Replay testkit** (`throttlekit/testkit`, `@experimental`). Record a leaf limiter's synchronous
+  decisions into a deterministic, JSON-serializable trace (`recordLimiter`), then `replay` it — against the
+  recorded policy (an identity self-check that confirms bit-exact reproduction) or a single-field
+  `candidateField` what-if. Plus a candidate-compare layer: `set` / `scale` / `swap` deltas and a
+  multi-candidate `scorecard` / `rankByFlips`. Fail-loud throughout — a `ReplayRefusedError` carries a
+  machine-readable `reason`, and a structural trust boundary validates any parsed/transmitted trace before
+  replay trusts it. Built on a cross-store-checked determinism substrate (Memory↔Redis-Lua bit-exactness).
+- **`buildStrategy`** is now exported from `throttlekit/config` (`@experimental`) — the single source of
+  truth for building a `Strategy` from a declarative `LimiterSpec`; the replay rebuilder reuses it.
+
+Both are opt-in and outside the `1.x` SemVer freeze (see `STABILITY.md`); the frozen core API and the wire
+are unchanged.
+
 ## [1.2.0] — 2026-06-05
 
 A purely **additive** minor (the SemVer freeze holds): one new, stable OpenTelemetry metric that lets a
