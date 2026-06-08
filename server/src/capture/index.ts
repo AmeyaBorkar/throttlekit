@@ -39,3 +39,13 @@ export {
   type SegmentStoreOptions,
   createSegmentStore,
 } from "./store.js";
+export { type AuditLog, createAuditLog } from "./audit.js";
+export {
+  type CaptureCliAction,
+  type CaptureCliDeps,
+  type CaptureCliRequest,
+  type CaptureCliResult,
+  type CaptureExport,
+  type CaptureListRow,
+  runCaptureCli,
+} from "./cli.js";

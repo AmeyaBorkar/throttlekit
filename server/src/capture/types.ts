@@ -194,7 +194,7 @@ export interface CaptureConfig {
 export interface AuditRecord {
   readonly ts: number;
   readonly principal: string;
-  readonly action: "enable" | "flush" | "list" | "replay" | "export";
+  readonly action: "enable" | "flush" | "list" | "export" | "sweep";
   readonly policy?: string;
   readonly tenant?: string;
   readonly window?: string;
