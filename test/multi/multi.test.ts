@@ -135,6 +135,11 @@ dRedis("multiRateLimit dual-path conformance (memory vs Redis fused Lua)", () =>
   for (const mode of ["all", "any"] as const) {
     it(`${mode}: memory and Redis agree across timelines`, async () => {
       for (let t = 0; t < 25; t++) {
+        // Fresh Redis per timeline, mirroring the fresh MemoryStore below — each timeline is its own
+        // hermetic episode. Without this the shared `route` key "r" persists in Redis across timelines
+        // (memory resets), and since Redis PEXPIRE is real wall-clock the two stores only agree when the
+        // key happens to have real-time-expired — a race that fails on a slow full-suite run.
+        await client.flushdb();
         const rng = mulberry32(9000 + t + (mode === "any" ? 500 : 0));
         const clock = new ManualClock(1_700_000_000_000 + t * 17);
         const strat =
