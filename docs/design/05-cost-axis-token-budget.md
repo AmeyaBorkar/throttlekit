@@ -1,7 +1,7 @@
 # 05 · Cost axis & token-budget escrow (TALE)
 
 > Enforcing a budget when a request's true cost is revealed only *after* it runs — the LLM-gateway
-> problem. Internally this is **TALE** (*Temporally-Accounted Learned Escrow*) — token-budget escrow. Source: `src/admission/`.
+> problem. Internally this is **TALE** (token-budget escrow). Source: `src/admission/`.
 
 ## Purpose
 

@@ -73,7 +73,7 @@ On top of that base sit the four **admission axes** — *rate*, *placement* (dis
 - **Status tags.** Unless noted, a component is **shipped** (in `src/`, tested, part of the 1.x stable
   core per [`STABILITY.md`](../../STABILITY.md)). Pieces on the evolving frontier are marked
   **experimental** and are excluded from the SemVer surface guarantee.
-- **GALE** (*Globally-Accounted Learned Escrow*) and **TALE** (*Temporally-Accounted Learned Escrow*) are the names for the two engines behind the distributed guarantees —
+- **GALE / TALE** are the internal names for the two engines behind the distributed guarantees —
   *GALE* for provable distributed leasing (the placement axis), *TALE* for token-budget escrow (the
   cost axis). They ship as ordinary features; the names are just handles. See [04](04-two-tier-and-leasing.md)
   and [05](05-cost-axis-token-budget.md).
