@@ -4,7 +4,8 @@
  * appended to, never rewritten, so it is a durable trail of who touched which scope/policy and when.
  */
 
-import { appendFile, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { AuditRecord } from "./types.js";
 
 /** A durable append-only audit trail. */
@@ -19,6 +20,8 @@ export interface AuditLog {
 export function createAuditLog(path: string): AuditLog {
   return {
     async append(record): Promise<void> {
+      // Ensure the directory exists — the first audited admin action can precede any segment write.
+      await mkdir(dirname(path), { recursive: true });
       await appendFile(path, `${JSON.stringify(record)}\n`, "utf8");
     },
     async read(): Promise<AuditRecord[]> {

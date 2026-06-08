@@ -92,6 +92,13 @@ describe("#289 P3.4 — audit log", () => {
     await appendFile(path, "{not json\n"); // a torn write
     expect(await a.read()).toHaveLength(1); // the good record survives, the corrupt line is skipped
   });
+
+  it("creates a missing parent directory on the first append (audit can precede any segment write)", async () => {
+    const nested = join(path, "..", "does-not-exist-yet", "audit.jsonl");
+    const a = createAuditLog(nested);
+    await a.append({ ts: 1, principal: "op", action: "list" }); // would ENOENT without the mkdir
+    expect(await a.read()).toHaveLength(1);
+  });
 });
 
 describe("#289 P3.4 — fail-closed audited CLI", () => {

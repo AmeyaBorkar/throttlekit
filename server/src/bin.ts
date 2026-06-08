@@ -12,13 +12,18 @@ import { readFileSync } from "node:fs";
 
 import type { FailMode } from "throttlekit";
 
+import { runCaptureCli } from "./capture/cli.js";
+import { type WiredCapture, wireCapture } from "./capture/wire.js";
 import { serve } from "./grpc.js";
 import type { LensHub } from "./monitor/hub.js";
 import { wireMonitor } from "./monitor/wire.js";
 import { createServerCredentials, createStore, isSecure } from "./runtime.js";
 import type { StoreType } from "./runtime.js";
-import { type RateLimiterService, createRateLimiterServiceFromConfig } from "./service.js";
+import type { RateLimiterService } from "./service.js";
 import { type RunningTui, canRunTui, runTui } from "./tui.js";
+
+/** How often the flush loop drains captured segments to the durable store (ms). */
+const CAPTURE_FLUSH_MS = 5000;
 
 interface Args {
   config?: string;
@@ -159,11 +164,114 @@ Options:
       --tui               live terminal dashboard alongside gRPC (interactive TTY only; q to quit)
   -h, --help              show this help
 
-Serves throttlekit.v1.RateLimiter. A denial is a normal Decision (allowed:false), not an RPC error.`;
+Subcommands:
+  capture <list|export|sweep>   admin for the opt-in decision-capture store (try \`capture --help\`)
+
+Serves throttlekit.v1.RateLimiter. A denial is a normal Decision (allowed:false), not an RPC error.
+Capture is opt-in via the config \`capture:\` block (default OFF) and active in this (non-TUI) serve path.`;
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
+const CAPTURE_USAGE = `throttlekit-server capture — admin for the opt-in decision-capture store
+
+Usage:
+  throttlekit-server capture <list|export|sweep> --config <path> [--id <id>] [--credential <cred>] [--principal <who>]
+
+The operator credential may also come from THROTTLEKIT_CAPTURE_CREDENTIAL. Capture must be enabled with a
+durable store (a \`capture.durable\` block) in the config. \`export <id>\` prints a ReplayTrace JSON for a
+leaf-rate segment (replay it downstream) or the forensic segment otherwise. Every action is audited.`;
+
+interface CaptureArgs {
+  action?: string;
+  config?: string;
+  id?: string;
+  credential?: string;
+  principal?: string;
+  help: boolean;
+}
+
+function parseCaptureArgs(argv: string[]): CaptureArgs {
+  const a: CaptureArgs = { help: false };
+  const first = argv[0];
+  if (first !== undefined && !first.startsWith("-")) a.action = first;
+  for (let i = a.action !== undefined ? 1 : 0; i < argv.length; i++) {
+    switch (argv[i]) {
+      case "-h":
+      case "--help":
+        a.help = true;
+        break;
+      case "-c":
+      case "--config":
+        a.config = argv[++i];
+        break;
+      case "--id":
+        a.id = argv[++i];
+        break;
+      case "--credential":
+        a.credential = argv[++i];
+        break;
+      case "--principal":
+        a.principal = argv[++i];
+        break;
+      default:
+        throw new Error(`unknown capture argument: ${argv[i]}`);
+    }
+  }
+  return a;
+}
+
+/** The `capture` admin subcommand: run the fail-closed CLI against the config's durable store. */
+async function runCaptureSubcommand(argv: string[]): Promise<void> {
+  const a = parseCaptureArgs(argv);
+  if (a.help || a.action === undefined) {
+    console.log(CAPTURE_USAGE);
+    if (a.action === undefined && !a.help) process.exitCode = 1;
+    return;
+  }
+  if (a.action !== "list" && a.action !== "export" && a.action !== "sweep") {
+    console.error(`error: unknown capture action ${JSON.stringify(a.action)} (list|export|sweep)`);
+    process.exitCode = 1;
+    return;
+  }
+  if (a.config === undefined) {
+    console.error("error: --config is required for capture");
+    process.exitCode = 1;
+    return;
+  }
+  const wired = wireCapture(readFileSync(a.config, "utf8"), {}, "open");
+  if (!wired.config.enabled) {
+    console.error("error: capture is not enabled in this config (set capture.enabled: true)");
+    process.exitCode = 1;
+    return;
+  }
+  if (wired.store === undefined || wired.audit === undefined) {
+    console.error("error: capture admin requires a durable store (set a capture.durable block)");
+    process.exitCode = 1;
+    return;
+  }
+  const credential = a.credential ?? process.env.THROTTLEKIT_CAPTURE_CREDENTIAL;
+  const res = await runCaptureCli(
+    {
+      action: a.action,
+      ...(a.id !== undefined ? { id: a.id } : {}),
+      ...(credential !== undefined ? { credential } : {}),
+      ...(a.principal !== undefined ? { principal: a.principal } : {}),
+    },
+    { config: wired.config, store: wired.store, audit: wired.audit },
+  );
+  if (!res.ok) {
+    console.error(`error: ${res.error}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(JSON.stringify(res.output, null, 2));
+}
+
 async function main(): Promise<void> {
+  if (process.argv[2] === "capture") {
+    await runCaptureSubcommand(process.argv.slice(3));
+    return;
+  }
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(USAGE);
@@ -211,12 +319,15 @@ async function main(): Promise<void> {
   }
   let hub: LensHub | undefined;
   let service: RateLimiterService;
+  let capture: WiredCapture | undefined;
   if (tui) {
     const wired = wireMonitor(text, loadOptions, args.fail, mode, `${args.host}:${args.port}`);
     service = wired.service;
     hub = wired.hub;
   } else {
-    service = createRateLimiterServiceFromConfig(text, { ...loadOptions, fail: args.fail });
+    // wireCapture returns the plain service when capture is disabled (the default) — zero overhead.
+    capture = wireCapture(text, loadOptions, args.fail);
+    service = capture.service;
   }
 
   const running = await serve({
@@ -227,6 +338,16 @@ async function main(): Promise<void> {
   });
   const security = args.tlsCa !== undefined ? "mTLS" : secure ? "TLS" : "insecure";
 
+  if (capture?.config.enabled) {
+    capture.flush?.start(CAPTURE_FLUSH_MS);
+    const c = capture.config;
+    console.warn(
+      `⚠ capture ON — recording decisions (PII): redaction=${c.redaction.mode}, ` +
+        `${c.durable !== undefined ? `durable=${c.durable.dir}` : "in-memory only"}, ` +
+        `${c.tenantOf !== undefined ? "tenant-scoped" : "counts-only"}, ttl=${c.retention.ttlMs}ms`,
+    );
+  }
+
   let tuiHandle: RunningTui | undefined;
   let closing = false;
   const shutdown = (signal: string): void => {
@@ -235,6 +356,11 @@ async function main(): Promise<void> {
     if (tuiHandle !== undefined) tuiHandle.stop(); // restore the terminal before logging anything
     if (!tui) console.log(`\n${signal} received, draining…`);
     Promise.resolve()
+      .then(() => {
+        if (capture?.flush === undefined) return undefined;
+        capture.flush.stop();
+        return capture.flush.flushOnce().then(() => undefined); // a final drain on the way out
+      })
       .then(() => running.close())
       .then(() => dispose())
       .then(() => process.exit(0));
