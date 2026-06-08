@@ -41,6 +41,12 @@ export {
 } from "./store.js";
 export { type FlushLoop, type FlushResult, createFlushLoop } from "./flush.js";
 export { captureService } from "./tap.js";
+export {
+  type WireCaptureOptions,
+  type WiredCapture,
+  auditPath,
+  wireCapture,
+} from "./wire.js";
 export { type AuditLog, createAuditLog } from "./audit.js";
 export {
   type CaptureCliAction,
