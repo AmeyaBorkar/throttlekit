@@ -33,3 +33,9 @@ export {
   createCaptureRecorder,
 } from "./recorder.js";
 export { projectToReplayTrace } from "./projection.js";
+export {
+  type SegmentRef,
+  type SegmentStore,
+  type SegmentStoreOptions,
+  createSegmentStore,
+} from "./store.js";
