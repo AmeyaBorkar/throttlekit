@@ -71,8 +71,70 @@ export interface CaptureSegment {
   readonly dropped: number;
   /** Present for a leaf-rate policy: the redacted spec, enabling the `ReplayTrace` projection. */
   readonly spec?: LimiterSpec;
+  /** Present for a leaf-rate policy: the strategy identity, for the projected fingerprint. */
+  readonly strategy?: ReplayStrategyIdentity;
+  /** Present for a leaf-rate policy: sha1 of the strategy's Lua (moot for a system-clock trace). */
+  readonly luaSha1?: string | null;
   /** The captured decisions, in recording order. */
   readonly events: readonly CaptureEvent[];
+}
+
+/** Strategy identity in a projected trace — mirrors the P1 `ReplayFingerprint.strategy`. */
+export interface ReplayStrategyIdentity {
+  readonly name: string;
+  readonly limit: number;
+  readonly windowMs?: number;
+  readonly ttlMs: number;
+}
+
+/**
+ * A projected `ReplayTrace` — the **documented P1 interchange format** (`version: 1`). The server emits
+ * this JSON so a testkit-capable core can replay it **downstream**; the server never imports the testkit
+ * or replays in-process. A live capture stamps `clock: "system"`, so P1 refuses replay (forensic-only)
+ * until the deterministic-capture mode (a follow-on) records under `"manual"`-equivalent conditions.
+ *
+ * Pinned to `TRACE_FORMAT_VERSION = 1` and the shipped `ReplayTrace` shape — kept in sync deliberately
+ * (the server's core dependency has no testkit type to import).
+ */
+export interface ReplayTraceJSON {
+  readonly version: 1;
+  readonly fingerprint: {
+    readonly spec: LimiterSpec;
+    readonly strategy: ReplayStrategyIdentity;
+    readonly clock: CaptureClock;
+    readonly axis: "rate";
+    readonly policy: null;
+    readonly luaSha1: string | null;
+    readonly prefix?: string;
+  };
+  readonly redacted: boolean;
+  readonly truncated: boolean;
+  readonly dropped: number;
+  readonly steps: ReadonlyArray<{
+    readonly key: string;
+    readonly cost: number;
+    readonly at: number;
+    readonly decision: Decision;
+  }>;
+}
+
+/** Per-policy tally kept in **counts-only** mode (no `tenantOf` rule ⇒ no per-key rows, fail-closed). */
+export interface CaptureCounts {
+  readonly policy: string;
+  readonly allowed: number;
+  readonly denied: number;
+}
+
+/** Metadata registered for one policy, so the recorder can scope, stamp, and project its decisions. */
+export interface CapturePolicyMeta {
+  readonly policyKind: PolicyKind;
+  /** Leaf-rate only: the declarative spec (redacted before storage). */
+  readonly spec?: LimiterSpec;
+  /** Leaf-rate only: the strategy identity, for the projection's fingerprint. */
+  readonly strategy?: ReplayStrategyIdentity;
+  /** Leaf-rate only: the strategy's Lua source — sha1'd into the projection (correct for the future
+   *  deterministic mode; moot for a system-clock forensic trace, which is refused before the Lua check). */
+  readonly luaScript?: string;
 }
 
 /** Resolved redaction config (mandatory when capture is enabled). */

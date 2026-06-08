@@ -9,15 +9,27 @@
 
 export type {
   AuditRecord,
+  CaptureClock,
   CaptureConfig,
+  CaptureCounts,
   CaptureEvent,
+  CapturePolicyMeta,
   CaptureSegment,
   DurableConfig,
   PolicyKind,
   RedactionConfig,
   RedactionMode,
+  ReplayStrategyIdentity,
+  ReplayTraceJSON,
   RetentionConfig,
   TenantRule,
 } from "./types.js";
 export { type ResolveCaptureOptions, resolveCaptureConfig } from "./config.js";
 export { DROP_PLACEHOLDER, type Redactor, createRedactor } from "./redact.js";
+export {
+  type CaptureRecorder,
+  type CaptureRecorderOptions,
+  type RecordInput,
+  createCaptureRecorder,
+} from "./recorder.js";
+export { projectToReplayTrace } from "./projection.js";
