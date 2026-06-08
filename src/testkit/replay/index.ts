@@ -26,6 +26,21 @@
 
 export { ReplayRefusedError, type ReplayRefusal } from "./errors";
 export {
+  type Candidate,
+  type CandidateOp,
+  type ComparabilityClass,
+  type ResolvedCandidate,
+  type ScaleOp,
+  type SetOp,
+  type SpecPath,
+  type SwapOp,
+  candidate,
+  resolveCandidate,
+  scale,
+  set,
+  swap,
+} from "./candidate";
+export {
   type DecisionField,
   type DivergenceReport,
   type DivergenceStep,
@@ -35,6 +50,28 @@ export {
   divergence,
   isIdentical,
 } from "./divergence";
+export {
+  type ComparableAcross,
+  type MetricKind,
+  type ScoreReducer,
+  DEFAULT_REDUCERS,
+  allowCount,
+  allowRate,
+  denyCount,
+  quantile,
+  remainingP50,
+  retryP99,
+} from "./score";
+export {
+  type CandidateRefusal,
+  type DirectionalFlips,
+  type Scorecard,
+  type ScorecardOptions,
+  type ScorecardRow,
+  type ScoreColumn,
+  rankByFlips,
+  scorecard,
+} from "./scorecard";
 export {
   type ReplayOptions,
   type ReplayResult,

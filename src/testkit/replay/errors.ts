@@ -28,6 +28,11 @@ import { ThrottleKitError } from "../../core/errors";
  *                            their state and corrupt the replay.
  * - `identity-divergence`  — the identity self-check failed: replaying the recorded spec did not
  *                            reproduce the recording bit-for-bit, so the determinism substrate is broken.
+ * - `candidate-invalid`    — a P2 candidate delta is ill-formed (unknown field, more than one op on a
+ *                            field, a non-numeric `scale` base) or produced a spec `buildStrategy` cannot
+ *                            construct (e.g. a `swap` missing the new strategy's required fields). The
+ *                            scorecard surfaces this as a loud per-candidate `refused` row, never a
+ *                            silent zero-change result.
  */
 export type ReplayRefusal =
   | "trace-format-version"
@@ -41,7 +46,8 @@ export type ReplayRefusal =
   | "unreplayable-axis"
   | "unreplayable-policy"
   | "keyref-collision"
-  | "identity-divergence";
+  | "identity-divergence"
+  | "candidate-invalid";
 
 /**
  * A replay precondition was violated. Carries a machine-readable {@link ReplayRefusal} `reason` —
