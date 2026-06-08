@@ -84,6 +84,13 @@ describe("#289 P3.3 — durable AES-256-GCM segment store", () => {
     await expect(s.read(id)).rejects.toThrow();
   });
 
+  it("refuses a truncated blob with a clear error (before GCM, which would also catch it)", async () => {
+    const s = makeStore();
+    const id = await s.write(sampleSegment());
+    await writeFile(join(dir, id), Buffer.from([1, 2, 3])); // shorter than iv+tag
+    await expect(s.read(id)).rejects.toThrow(/corrupt/);
+  });
+
   it("a wrong key cannot decrypt", async () => {
     const s = makeStore();
     const id = await s.write(sampleSegment());

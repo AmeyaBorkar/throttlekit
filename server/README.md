@@ -179,6 +179,51 @@ without it). For **headless / production** monitoring, emit OpenTelemetry → Gr
 `throttlekit.denies_by_axis{lane}` counter. See the
 [Monitoring](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens) guide.
 
+## Decision capture (experimental, opt-in, default-OFF)
+
+Record the server's live decision stream to a durable, **redacted, AES-256-GCM-encrypted** forensic store —
+then investigate it out-of-band with a fail-closed, audited CLI. Capture is **opt-in and OFF by default**
+(it records PII); enable it with a top-level `capture:` block:
+
+```yaml
+capture:
+  enabled: true                       # anything but an explicit true is OFF
+  redaction:
+    mode: hmac                        # hmac | per-trace-salt | drop  (keys + tenants are redacted at capture)
+    secretEnv: TK_CAPTURE_HMAC        # hmac needs a secret (prefer an env var over inline)
+  tenant: { from: key-prefix, delimiter: ":" }   # derive the tenant; omit ⇒ counts-only (no per-key rows)
+  durable:
+    dir: /var/lib/throttlekit/captures
+    encryptionKeyHexEnv: TK_CAPTURE_KEY          # 32-byte (64-hex) AES-256 key — encryption is mandatory
+  retention: { ttlMs: 86400000, maxScopes: 1000, ringSize: 10000 }
+  auth:
+    operatorSecretEnv: TK_CAPTURE_OP             # required for the admin CLI (fail-closed without it)
+```
+
+On start the server prints a loud `⚠ capture ON — recording decisions (PII)` banner. Capture is a
+**post-decision tail** — it is O(1), synchronous, exception-swallowing, and bounded, so it can never change,
+delay, or break a decision, and a key/tenant flood can't exhaust memory. The flush to disk runs off the
+decision path.
+
+**Admin CLI** (out-of-band, not the gRPC port; every action is audited):
+
+```bash
+throttlekit-server capture list   --config policies.yaml          # list segments (decrypted metadata)
+throttlekit-server capture export --config policies.yaml --id <id>  # → a downstream-replayable trace (leaf-rate)
+throttlekit-server capture sweep  --config policies.yaml          # purge past-TTL segments
+# credential via THROTTLEKIT_CAPTURE_CREDENTIAL (preferred) or --credential (visible in `ps`)
+```
+
+**What it is — and isn't.** Captures are a **forensic/audit record**: live decisions run over a system
+clock, so a captured trace is stamped `clock:"system"` and is **replay-refused** by the testkit — `export`
+emits the `ReplayTrace` JSON for **downstream** replay/what-if with a testkit-capable build (a deterministic
+in-server replay *mode* is a documented follow-on). Only leaf rate-limit policies project to a replayable
+trace; admitter/meter/fair-escrow segments are forensic-only. **Keys and tenants are redacted at capture**
+(full HMAC digest, never the raw value); under `hmac` an operator locates a tenant by hashing its id with the
+secret, under `per-trace-salt` scopes are opaque and re-salt each server run, under `drop` identity is erased.
+With **no tenant rule** capture drops to **counts-only** (per-policy tallies, no per-key rows). Tenant
+isolation is only as correct as your `tenant` rule. Capture is wired in the standard (non-`--tui`) serve path.
+
 ## Embed it (Node)
 
 ```ts

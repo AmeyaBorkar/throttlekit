@@ -139,8 +139,12 @@ export function createCaptureRecorder(
         tally(input.policy, input.decision.allowed);
         if (countsOnly) return; // no per-key rows without a tenant rule (fail-closed)
 
-        const scope = (tenantOf as NonNullable<typeof tenantOf>)(input.policy, input.key);
-        if (scope === undefined) return; // a key with no derivable tenant is excluded, never lumped
+        const rawScope = (tenantOf as NonNullable<typeof tenantOf>)(input.policy, input.key);
+        if (rawScope === undefined) return; // a key with no derivable tenant is excluded, never lumped
+        // Redact the tenant too — defense-in-depth, exactly like keyRef — so NO raw tenant/key reaches a
+        // segment, the plaintext audit log, or CLI output. hmac ⇒ an operator hashes the tenant id with
+        // the secret to locate it; per-trace-salt ⇒ opaque (maximal privacy); drop ⇒ all tenants collapse.
+        const scope = redactor.redact(rawScope);
 
         const keyRef = redactor.redact(input.key);
         const at = input.at ?? clock.now();

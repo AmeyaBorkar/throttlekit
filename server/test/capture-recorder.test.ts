@@ -2,7 +2,12 @@ import type { Decision } from "throttlekit";
 import { describe, expect, it } from "vitest";
 import { projectToReplayTrace } from "../src/capture/projection.js";
 import { createCaptureRecorder } from "../src/capture/recorder.js";
+import { createRedactor } from "../src/capture/redact.js";
 import type { CaptureConfig, RetentionConfig, TenantRule } from "../src/capture/types.js";
+
+/** The redacted scope a tenant gets under the tests' hmac config (deterministic, instance-independent). */
+const expectedScope = (tenant: string): string =>
+  createRedactor({ mode: "hmac", secret: "k" }).redact(tenant);
 
 /**
  * #289 Replay P3 (Phase B) — P3.2: the in-memory capture recorder + the leaf-rate → ReplayTrace
@@ -76,14 +81,25 @@ describe("#289 P3.2 — capture recorder", () => {
     r.record({ policy: "api", key: "beta:u1", cost: 1, decision: dec(true, 2) });
 
     const segs = r.segments();
-    const acme = segs.find((s) => s.scope === "acme");
+    const acme = segs.find((s) => s.scope === expectedScope("acme"));
+    expect(acme?.scope).not.toBe("acme"); // the scope (tenant) is redacted, not raw
     expect(acme?.policy).toBe("api");
     expect(acme?.count).toBe(2);
     expect(acme?.events[0]?.keyRef).not.toBe("acme:u1"); // redacted, not the raw key
     expect(acme?.events[0]?.keyRef).toMatch(/^[0-9a-f]{64}$/); // full hmac digest
     expect(acme?.events[1]?.cost).toBe(2);
     expect(acme?.clock).toBe("system");
-    expect(segs.find((s) => s.scope === "beta")?.count).toBe(1);
+    expect(segs.find((s) => s.scope === expectedScope("beta"))?.count).toBe(1);
+  });
+
+  it("redacts the tenant scope — no raw tenant/key reaches a segment (defense-in-depth)", () => {
+    const r = createCaptureRecorder(scopedConfig(), { clock });
+    r.register("api", { policyKind: "rate" });
+    r.record({ policy: "api", key: "acme:u1", cost: 1, decision: dec(true) });
+    const seg = r.segments()[0];
+    expect(seg?.scope).not.toBe("acme"); // never the raw tenant
+    expect(seg?.scope).toMatch(/^[0-9a-f]{64}$/); // a redaction ref
+    expect(seg?.scope).toBe(expectedScope("acme")); // stable under hmac
   });
 
   it("a ring tail-stops at ringSize and counts drops (keeps the cold-start prefix)", () => {
@@ -107,7 +123,7 @@ describe("#289 P3.2 — capture recorder", () => {
         .segments()
         .map((s) => s.scope)
         .sort(),
-    ).toEqual(["b", "c"]);
+    ).toEqual([expectedScope("b"), expectedScope("c")].sort());
   });
 
   it("excludes a key whose tenant rule returns undefined (never lumped), but still tallies it", () => {

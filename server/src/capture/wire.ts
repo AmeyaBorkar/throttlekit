@@ -63,6 +63,17 @@ export function auditPath(dir: string): string {
   return `${dir.replace(/[/\\]+$/, "")}/audit.jsonl`;
 }
 
+/** Resolve only the capture config from a config text (no service build) — for a quick enabled-check. */
+export function captureConfigFromText(
+  text: string,
+  options: WireCaptureOptions = {},
+): CaptureConfig {
+  return resolveCaptureConfig(parseCaptureBlock(text), {
+    ...(options.env !== undefined ? { env: options.env } : {}),
+    ...(options.tenantOf !== undefined ? { tenantOf: options.tenantOf } : {}),
+  });
+}
+
 /** Compose a config into a capture-ready service. Disabled ⇒ the plain service, untouched. */
 export function wireCapture(
   text: string,
@@ -70,10 +81,7 @@ export function wireCapture(
   fail: FailMode,
   options: WireCaptureOptions = {},
 ): WiredCapture {
-  const config = resolveCaptureConfig(parseCaptureBlock(text), {
-    ...(options.env !== undefined ? { env: options.env } : {}),
-    ...(options.tenantOf !== undefined ? { tenantOf: options.tenantOf } : {}),
-  });
+  const config = captureConfigFromText(text, options);
   const recorder = createCaptureRecorder(config, { clockSource: "system" });
 
   if (!config.enabled) {

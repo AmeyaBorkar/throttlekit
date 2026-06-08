@@ -23,7 +23,8 @@ export type CaptureClock = "manual" | "system" | "server";
 export type RedactionMode =
   /** HMAC-SHA-256 with a server secret — stable across segments (cross-incident grouping). */
   | "hmac"
-  /** HMAC with a per-segment random salt — privacy-maximal, no cross-segment correlation. */
+  /** HMAC with a per-**run** random salt — privacy-maximal, uncorrelatable across server *runs* (a restart
+   *  re-salts). One run shares one salt (not cross-*segment* unlinkable within a run). */
   | "per-trace-salt"
   /** Replace every key with a constant placeholder — erases per-key identity entirely. */
   | "drop";
@@ -57,7 +58,10 @@ export interface CaptureSegment {
   readonly policy: string;
   /** Policy kind — gates the `ReplayTrace` projection (`"rate"` only). */
   readonly policyKind: PolicyKind;
-  /** Tenant scope; `"__counts__"` when no `tenantOf` rule is configured (counts-only, fail-closed). */
+  /**
+   * **Redacted** tenant scope — a redaction ref, never the raw tenant/key. Segments exist only when a
+   * `tenantOf` rule is configured; counts-only mode (no rule) produces no segments, only per-policy tallies.
+   */
   readonly scope: string;
   /** Epoch-ms the segment was opened. */
   readonly createdAt: number;

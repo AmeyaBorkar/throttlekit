@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createRedactor } from "../src/capture/redact.js";
 import { wireCapture } from "../src/capture/wire.js";
 
 /**
@@ -42,7 +43,10 @@ describe("#289 P3.5 — wireCapture", () => {
     await w.service.check("api", "beta:u1");
 
     const segs = w.recorder.segments();
-    const acme = segs.find((s) => s.scope === "acme");
+    const acme = segs.find(
+      (s) => s.scope === createRedactor({ mode: "hmac", secret: "s" }).redact("acme"),
+    );
+    expect(acme?.scope).not.toBe("acme"); // tenant redacted
     expect(acme?.policy).toBe("api");
     expect(acme?.policyKind).toBe("rate"); // registered as leaf-rate
     expect(acme?.count).toBe(2);

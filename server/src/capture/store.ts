@@ -117,6 +117,8 @@ export function createSegmentStore(
         throw new Error(`segment ${JSON.stringify(id)} is past its TTL and was purged`);
       }
       const blob = await readFile(join(dir, id));
+      if (blob.length < IV_BYTES + TAG_BYTES)
+        throw new Error(`segment ${JSON.stringify(id)} is corrupt (truncated blob)`);
       const iv = blob.subarray(0, IV_BYTES);
       const tag = blob.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
       const ciphertext = blob.subarray(IV_BYTES + TAG_BYTES);

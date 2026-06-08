@@ -45,6 +45,7 @@ export {
   type WireCaptureOptions,
   type WiredCapture,
   auditPath,
+  captureConfigFromText,
   wireCapture,
 } from "./wire.js";
 export { type AuditLog, createAuditLog } from "./audit.js";

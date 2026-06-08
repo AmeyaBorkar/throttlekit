@@ -13,6 +13,16 @@ import type { RedactionConfig, RedactionMode } from "./types.js";
 /** The constant a `"drop"` redactor maps every key to — per-key identity is erased by design. */
 export const DROP_PLACEHOLDER = "__redacted__";
 
+/**
+ * Cap on the collision-guard's memory. The guard is **bounded** so a distinct-key flood (e.g. per-IP
+ * keys) can never grow it without limit, and it stores a PII-free **witness** digest, never the raw key,
+ * so no raw key is ever retained in heap. Because the ref is a full HMAC-SHA-256 digest, a real collision
+ * is astronomically unlikely, so beyond this cap the guard is best-effort (it stops tracking new refs).
+ */
+const COLLISION_GUARD_MAX = 50_000;
+/** A fixed, distinct salt for the collision witness — independent of the redaction `derive` function. */
+const WITNESS_SALT = "throttlekit-capture-collision-witness";
+
 /** A bound redactor: one mode + (for `per-trace-salt`) one captured salt. */
 export interface Redactor {
   readonly mode: RedactionMode;
@@ -23,15 +33,19 @@ export interface Redactor {
 }
 
 /**
- * Build a redactor for one segment.
+ * Build a redactor (one per recorder = one per server run).
  *
- * - `hmac` — `hashKey(raw, secret)`: stable across segments (cross-incident grouping).
- * - `per-trace-salt` — `hashKey(raw, salt)` with a fresh 16-byte random salt held for this redactor's
- *   lifetime: consistent within the segment, uncorrelatable across segments.
- * - `drop` — every key becomes {@link DROP_PLACEHOLDER}.
+ * - `hmac` — `hashKey(raw, secret)`: stable across runs (cross-incident grouping; an operator can locate a
+ *   tenant by hashing its id with the configured secret).
+ * - `per-trace-salt` — `hashKey(raw, salt)` with a fresh 16-byte random salt held for the redactor's
+ *   lifetime (**one server run**): consistent for the life of the process, uncorrelatable across server
+ *   *runs* (a restart re-salts). It is **not** per-segment — one recorder emits many segments under one
+ *   salt — so do not rely on cross-segment unlinkability within a single run.
+ * - `drop` — every key becomes {@link DROP_PLACEHOLDER} (identity erased).
  *
  * The collision guard (active for `hmac`/`per-trace-salt`, off for `drop` where merging is intended)
- * refuses a redaction that maps two distinct raw keys to one ref — a silent state-merge hazard.
+ * refuses a redaction that maps two distinct keys to one ref. It is **bounded** and stores a PII-free
+ * witness, never the raw key (see {@link COLLISION_GUARD_MAX}).
  */
 export function createRedactor(config: RedactionConfig): Redactor {
   let derive: (raw: string) => string;
@@ -47,18 +61,26 @@ export function createRedactor(config: RedactionConfig): Redactor {
     derive = () => DROP_PLACEHOLDER;
   }
 
-  // Two distinct raw keys → one keyRef would merge their decision streams. Refuse it loudly — except in
-  // `drop` mode, where collapsing every key to one placeholder is the intended (identity-erasing) behavior.
-  const originalOf = config.mode === "drop" ? undefined : new Map<string, string>();
+  // Two distinct keys → one ref would merge their decision streams. Refuse it loudly — except in `drop`
+  // mode (merging is intended). BOUNDED + PII-free: store a witness digest (never the raw key) and cap the
+  // map, so a distinct-key flood can neither grow it without limit nor retain raw PII in heap.
+  const seen = config.mode === "drop" ? undefined : new Map<string, string>();
   const redact = (raw: string): string => {
     const ref = derive(raw);
-    if (originalOf !== undefined) {
-      const prev = originalOf.get(ref);
-      if (prev !== undefined && prev !== raw)
-        throw new ThrottleKitError(
-          `capture.redaction: keyref collision — ${JSON.stringify(prev)} and ${JSON.stringify(raw)} map to one ref`,
-        );
-      if (prev === undefined) originalOf.set(ref, raw);
+    if (seen !== undefined) {
+      const prev = seen.get(ref);
+      if (prev !== undefined || seen.size < COLLISION_GUARD_MAX) {
+        const witness = hashKey(raw, WITNESS_SALT); // a PII-free second digest, never the raw key
+        if (prev !== undefined) {
+          if (prev !== witness)
+            throw new ThrottleKitError(
+              "capture.redaction: keyref collision — two distinct keys mapped to one redaction ref",
+            );
+        } else {
+          seen.set(ref, witness);
+        }
+      }
+      // Past the cap with an unseen ref: best-effort skip (a full HMAC-SHA-256 collision is negligible).
     }
     return ref;
   };

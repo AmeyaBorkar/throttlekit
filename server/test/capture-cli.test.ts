@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -191,6 +191,20 @@ describe("#289 P3.4 — fail-closed audited CLI", () => {
     const res = await runCaptureCli({ action: "export", id, credential: "s3cret-op" }, d);
     const out = res.output as { kind: string };
     expect(out.kind).toBe("forensic");
+  });
+
+  it("list flags a tampered/undecryptable segment as unreadable (metadata omitted)", async () => {
+    const d = deps(enabled);
+    const id = await d.store.write(leafSegment("acme"));
+    const segPath = join(dir, "seg", id);
+    const buf = await readFile(segPath);
+    buf[buf.length - 1] = buf[buf.length - 1]! ^ 0xff; // corrupt the blob
+    await writeFile(segPath, buf);
+    const res = await runCaptureCli({ action: "list", credential: "s3cret-op" }, d);
+    const rows = res.output as Array<{ id: string; unreadable?: boolean; policy?: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.unreadable).toBe(true);
+    expect(rows[0]?.policy).toBeUndefined(); // decrypted metadata omitted
   });
 
   it("export without an id errors; sweep returns the purge count and audits", async () => {

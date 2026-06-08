@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import type { FailMode } from "throttlekit";
 
 import { runCaptureCli } from "./capture/cli.js";
-import { type WiredCapture, wireCapture } from "./capture/wire.js";
+import { type WiredCapture, captureConfigFromText, wireCapture } from "./capture/wire.js";
 import { serve } from "./grpc.js";
 import type { LensHub } from "./monitor/hub.js";
 import { wireMonitor } from "./monitor/wire.js";
@@ -249,6 +249,11 @@ async function runCaptureSubcommand(argv: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  if (a.credential !== undefined) {
+    console.warn(
+      "warning: --credential is visible in process listings (ps / Task Manager); prefer the THROTTLEKIT_CAPTURE_CREDENTIAL env var.",
+    );
+  }
   const credential = a.credential ?? process.env.THROTTLEKIT_CAPTURE_CREDENTIAL;
   const res = await runCaptureCli(
     {
@@ -321,6 +326,19 @@ async function main(): Promise<void> {
   let service: RateLimiterService;
   let capture: WiredCapture | undefined;
   if (tui) {
+    // Capture is not composed with the live dashboard in this version — warn (best-effort) so an operator
+    // who enabled both isn't silently left without capture. A malformed capture block surfaces non-TUI.
+    let captureWanted = false;
+    try {
+      captureWanted = captureConfigFromText(text).enabled;
+    } catch {
+      /* ignore here — the non-TUI path reports a bad capture block */
+    }
+    if (captureWanted) {
+      console.warn(
+        "warning: capture is configured but is NOT active alongside --tui in this version; run without --tui to capture.",
+      );
+    }
     const wired = wireMonitor(text, loadOptions, args.fail, mode, `${args.host}:${args.port}`);
     service = wired.service;
     hub = wired.hub;

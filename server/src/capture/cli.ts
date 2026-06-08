@@ -43,6 +43,8 @@ export interface CaptureListRow {
   readonly count?: number;
   /** Whether `export` would yield a replayable trace (leaf-rate) vs a forensic-only segment. */
   readonly replayable?: boolean;
+  /** True when the segment could not be decrypted (tampered / wrong key / expired) — metadata omitted. */
+  readonly unreadable?: boolean;
 }
 
 /** `export` output — a downstream-replayable trace (leaf-rate) or the forensic segment (everything else). */
@@ -118,8 +120,8 @@ export async function runCaptureCli(
             replayable: projectToReplayTrace(seg) !== null,
           });
         } catch {
-          // expired/tampered ⇒ list the ref alone, never crash the listing
-          rows.push({ id: ref.id, createdAt: ref.createdAt });
+          // decrypt failed (tampered / wrong key / expired) ⇒ list the ref, flagged unreadable
+          rows.push({ id: ref.id, createdAt: ref.createdAt, unreadable: true });
         }
       }
       await deps.audit.append({ ts: now, principal, action: "list" });
