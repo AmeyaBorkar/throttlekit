@@ -2,7 +2,29 @@
 
 All notable changes to **throttlekit-server** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This server tracks the frozen `throttlekit` 1.0
-core's public, frozen API and versions independently of it (it is pre-1.0 / experimental).
+core's public, frozen API and versions independently of it (0.x maturity; the gRPC wire is frozen and
+conformance-tested against the golden vectors).
+
+## [0.1.0] — 2026-06-09
+
+Graduated out of the `-experimental` prerelease tag: the gRPC wire is frozen and conformance-tested against
+the golden vectors (a polyglot client's decisions are identical to the embedded library). One opt-in
+surface — **decision capture** — remains `@experimental`.
+
+### Added
+
+- **Decision capture (`@experimental`, opt-in, default-OFF).** Record the live decision stream into a
+  durable, redacted, **AES-256-GCM-encrypted** forensic store, with a fail-closed, **audited** admin CLI
+  (`throttlekit-server capture list|export|sweep`). Keys **and** tenants are redacted at capture (full HMAC
+  digest, never the raw value); captures are stamped `clock:"system"` (forensic — `export` emits a
+  `ReplayTrace` JSON for **downstream** replay/what-if). The capture path is **control-path-safe** (a
+  post-decision, O(1), never-throw tail) and **bounded** under a key/tenant flood; with no tenant rule it
+  drops to counts-only (no per-key rows). See the README's *Decision capture* section.
+
+### Changed
+
+- Graduated the package version `0.1.0-experimental.7` → `0.1.0` and the monitor snapshot stamp
+  `0.2.0-experimental.3` → `0.2.0`. The decision-only gRPC service door is stable and wire-frozen.
 
 ## [0.1.0-experimental.7] — 2026-06-05
 

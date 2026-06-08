@@ -45,7 +45,7 @@ import type {
 } from "./types.js";
 
 /** The hub/dashboard version, stamped into every snapshot's `meta.lensVersion`. */
-export const MONITOR_VERSION = "0.2.0-experimental.3";
+export const MONITOR_VERSION = "0.2.0";
 
 /** How many recent admit-path latencies to retain per policy for the latency readout. */
 const LATENCY_RING = 256;

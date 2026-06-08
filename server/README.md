@@ -6,9 +6,11 @@ concurrency, and cost** — its **GALE** (provable distributed leasing) and **TA
 engines — as a network service so **polyglot clients** (Python, Go, …) get decisions **identical** to an
 embedded Node library, without re-implementing any algorithm or touching the raw Lua wire.
 
-> **Status: experimental (pre-1.0).** The core `throttlekit` package is 1.0 and frozen; this server
-> evolves independently. It depends only on `throttlekit`'s **public, frozen API** — it adds no surface
-> to the core and keeps the core's zero-runtime-dependency promise intact.
+> **Status: `0.1.0` — frozen wire, conformance-tested.** The gRPC contract is frozen and verified against
+> the golden vectors (a polyglot client's decisions are identical to the embedded library); the core
+> `throttlekit` package is 1.0. This server depends only on `throttlekit`'s **public, frozen API** — it adds
+> no surface to the core and keeps the core's zero-runtime-dependency promise intact. One opt-in surface,
+> **decision capture** (below), is `@experimental`.
 
 ## Why a service (not a port)
 
