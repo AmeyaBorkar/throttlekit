@@ -41,6 +41,25 @@ jobs:
       - run: npm run publint
       - run: npm run attw
 
+  wire:
+    name: Wire contract (buf breaking + lint)
+    runs-on: ubuntu-latest
+    # The gRPC service door (wire/throttlekit.proto) is a public, multi-language contract: a client built
+    # today must keep working forever. buf breaking (FILE) fails the build on ANY non-additive change
+    # (renumber / retype / remove / cardinality) vs the committed baseline image (wire/throttlekit.baseline.binpb),
+    # so the v1 wire can only grow additively; buf lint holds new services to STANDARD (the frozen
+    # RateLimiter naming + the wire/ layout are excepted in buf.yaml). The server's shipped throttlekit.proto
+    # is generated verbatim from this source at pack time, so validating the source covers what ships.
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run wire:lint
+      - run: npm run wire:breaking
+
   test:
     name: Test (node ${{ matrix.node }})
     runs-on: ubuntu-latest

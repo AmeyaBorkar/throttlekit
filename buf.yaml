@@ -1,0 +1,21 @@
+# Wire-contract guard for the gRPC service door (wire/throttlekit.proto).
+#
+# The door is a public, multi-language contract: a client built today must keep working forever. This makes
+# its evolution machine-checked. `buf breaking` (FILE) fails CI on any non-additive change — renumbering,
+# retyping, removing, or changing cardinality — versus the committed baseline image (wire/throttlekit.baseline.binpb),
+# so the v1 wire can only grow additively (new fields with new numbers, new enum values, new services).
+# See research/scaling/DESIGN.md (SC-03). Regenerating the baseline is a deliberate act (npm run wire:baseline)
+# and is only needed at a major-version break, never for an additive change.
+version: v2
+modules:
+  - path: wire
+breaking:
+  use:
+    - FILE
+lint:
+  use:
+    - STANDARD
+  except:
+    # The frozen v1 surface predates this guard; both would require a breaking wire change to satisfy:
+    - PACKAGE_DIRECTORY_MATCH # the contract is served from wire/throttlekit.proto, not throttlekit/v1/
+    - SERVICE_SUFFIX          # services are unsuffixed by convention (RateLimiter / Monitor / Fleet)
