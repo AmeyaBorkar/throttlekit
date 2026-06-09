@@ -260,6 +260,14 @@ non-loopback call without the secret is rejected `UNAUTHENTICATED`. (Not compose
 the door is served alongside the dashboard, and alongside the decision RPCs; it is *not* served together with
 **capture** in this version.)
 
+**Prometheus `/metrics` + `/healthz`.** For metrics tooling, add `--metrics-port <n>` to serve a small HTTP
+endpoint: `GET /metrics` renders the live counters in Prometheus exposition format — per-policy
+`throttlekit_allowed_total` / `throttlekit_denied_total`, the per-axis `throttlekit_denied_by_axis_total`
+(binding-axis attribution), observed ceiling, p50/p99 admit latency, and concurrency-guard health — and
+`GET /healthz` is a 200 liveness probe. These series are **aggregate and PII-free** (no per-key data — that
+lives only on the authed gRPC door), so the endpoint defaults to **loopback** and needs no auth;
+`--metrics-host 0.0.0.0` exposes it (with a warning). It needs the telemetry hub, so run with monitoring on.
+
 ## Decision capture (experimental, opt-in, default-OFF)
 
 Record the server's live decision stream to a durable, **redacted, AES-256-GCM-encrypted** forensic store —

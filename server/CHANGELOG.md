@@ -23,6 +23,12 @@ conformance-tested against the golden vectors).
   `Monitor` service + its messages are purely additive (a new service; the locked `RateLimiter` messages are
   untouched), machine-verified non-breaking against the frozen baseline. Not composed with **capture** in this
   version (it serves alongside the dashboard and the decision RPCs). See the README's *Monitor door* section.
+- **Prometheus `/metrics` + `/healthz`.** `--metrics-port <n>` serves a small HTTP endpoint: `GET /metrics`
+  renders the live counters in Prometheus exposition format (per-policy allow/deny, the per-axis
+  `throttlekit_denied_by_axis_total` binding-axis attribution, observed ceiling, p50/p99 latency, guard
+  health) and `GET /healthz` is a 200 liveness probe. The series are **aggregate + PII-free** (no per-key
+  data — that lives only on the authed gRPC door), so it defaults to **loopback** and needs no auth;
+  `--metrics-host` exposes it (warned). Needs the telemetry hub (run with monitoring on). No wire change.
 - **Cross-region federation (`federated`).** A new policy block that enforces **one global per-window rate
   budget across regions** through a cross-region coordinator (the core's `federate()`), served over the
   **same `Check` RPC** (no client change, **no wire change**). Each instance leases a slice of the global

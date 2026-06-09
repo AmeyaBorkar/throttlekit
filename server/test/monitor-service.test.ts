@@ -205,7 +205,12 @@ describe("Monitor.Watch (live denial stream) over gRPC", () => {
   beforeAll(async () => {
     const open = await populatedHub("watch-node");
     svc = open.service; // its limiters are tapped into the served hub — checks here feed the stream
-    running = await serve({ service: open.service, host: "127.0.0.1", port: 0, monitor: { hub: open.hub } });
+    running = await serve({
+      service: open.service,
+      host: "127.0.0.1",
+      port: 0,
+      monitor: { hub: open.hub },
+    });
     h = makeMonitorClient(running.port);
 
     const sec = await populatedHub("watch-secure");

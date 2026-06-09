@@ -17,6 +17,7 @@ import { type WiredCapture, captureConfigFromText, wireCapture } from "./capture
 import type { ServerLoadOptions } from "./config.js";
 import { serve } from "./grpc.js";
 import type { LensHub } from "./monitor/hub.js";
+import { type RunningMetricsServer, startMetricsServer } from "./monitor/metrics.js";
 import { wireMonitor } from "./monitor/wire.js";
 import { replayService } from "./replay/tap.js";
 import { type WiredReplay, replayConfigFromText, wireReplay } from "./replay/wire.js";
@@ -51,6 +52,8 @@ interface Args {
   tui: boolean;
   monitor: "on" | "off";
   monitorSecret?: string;
+  metricsPort?: number;
+  metricsHost?: string;
   help: boolean;
 }
 
@@ -149,6 +152,12 @@ function parseArgs(argv: string[]): Args {
       case "--monitor-secret":
         args.monitorSecret = argv[++i];
         break;
+      case "--metrics-port":
+        args.metricsPort = Number(argv[++i]);
+        break;
+      case "--metrics-host":
+        args.metricsHost = argv[++i];
+        break;
       default:
         throw new Error(`unknown argument: ${arg}`);
     }
@@ -184,6 +193,8 @@ Options:
       --tui               live terminal dashboard alongside gRPC (interactive TTY only; q to quit)
       --monitor on|off    read-only Monitor gRPC door on the same port (default on; loopback-only w/o a secret)
       --monitor-secret <s>  secret to read Monitor beyond loopback (call metadata; or THROTTLEKIT_MONITOR_SECRET)
+      --metrics-port <n>  serve Prometheus /metrics + /healthz on this HTTP port (needs monitoring on)
+      --metrics-host <h>  bind the metrics port (default 127.0.0.1; aggregate + PII-free, set to expose)
   -h, --help              show this help
 
 Subcommands:
@@ -451,6 +462,25 @@ async function main(): Promise<void> {
     );
   }
 
+  // Optional Prometheus `/metrics` + `/healthz` over a separate HTTP port (needs the telemetry hub). The
+  // series are aggregate + PII-free, so it defaults to loopback and needs no auth; a host flag exposes it.
+  let metrics: RunningMetricsServer | undefined;
+  if (args.metricsPort !== undefined) {
+    if (hub === undefined) {
+      console.warn(
+        "warning: --metrics-port needs the in-process telemetry hub, which is off (monitoring disabled or the capture path is active); not serving /metrics.",
+      );
+    } else {
+      const metricsHost = args.metricsHost ?? "127.0.0.1";
+      metrics = await startMetricsServer({ hub, host: metricsHost, port: args.metricsPort });
+      if (!LOOPBACK.has(metricsHost)) {
+        console.warn(
+          `⚠ /metrics is exposed on ${metricsHost}:${metrics.port} (aggregate + PII-free, but unauthenticated); front it with a network policy if unintended.`,
+        );
+      }
+    }
+  }
+
   let tuiHandle: RunningTui | undefined;
   let closing = false;
   const shutdown = (signal: string): void => {
@@ -465,6 +495,7 @@ async function main(): Promise<void> {
         return capture.flush.flushOnce().then(() => undefined); // a final drain on the way out
       })
       .then(() => running.close())
+      .then(() => (metrics !== undefined ? metrics.close() : undefined))
       .then(() => dispose())
       .then(() => process.exit(0));
   };
@@ -483,9 +514,10 @@ async function main(): Promise<void> {
       hub !== undefined
         ? `monitor:${monitorSecret !== undefined ? "secret" : "loopback"}`
         : "monitor:off";
+    const metricsTag = metrics !== undefined ? `, metrics:${metrics.port}` : "";
     console.log(
       `throttlekit-server listening on ${args.host}:${running.port} ` +
-        `[${mode}, ${security}, fail=${args.fail}, ${monitorTag}] ` +
+        `[${mode}, ${security}, fail=${args.fail}, ${monitorTag}${metricsTag}] ` +
         `(${service.policies().length} policies: ${service.policies().join(", ")})`,
     );
   }
