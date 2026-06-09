@@ -25,6 +25,7 @@ import {
   MemoryStore,
   ThrottleKitError,
   adaptiveConcurrency,
+  distributedAdaptiveConcurrency,
   distributedTokenBudget,
   tokenBudget,
   unifiedAdmission,
@@ -32,6 +33,7 @@ import {
 import type {
   AdaptiveConcurrencyOptions,
   Clock,
+  ConcurrencyCoordinator,
   ConcurrencyGuard,
   DistributedTokenBudgetMeter,
   Limiter,
@@ -135,6 +137,43 @@ export interface ConcurrencyConfig {
 }
 
 /**
+ * The optional `distributedConcurrency` block — the **fleet-shared** face of {@link ConcurrencyConfig}. The
+ * same adaptive concurrency axis, but the in-flight ceiling is held **across every server instance** pointed
+ * at one shared store (`--redis` / `--postgres`) via the core's `distributedAdaptiveConcurrency`: each node
+ * periodically heartbeats its locally-inferred limit to a {@link ConcurrencyCoordinator}, which folds the
+ * fleet's views into one `L_global` and hands each node its share — so a polyglot client's plain `admit` (no
+ * client change, no wire change) is now capped against ONE fleet-wide ceiling, not `Σ` per-instance ceilings.
+ *
+ * Carries every {@link ConcurrencyConfig} tuning field (forwarded verbatim as each node's *local* adaptive
+ * guard) plus the coordinator knobs below. Like the existing `concurrency` block it admits over the stateful
+ * `Admit`/`Release`/`Heartbeat` lifecycle, and a co-declared rate `strategy` makes it a **unified**
+ * rate×concurrency admitter. The decision is the core's (one oracle); this only wires the config.
+ *
+ * **Requires a coordinator store** (`--redis` / `--postgres`); `memory` / `dynamodb` cannot coordinate, so a
+ * `distributedConcurrency` policy errors there at config time. **Requires a unique server node id**
+ * (`--node-id` / `TK_NODE_ID`, defaulting to `host#pid`) — a collision across instances corrupts the
+ * fleet aggregate, so identity is mandatory.
+ */
+export interface DistributedConcurrencyConfig extends ConcurrencyConfig {
+  /**
+   * Fleet-wide rule folding live nodes' local limits into `L_global`: `"median"` (default) is the lower
+   * median; `"min"` the most-stressed node's view. Every instance on a policy MUST agree — so it is set
+   * once here and applied to the coordinator the runtime builds.
+   */
+  aggregate?: "min" | "median";
+  /** Coordinator key prefix in the shared store (default the core's `"tk:fed"`). */
+  prefix?: string;
+  /** Heartbeat / lease-renewal period in ms (the cross-node sync cadence). Default 1000 (the core default). */
+  heartbeatMs?: number;
+  /**
+   * Behaviour when the coordinator is unreachable: `"fail-closed"` (default) stops admitting beyond the
+   * last-known share (and self-fences on lease expiry); `"local-only"` serves through the outage against
+   * the node's local limit (trading the global bound for availability).
+   */
+  onCoordinatorOutage?: "fail-closed" | "local-only";
+}
+
+/**
  * The optional `fairEscrow` block — turns a policy into a **weighted-fair-escrow** limiter: one shared
  * per-window budget split across tenants in proportion to weight, idle tenants' surplus reclaimed by
  * backlogged ones. The request `key` IS the tenant. The decision is the core's `weightedFairEscrow` (one
@@ -200,12 +239,13 @@ export interface FederatedConfig {
   prefix?: string;
 }
 
-/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `fleetBudget` / `concurrency` / `fairEscrow` / `federated` blocks. */
+/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `fleetBudget` / `concurrency` / `distributedConcurrency` / `fairEscrow` / `federated` blocks. */
 export type ServerLimiterSpec = LimiterSpec & {
   twoTier?: TwoTierConfig;
   tokenBudget?: TokenBudgetConfig;
   fleetBudget?: FleetBudgetConfig;
   concurrency?: ConcurrencyConfig;
+  distributedConcurrency?: DistributedConcurrencyConfig;
   fairEscrow?: FairEscrowConfig;
   federated?: FederatedConfig;
 };
@@ -281,17 +321,46 @@ export interface CoordinatorSpec {
  */
 export type CoordinatorFactory = (spec: CoordinatorSpec) => GlobalCoordinator;
 
+/** What a {@link ConcurrencyCoordinatorFactory} needs to build a fleet concurrency coordinator. */
+export interface ConcurrencyCoordinatorSpec {
+  /** Fleet-wide aggregation rule (`"min"` | `"median"`); every instance on a policy MUST agree. */
+  aggregate?: "min" | "median";
+  /** Coordinator key prefix in the shared store (the core defaults to `"tk:fed"`). */
+  prefix?: string;
+}
+
+/**
+ * Builds a fleet {@link ConcurrencyCoordinator} over the resolved shared store — `redis` →
+ * `RedisConcurrencyCoordinator`, `postgres` → `PostgresConcurrencyCoordinator`. `undefined` for
+ * `memory` / `dynamodb`, which cannot coordinate (a `distributedConcurrency:` policy errors there).
+ * Injected via {@link ServerLoadOptions}; any coordinator built is closed by the store's disposer.
+ */
+export type ConcurrencyCoordinatorFactory = (
+  spec: ConcurrencyCoordinatorSpec,
+) => ConcurrencyCoordinator;
+
 /** Options for {@link buildLimitersFromConfig}: the core loader options plus an injectable clock. */
 export interface ServerLoadOptions extends LoadConfigOptions {
-  /** Clock for the two-tier / federated limiters (mainly tests); the runtime uses the system clock. */
+  /** Clock for the two-tier / federated / distributed-concurrency limiters (mainly tests); else system. */
   clock?: Clock;
   /**
    * Factory for a cross-region federation coordinator over the resolved store. Required to serve a
    * `federated:` policy; the runtime supplies it for `redis`/`postgres` and omits it for `memory`/`dynamodb`.
    */
   makeCoordinator?: CoordinatorFactory;
+  /**
+   * Factory for a fleet concurrency coordinator over the resolved store. Required to serve a
+   * `distributedConcurrency:` policy; supplied for `redis`/`postgres`, omitted for `memory`/`dynamodb`.
+   */
+  makeConcurrencyCoordinator?: ConcurrencyCoordinatorFactory;
   /** This instance's region identity for `federated:` policies (a policy's own `region` wins; else this). */
   region?: string;
+  /**
+   * This process's unique fleet node id, required to serve a `distributedConcurrency:` policy (a collision
+   * across instances corrupts the fleet aggregate). The runtime defaults it to `host#pid`; `--node-id`
+   * overrides. Distinct from `region` (a region groups many nodes; a node id identifies exactly one process).
+   */
+  nodeId?: string;
 }
 
 function parseConfigText(text: string, format: "yaml" | "json" | undefined): ConfigFile {
@@ -333,12 +402,13 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
         spec.fleetBudget,
         spec.fairEscrow,
         spec.concurrency,
+        spec.distributedConcurrency,
         spec.twoTier,
         spec.federated,
       ].filter((b) => b !== undefined).length;
       if (kinds > 1)
         throw new ThrottleKitError(
-          `config.limiters[${name}]: a policy may declare at most one of tokenBudget / fleetBudget / fairEscrow / concurrency / twoTier / federated`,
+          `config.limiters[${name}]: a policy may declare at most one of tokenBudget / fleetBudget / fairEscrow / concurrency / distributedConcurrency / twoTier / federated`,
         );
     }
     if (spec != null && typeof spec === "object" && spec.tokenBudget !== undefined) {
@@ -350,7 +420,11 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
     } else if (spec != null && typeof spec === "object" && spec.fairEscrow !== undefined) {
       fairness[name] = buildFairEscrow(name, spec, options);
       costRooms[name] = resolveCostRoom(name, spec.fairEscrow as FairEscrowConfig);
-    } else if (spec != null && typeof spec === "object" && spec.concurrency !== undefined) {
+    } else if (
+      spec != null &&
+      typeof spec === "object" &&
+      (spec.concurrency !== undefined || spec.distributedConcurrency !== undefined)
+    ) {
       const built = buildAdmitter(name, spec, options, data);
       admitters[name] = built.admitter;
       guards[name] = built.guard; // expose the encapsulated guard for the Concurrency / Guarantee views
@@ -570,10 +644,51 @@ function buildFederated(
 }
 
 /**
- * Build a concurrency / unified admitter. The `concurrency` block configures the core's
- * `adaptiveConcurrency` guard; if the policy also names a rate `strategy`, that limiter (built by the core
- * loader, so it shares the injected store + prefix defaults) becomes the rate axis of a `unifiedAdmission`.
- * The decision is the core's — this only assembles the axes the policy declared.
+ * Build the fleet concurrency guard for a `distributedConcurrency` policy: the core's
+ * `distributedAdaptiveConcurrency` over a {@link ConcurrencyCoordinator} the runtime resolved from the
+ * shared store. Each {@link ConcurrencyConfig} tuning field rides into the node's *local* adaptive guard;
+ * the coordinator knobs (`aggregate`/`prefix`/`heartbeatMs`/`onCoordinatorOutage`) configure the fleet
+ * sync. `key` is the policy name, so each policy gets its own global ceiling on the shared coordinator.
+ * Errors clearly (config time) when no coordinator store or no node id is configured.
+ */
+function buildDistributedGuard(
+  name: string,
+  dc: DistributedConcurrencyConfig,
+  options: ServerLoadOptions,
+): ConcurrencyGuard {
+  if (options.makeConcurrencyCoordinator === undefined)
+    throw new ThrottleKitError(
+      `config.limiters[${name}].distributedConcurrency: needs a shared coordinator store — run with --redis or --postgres (memory / dynamodb cannot coordinate concurrency)`,
+    );
+  if (options.nodeId === undefined || options.nodeId === "")
+    throw new ThrottleKitError(
+      `config.limiters[${name}].distributedConcurrency: needs a unique server node id (set --node-id / TK_NODE_ID; the runtime defaults it to host#pid) — a collision across instances corrupts the fleet aggregate`,
+    );
+  // Split the coordinator knobs from the per-node adaptive tuning (the rest IS a ConcurrencyConfig, which is
+  // a subset of AdaptiveConcurrencyOptions → forwarded verbatim as each node's local guard).
+  const { aggregate, prefix, heartbeatMs, onCoordinatorOutage, ...local } = dc;
+  const coordinator = options.makeConcurrencyCoordinator({
+    ...(aggregate !== undefined ? { aggregate } : {}),
+    ...(prefix !== undefined ? { prefix } : {}),
+  });
+  const clock = options.clock;
+  return distributedAdaptiveConcurrency({
+    coordinator,
+    nodeId: options.nodeId,
+    key: name,
+    local,
+    ...(heartbeatMs !== undefined ? { heartbeatMs } : {}),
+    ...(onCoordinatorOutage !== undefined ? { onCoordinatorOutage } : {}),
+    ...(clock !== undefined ? { clock } : {}),
+  });
+}
+
+/**
+ * Build a concurrency / unified admitter. The `concurrency` block configures the core's in-process
+ * `adaptiveConcurrency` guard; `distributedConcurrency` instead builds a fleet-shared guard (see
+ * {@link buildDistributedGuard}). Either way, if the policy also names a rate `strategy`, that limiter
+ * (built by the core loader, so it shares the injected store + prefix defaults) becomes the rate axis of a
+ * `unifiedAdmission`. The decision is the core's — this only assembles the axes the policy declared.
  */
 function buildAdmitter(
   name: string,
@@ -581,9 +696,16 @@ function buildAdmitter(
   options: ServerLoadOptions,
   data: ConfigFile,
 ): { admitter: UnifiedAdmitter; guard: ConcurrencyGuard } {
-  const cc = spec.concurrency ?? {};
   const clock = options.clock;
-  const guard = adaptiveConcurrency({ ...cc, ...(clock !== undefined ? { clock } : {}) });
+  // The concurrency axis is either the in-process guard (`concurrency`) or the fleet-shared one
+  // (`distributedConcurrency`); the dispatcher guarantees exactly one of the two blocks is present.
+  const guard: ConcurrencyGuard =
+    spec.distributedConcurrency !== undefined
+      ? buildDistributedGuard(name, spec.distributedConcurrency, options)
+      : adaptiveConcurrency({
+          ...(spec.concurrency ?? {}),
+          ...(clock !== undefined ? { clock } : {}),
+        });
 
   // Optional rate axis (→ unified). Built like a plain policy so it gets the store + prefix defaults;
   // the core loader ignores the extra `concurrency` field (as it does `twoTier`).

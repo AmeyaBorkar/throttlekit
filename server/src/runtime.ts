@@ -12,7 +12,8 @@ import { readFileSync } from "node:fs";
 
 import * as grpc from "@grpc/grpc-js";
 import { Redis } from "ioredis";
-import type { Store } from "throttlekit";
+import { PostgresConcurrencyCoordinator, RedisConcurrencyCoordinator } from "throttlekit";
+import type { ConcurrencyCoordinator, Store } from "throttlekit";
 import { DynamoStore } from "throttlekit/dynamodb";
 import type {
   DynamoClientLike,
@@ -26,7 +27,7 @@ import { PostgresStore } from "throttlekit/postgres";
 import type { PgPoolLike } from "throttlekit/postgres";
 import { RedisStore } from "throttlekit/redis";
 import type { RedisClientLike } from "throttlekit/redis";
-import type { CoordinatorFactory } from "./config.js";
+import type { ConcurrencyCoordinatorFactory, CoordinatorFactory } from "./config.js";
 
 /** Which backend holds the limiter state. `memory` is per-policy in-process; the rest are shared. */
 export type StoreType = "memory" | "redis" | "postgres" | "dynamodb";
@@ -77,12 +78,24 @@ export interface ResolvedStore {
    * Any coordinator built is closed by {@link ResolvedStore.dispose}.
    */
   makeCoordinator?: CoordinatorFactory;
+  /**
+   * Build a fleet concurrency coordinator over this backend — `redis` → {@link RedisConcurrencyCoordinator},
+   * `postgres` → {@link PostgresConcurrencyCoordinator}. `undefined` for `memory` / `dynamodb` (a
+   * `distributedConcurrency:` policy errors there). Any coordinator built is closed by {@link ResolvedStore.dispose}.
+   */
+  makeConcurrencyCoordinator?: ConcurrencyCoordinatorFactory;
   /** Release the store's resources (close any coordinators, then the Redis connection / pg Pool). */
   dispose(): Promise<void>;
 }
 
 /** Close a coordinator's background resources if it has any (PostgresCoordinator's GC timer); else a no-op. */
 function closeCoordinator(c: GlobalCoordinator): void {
+  const maybe = c as { close?: () => void };
+  if (typeof maybe.close === "function") maybe.close();
+}
+
+/** Close a concurrency coordinator's background resources if any (PostgresConcurrencyCoordinator's GC timer). */
+function closeConcurrencyCoordinator(c: ConcurrencyCoordinator): void {
   const maybe = c as { close?: () => void };
   if (typeof maybe.close === "function") maybe.close();
 }
@@ -258,6 +271,7 @@ export async function createStore(spec: StoreSpec): Promise<ResolvedStore> {
         ...(spec.redisPrefix !== undefined ? { prefix: spec.redisPrefix } : {}),
       });
       const coordinators: GlobalCoordinator[] = [];
+      const concCoordinators: ConcurrencyCoordinator[] = [];
       return {
         store,
         mode,
@@ -274,8 +288,21 @@ export async function createStore(spec: StoreSpec): Promise<ResolvedStore> {
           coordinators.push(coordinator);
           return coordinator;
         },
+        // A RedisConcurrencyCoordinator over the SAME raw client — the fleet concurrency authority for
+        // `distributedConcurrency:` policies. It has no per-policy budget (the global ceiling is inferred
+        // from live nodes), so one coordinator serves every such policy (each guard passes its policy key).
+        makeConcurrencyCoordinator: (cspec) => {
+          const coordinator = new RedisConcurrencyCoordinator({
+            client: client as unknown as RedisClientLike,
+            ...(cspec.aggregate !== undefined ? { aggregate: cspec.aggregate } : {}),
+            ...(cspec.prefix !== undefined ? { prefix: cspec.prefix } : {}),
+          });
+          concCoordinators.push(coordinator);
+          return coordinator;
+        },
         dispose: async () => {
           for (const c of coordinators) closeCoordinator(c);
+          for (const c of concCoordinators) closeConcurrencyCoordinator(c);
           client.disconnect();
         },
       };
@@ -293,6 +320,7 @@ export async function createStore(spec: StoreSpec): Promise<ResolvedStore> {
         ...(spec.postgresPrefix !== undefined ? { prefix: spec.postgresPrefix } : {}),
       });
       const coordinators: GlobalCoordinator[] = [];
+      const concCoordinators: ConcurrencyCoordinator[] = [];
       return {
         store,
         mode,
@@ -308,9 +336,21 @@ export async function createStore(spec: StoreSpec): Promise<ResolvedStore> {
           coordinators.push(coordinator);
           return coordinator;
         },
+        // A PostgresConcurrencyCoordinator over the SAME pool — the fleet concurrency authority for
+        // `distributedConcurrency:` policies (one coordinator serves all such policies; each guard keys it).
+        makeConcurrencyCoordinator: (cspec) => {
+          const coordinator = new PostgresConcurrencyCoordinator({
+            pool,
+            ...(cspec.aggregate !== undefined ? { aggregate: cspec.aggregate } : {}),
+            ...(cspec.prefix !== undefined ? { prefix: cspec.prefix } : {}),
+          });
+          concCoordinators.push(coordinator);
+          return coordinator;
+        },
         dispose: async () => {
-          // PostgresCoordinator runs a background GC interval — close it before ending the pool.
+          // Both coordinators run a background GC interval — close them before ending the pool.
           for (const c of coordinators) closeCoordinator(c);
+          for (const c of concCoordinators) closeConcurrencyCoordinator(c);
           await pool.end();
         },
       };

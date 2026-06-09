@@ -58,6 +58,7 @@ describe("runtime: store selection", () => {
     expect(resolved.mode).toBe("memory");
     expect(resolved.distributed).toBe(false);
     expect(resolved.makeCoordinator).toBeUndefined(); // memory cannot federate
+    expect(resolved.makeConcurrencyCoordinator).toBeUndefined(); // …nor coordinate concurrency
     await resolved.dispose();
   });
 
@@ -70,6 +71,10 @@ describe("runtime: store selection", () => {
     expect(resolved.makeCoordinator).toBeDefined();
     const coordinator = resolved.makeCoordinator?.({ windowMs: 60_000, budgetPerWindow: 100 });
     expect(typeof coordinator?.lease).toBe("function");
+    // …and a fleet concurrency coordinator over the same raw client.
+    expect(resolved.makeConcurrencyCoordinator).toBeDefined();
+    const cc = resolved.makeConcurrencyCoordinator?.({ aggregate: "median" });
+    expect(typeof cc?.heartbeat).toBe("function");
     await resolved.dispose(); // disconnect the lazy (never-connected) client
   });
 
@@ -86,7 +91,11 @@ describe("runtime: store selection", () => {
     expect(resolved.makeCoordinator).toBeDefined();
     const coordinator = resolved.makeCoordinator?.({ windowMs: 60_000, budgetPerWindow: 100 });
     expect(typeof coordinator?.lease).toBe("function");
-    await resolved.dispose(); // end the lazy pool + stop the coordinator's background GC timer
+    // …and a fleet concurrency coordinator over the same pool.
+    expect(resolved.makeConcurrencyCoordinator).toBeDefined();
+    const cc = resolved.makeConcurrencyCoordinator?.({ aggregate: "median" });
+    expect(typeof cc?.heartbeat).toBe("function");
+    await resolved.dispose(); // end the lazy pool + stop the coordinators' background GC timers
   });
 
   it("rejects an explicit --store postgres with no --postgres-url", async () => {
@@ -110,6 +119,7 @@ describe("runtime: store selection", () => {
     expect(resolved.mode).toBe("dynamodb");
     expect(resolved.distributed).toBe(true);
     expect(resolved.makeCoordinator).toBeUndefined(); // dynamodb has no coordinator impl
+    expect(resolved.makeConcurrencyCoordinator).toBeUndefined(); // …nor a concurrency one
     await resolved.dispose(); // destroy the never-used client
   });
 

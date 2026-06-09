@@ -202,9 +202,38 @@ A granted `Admit` returns a `lease_id` the caller **must** `Release` when the wo
 `dropped: true` on a timeout/error so the adaptive limit contracts). If a client crashes without
 releasing, the server reclaims the slot once the lease TTL (default 2s) lapses without a heartbeat —
 the same crash-safety contract the core uses node↔coordinator, one layer out. `check`/`debit` on an
-admitter (and `admit` on a rate limiter / meter) return `UNIMPLEMENTED`. Single-instance today (each
-server is the concurrency authority for its own clients); a fleet-coordinated ceiling via the core's
-`distributedAdaptiveConcurrency` is the planned next step, reachable by the **same** client lifecycle.
+admitter (and `admit` on a rate limiter / meter) return `UNIMPLEMENTED`. A plain `concurrency` block is the
+in-process authority for one instance's own clients; for **one ceiling across the whole fleet**, use
+`distributedConcurrency` (next section) — reached by the **same** `Admit`/`Release`/`Heartbeat` lifecycle.
+
+### Fleet-coordinated concurrency (`distributedConcurrency`)
+
+`distributedConcurrency` is the **fleet-shared** face of `concurrency`: the same adaptive in-flight axis, but
+the ceiling is held across **every instance** on a shared store via the core's
+`distributedAdaptiveConcurrency`. Each node heartbeats its locally-inferred limit to a concurrency
+**coordinator** in the shared store; the coordinator folds the fleet's views into one `L_global` and hands
+each node its share — so `N` instances admit under **one** global ceiling, not `N ×` the per-instance one. It
+carries every `concurrency` tuning field (forwarded as each node's local guard) plus the coordinator knobs,
+and is served over the **same `Admit` RPC** (no client change, no wire change).
+
+```yaml
+version: 1
+limiters:
+  checkout:
+    distributedConcurrency:
+      minLimit: 4
+      maxLimit: 200        # ← ONE in-flight ceiling of 200 across the whole fleet, not 200 per instance
+      aggregate: median    # how the fleet folds nodes' limits (median | min); default median
+```
+
+Run it with `--redis` (or `--postgres`) and a **unique** `--node-id <id>` per process (or `TK_NODE_ID`;
+defaults to `host#pid`) — a node-id collision corrupts the fleet aggregate, so identity is mandatory. A
+coordinator store is required (`memory` / `dynamodb` cannot coordinate; the policy errors at load). The admit
+path stays **local and fast** — coordination rides an out-of-band heartbeat, not a per-request round-trip —
+and a partitioned node **self-fences** on lease expiry (`onCoordinatorOutage: "local-only"` trades the global
+bound for availability). The two concurrency leases never merge: the server's per-client `Admit` lease and
+the node↔coordinator heartbeat lease run independently. On shutdown the server `leave()`s the fleet so peers
+reclaim its share immediately.
 
 ## Watch it live — the terminal dashboard
 
@@ -267,6 +296,13 @@ endpoint: `GET /metrics` renders the live counters in Prometheus exposition form
 `GET /healthz` is a 200 liveness probe. These series are **aggregate and PII-free** (no per-key data — that
 lives only on the authed gRPC door), so the endpoint defaults to **loopback** and needs no auth;
 `--metrics-host 0.0.0.0` exposes it (with a warning). It needs the telemetry hub, so run with monitoring on.
+
+**gRPC health (`grpc.health.v1.Health`).** The standard gRPC health-checking service is served on the **same
+port** as the decision RPCs — **always on**, no auth (it reports only `SERVING` / `NOT_SERVING`, never traffic
+data) — so `grpc_health_probe`, Kubernetes gRPC liveness/readiness probes, and service meshes work out of the
+box. `Check` returns `SERVING` for the overall server (`""`) and each served service (`throttlekit.v1.RateLimiter`,
+and `throttlekit.v1.Monitor` when the Monitor door is on), `NOT_FOUND` for an unknown one; `Watch` streams the
+current status. (Its proto is the vendored upstream standard, kept outside the additive-only `wire/` contract.)
 
 ## Decision capture (experimental, opt-in, default-OFF)
 

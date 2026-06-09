@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+// The standard gRPC health-checking service (grpc.health.v1.Health), vendored verbatim from
+// github.com/grpc/grpc-proto so off-the-shelf probes — `grpc_health_probe`, Kubernetes gRPC
+// liveness/readiness probes, service meshes — work against throttlekit-server out of the box.
+//
+// It is deliberately kept OUTSIDE `wire/` (and loaded from its own proto-loader pass): the additive-only
+// `buf breaking` gate guards the `throttlekit.v1` contract, and must not police this third-party standard.
+// ThrottleKit adds nothing to it — the server only implements `Check`/`Watch` over its own service set.
+package grpc.health.v1;
+
+message HealthCheckRequest {
+  string service = 1;
+}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3; // Used only by the Watch method.
+  }
+  ServingStatus status = 1;
+}
+
+service Health {
+  // If the requested service is unknown, the call fails with status NOT_FOUND.
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Performs a watch for the serving status of the requested service. The server will immediately send back
+  // a message indicating the current serving status, then send a new message whenever the status changes.
+  rpc Watch(HealthCheckRequest) returns (stream HealthCheckResponse);
+}

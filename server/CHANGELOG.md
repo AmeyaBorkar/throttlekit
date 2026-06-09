@@ -9,6 +9,28 @@ conformance-tested against the golden vectors).
 
 ### Added
 
+- **Fleet-coordinated concurrency (`distributedConcurrency`).** A new policy block — the **fleet-shared** face
+  of `concurrency` — that holds **one in-flight ceiling across every instance** on a shared store via the
+  core's `distributedAdaptiveConcurrency`, served over the **same `Admit` RPC** (no client change, **no wire
+  change**). Each node heartbeats its locally-inferred limit to a concurrency coordinator; the coordinator
+  folds the fleet's views into one `L_global` and hands each node its share, so `N` instances admit under one
+  ceiling, not `N ×` the per-instance one. Built on the published core (no core release) — `createStore` now
+  exposes a concurrency-coordinator factory (`RedisConcurrencyCoordinator` / `PostgresConcurrencyCoordinator`)
+  over the same client/pool, closed on dispose; `memory` / `dynamodb` cannot coordinate (the policy errors at
+  load). Requires a **unique** `--node-id` per process (or `TK_NODE_ID`; defaults to `host#pid`) — a collision
+  corrupts the fleet aggregate, so identity is mandatory. The admit path stays local (coordination is an
+  out-of-band heartbeat, not a per-request round-trip); a partitioned node self-fences on lease expiry. The
+  service gained an optional `close()` that stops the guards' heartbeat timers and `leave()`s the fleet on
+  shutdown — the per-client `Admit` lease and the node↔coordinator heartbeat lease stay separate. `check` /
+  `debit` on it return `UNIMPLEMENTED`. See the README's *Fleet-coordinated concurrency* section.
+- **gRPC health (`grpc.health.v1.Health`).** The standard gRPC health-checking service, served on the **same
+  port** as the decision RPCs — **always on**, no auth (it reports only `SERVING` / `NOT_SERVING`, never
+  traffic data) — so `grpc_health_probe`, Kubernetes gRPC liveness/readiness probes, and service meshes work
+  out of the box. `Check` returns `SERVING` for the overall server (`""`) and each served service
+  (`throttlekit.v1.RateLimiter`, plus `throttlekit.v1.Monitor` when its door is on) and `NOT_FOUND` for an
+  unknown one; `Watch` streams the current status. Its proto is the **vendored upstream standard**, kept
+  outside the buf-gated `wire/` contract (so it is not policed as a ThrottleKit surface) — no `throttlekit.v1`
+  wire change. Completes the Monitor door's probe surface.
 - **Programmable Monitor door (`throttlekit.v1.Monitor`).** A new **read-only** gRPC service — the same
   operational state the `--tui` dashboard renders, readable remotely from any language. `GetSnapshot` returns
   a typed envelope (per-policy `allowed`/`denied`/`limit`/latency + top keys, concurrency-guard health, the

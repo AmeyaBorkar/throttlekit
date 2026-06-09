@@ -9,6 +9,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 
 import type { FailMode } from "throttlekit";
 
@@ -46,6 +47,7 @@ interface Args {
   dynamodbPrefix?: string;
   dynamodbCreateTable?: boolean;
   region?: string;
+  nodeId?: string;
   tlsCert?: string;
   tlsKey?: string;
   tlsCa?: string;
@@ -131,6 +133,9 @@ function parseArgs(argv: string[]): Args {
       case "--region":
         args.region = argv[++i];
         break;
+      case "--node-id":
+        args.nodeId = argv[++i];
+        break;
       case "--tls-cert":
         args.tlsCert = argv[++i];
         break;
@@ -187,6 +192,7 @@ Options:
       --dynamodb-prefix <p>     key prefix for the shared DynamoDB store
       --dynamodb-create-table   create the table if absent (dev convenience), then wait for it
       --region <id>       this instance's region for federated: policies (or TK_REGION; default "default")
+      --node-id <id>      unique per-process id for distributedConcurrency: policies (or TK_NODE_ID; default host#pid)
       --tls-cert <path>   PEM server certificate  ┐ enable TLS
       --tls-key <path>    PEM server private key   ┘
       --tls-ca <path>     PEM CA bundle ⇒ require + verify client certs (mTLS)
@@ -336,7 +342,7 @@ async function main(): Promise<void> {
   }
 
   const text = readFileSync(args.config, "utf8");
-  const { store, mode, dispose, makeCoordinator } = await createStore({
+  const { store, mode, dispose, makeCoordinator, makeConcurrencyCoordinator } = await createStore({
     store: args.store,
     redisUrl: args.redis,
     redisPrefix: args.redisPrefix,
@@ -352,10 +358,16 @@ async function main(): Promise<void> {
   // Region identity for `federated:` policies (a policy's own `region` overrides this); `makeCoordinator`
   // is how the config layer builds a cross-region coordinator over the shared store (redis/postgres only).
   const region = args.region ?? process.env.TK_REGION ?? "default";
+  // A UNIQUE-per-process id for distributedConcurrency: policies — a collision across instances corrupts the
+  // fleet aggregate. host:port is NOT unique across a fleet (every instance binds the same configured
+  // host:port), so default to host#pid; --node-id / TK_NODE_ID overrides (set it to the pod/task name).
+  const nodeId = args.nodeId ?? process.env.TK_NODE_ID ?? `${hostname()}#${process.pid}`;
   const loadOptions: ServerLoadOptions = {
     ...(store !== undefined ? { store } : {}),
     ...(makeCoordinator !== undefined ? { makeCoordinator } : {}),
+    ...(makeConcurrencyCoordinator !== undefined ? { makeConcurrencyCoordinator } : {}),
     region,
+    nodeId,
   };
 
   // `--tui` taps every policy into a telemetry hub for the live dashboard. A TUI owns the terminal, so it
@@ -495,6 +507,9 @@ async function main(): Promise<void> {
         return capture.flush.flushOnce().then(() => undefined); // a final drain on the way out
       })
       .then(() => running.close())
+      // Leave the concurrency fleet gracefully (stop heartbeats + `leave()`) WHILE the store is still up —
+      // dispose() below disconnects it. A no-op unless a distributedConcurrency: policy is configured (SC-16).
+      .then(() => service.close?.())
       .then(() => (metrics !== undefined ? metrics.close() : undefined))
       .then(() => dispose())
       .then(() => process.exit(0));

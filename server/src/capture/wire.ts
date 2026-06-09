@@ -112,6 +112,7 @@ export function wireCapture(
     limiters: sc.limiters,
     meters: sc.meters,
     admitters: sc.admitters,
+    guards: sc.guards, // so service.close() shuts down any distributed-concurrency guard timers (SC-16)
     fairLimiters: sc.fairness,
     fail,
   });

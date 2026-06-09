@@ -57,5 +57,6 @@ export function captureService(
     release: (leaseId, dropped) => inner.release(leaseId, dropped),
     heartbeat: (leaseIds): HeartbeatResult => inner.heartbeat(leaseIds),
     sweep: () => inner.sweep(),
+    close: () => inner.close?.() ?? Promise.resolve(), // forward fleet-guard shutdown (SC-16)
   };
 }

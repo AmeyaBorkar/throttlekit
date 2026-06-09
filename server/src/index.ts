@@ -24,6 +24,7 @@ export type {
 export { buildLimitersFromConfig, buildServiceConfig } from "./config.js";
 export type {
   ConcurrencyConfig,
+  DistributedConcurrencyConfig,
   MeterPolicy,
   ServerLimiterSpec,
   ServerLoadOptions,

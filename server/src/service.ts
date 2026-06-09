@@ -13,7 +13,15 @@
  */
 
 import { type Enforcer, ThrottleKitError, createEnforcer } from "throttlekit";
-import type { Clock, Decision, FailMode, Forecast, Limiter, UnifiedAdmitter } from "throttlekit";
+import type {
+  Clock,
+  ConcurrencyGuard,
+  Decision,
+  FailMode,
+  Forecast,
+  Limiter,
+  UnifiedAdmitter,
+} from "throttlekit";
 import type { WeightedFairEscrowLimiter } from "throttlekit/twotier";
 import {
   type MeterPolicy,
@@ -101,6 +109,13 @@ export interface RateLimiterServiceOptions {
    */
   admitters?: Record<string, UnifiedAdmitter>;
   /**
+   * The concurrency guards encapsulated by `admitters`, by policy name — held only so {@link
+   * RateLimiterService.close} can shut down the **distributed** ones (their node↔coordinator heartbeat
+   * timers + a graceful `leave()`); in-process guards have no `close()` and are skipped. Passing them is
+   * optional and never affects a decision (the admitter already owns the live guard, SC-16).
+   */
+  guards?: Record<string, ConcurrencyGuard>;
+  /**
    * Weighted-fair-escrow policies, each a prebuilt {@link WeightedFairEscrowLimiter}, served by `check`
    * with the request `key` as the tenant. A policy name is a limiter, meter, admitter, **or** a fair
    * limiter — they share one namespace.
@@ -169,6 +184,13 @@ export interface RateLimiterService {
    * the transport (e.g. {@link serve}); exposed so tests can drive reclaim deterministically with a clock.
    */
   sweep(): void;
+  /**
+   * Release any fleet resources the served policies hold — today, the heartbeat timers of
+   * `distributedConcurrency` guards (each is stopped and `leave()`s the coordinator so the fleet reclaims
+   * its share immediately rather than waiting out the lease TTL). Idempotent + never-throw; a no-op when no
+   * distributed policy is configured. Optional so a hand-built service / test mock need not implement it.
+   */
+  close?(): Promise<void>;
 }
 
 /** Synthesize the degenerate `Decision` returned when the store threw (no real decision exists). */
@@ -232,6 +254,9 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     { release(opts?: { dropped?: boolean }): void; expiresAt: number }
   >();
   let nextLeaseId = 0;
+  // Guards that may need shutdown (distributed ones have a `close()`; in-process ones don't). The same
+  // instances the admitters drive — closing them stops the heartbeat timers + leaves the fleet (SC-16).
+  const closeableGuards = Object.values(options.guards ?? {});
 
   /** Resolve a limiter for a consuming/introspection op; a meter/admitter policy can't serve these. */
   function resolveLimiter(policy: string, op: string): Enforcer {
@@ -393,6 +418,23 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
         }
       }
     },
+
+    async close(): Promise<void> {
+      // Shut down the distributed concurrency guards: stop each heartbeat timer + `leave()` the coordinator
+      // so peers reclaim this node's share now (not after the lease TTL). In-process guards have no close().
+      // Never-throw — a coordinator already unreachable just falls back to TTL reclaim — so shutdown drains.
+      await Promise.all(
+        closeableGuards.map(async (g) => {
+          const maybe = g as { close?: () => Promise<void> | void };
+          if (typeof maybe.close !== "function") return;
+          try {
+            await maybe.close();
+          } catch {
+            /* already down ⇒ the coordinator reclaims this node's share on lease expiry regardless */
+          }
+        }),
+      );
+    },
   };
 }
 
@@ -411,11 +453,12 @@ export function createRateLimiterServiceFromConfig(
   options: RateLimiterServiceConfigOptions = {},
 ): RateLimiterService {
   const { fail, leaseTtlMs, ...loadOptions } = options;
-  const { limiters, meters, admitters, fairness } = buildServiceConfig(text, loadOptions);
+  const { limiters, meters, admitters, guards, fairness } = buildServiceConfig(text, loadOptions);
   return createRateLimiterService({
     limiters,
     meters,
     admitters,
+    guards, // so service.close() can shut down any distributed-concurrency guard heartbeat timers (SC-16)
     fairLimiters: fairness,
     ...(fail !== undefined ? { fail } : {}),
     // The admitters' guards already got `clock` via loadOptions; the lease table needs it too so a

@@ -16,6 +16,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import type { Decision, Forecast } from "throttlekit";
 
+import { healthHandlers, loadHealthDefinition } from "./health.js";
 import type { LensHub } from "./monitor/hub.js";
 import { type MonitorAuth, monitorHandlers } from "./monitor/service.js";
 import {
@@ -248,6 +249,13 @@ export async function serve(options: ServeOptions): Promise<RunningServer> {
       options.monitor.secret !== undefined ? { secret: options.monitor.secret } : {};
     server.addService(monitor, monitorHandlers(options.monitor.hub, auth));
   }
+
+  // The standard gRPC health service, on the same port — available by default and universal (it reports
+  // only SERVING/NOT_SERVING, never traffic data, so it needs no auth and rides every serve path). Lets
+  // `grpc_health_probe` / k8s gRPC probes work out of the box. Its proto is vendored outside the buf gate.
+  const healthServices = new Set<string>(["throttlekit.v1.RateLimiter"]);
+  if (options.monitor !== undefined) healthServices.add("throttlekit.v1.Monitor");
+  server.addService(loadHealthDefinition(), healthHandlers(healthServices));
 
   const credentials = options.credentials ?? grpc.ServerCredentials.createInsecure();
   const boundPort = await new Promise<number>((resolvePort, reject) => {

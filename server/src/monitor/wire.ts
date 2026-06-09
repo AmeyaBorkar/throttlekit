@@ -83,6 +83,7 @@ export function wireMonitor(
     limiters: tappedLimiters,
     meters,
     admitters: tappedAdmitters,
+    guards, // the same guard instances the admitters drive — so service.close() can shut them down (SC-16)
     fairLimiters: fairness,
     fail,
   });
