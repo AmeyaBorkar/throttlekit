@@ -5,7 +5,14 @@ All notable changes to **throttlekit-server** are documented here. The format fo
 core's public, frozen API and versions independently of it (0.x maturity; the gRPC wire is frozen and
 conformance-tested against the golden vectors).
 
-## [Unreleased]
+## [0.3.0] — 2026-06-10
+
+The fleet + plan release: the four fleet-distributed features now reach any client over existing RPCs
+(`federated` / `federatedFairEscrow` over `Check`, `fleetBudget` over `Debit`, `distributedConcurrency` over
+`Admit`), a read-only **Monitor door** (+ Prometheus `/metrics` + gRPC health) makes the dashboard remotely
+readable, and **Policy Plans** lands a "terraform plan for limits" (the `policy plan` CLI + a `--tui` Plan tab).
+Tracks `throttlekit@^1.4.0`. No breaking changes; the gRPC decision RPCs are unchanged (Monitor/health are
+purely additive, buf-verified).
 
 ### Added
 
