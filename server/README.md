@@ -176,6 +176,33 @@ calendar-cadence quota; and a coordinator store is required (`memory` / `dynamod
 budget is the strategy's `limit`; `batch` (default 16) trades cross-region round-trips for some unused
 capacity under skew — which does not add overshoot under window-coupling, only affects utilization.
 
+## Cross-region fair escrow (`federatedFairEscrow`)
+
+`federatedFairEscrow` is the **cross-region** face of `fairEscrow`: the same weighted-fair split of one
+per-window budget across tenants, but the budget `L` is now **global across regions**. A store-backed region
+pool reserves each region a weighted-max-min slice of `L` (region weight = Σ its active tenants' weights), and
+each region splits its slice across its own tenants — so the fleet's total admits stay **≤ `L`** no matter how
+many region instances run. Served over the **same `Check` RPC** (the request key is the tenant; no client
+change, no wire change) — the fourth of four fleet-distributed features reachable over an existing RPC.
+
+```yaml
+version: 1
+limiters:
+  gateway:
+    federatedFairEscrow:
+      limit: 100000                       # the GLOBAL per-window budget, shared across regions
+      windowMs: 60000
+      weights: { team-a: 3, team-b: 1 }   # per-tenant weights (default 1)
+```
+
+Run it with `--redis` and `--region <id>` (or `TK_REGION`). Every region instance draws from one shared pool
+(keyed by the policy name), so `N` regions admit **≤ `L`** total — never `N × L`. **Constraints (enforced at
+load):** it needs `--redis` (the only backend with a cross-region pool today; `memory` / `postgres` /
+`dynamodb` error, pointing you at plain `fairEscrow:` for a single instance). The decision is the core's
+`federatedWeightedFairEscrow` over a `RedisRegionFairPool` (one oracle). The **Fairness** view + **Cost Room**
+light up for it exactly like `fairEscrow` — each showing **this region's** granted slice. `Peek` / `debit` /
+`admit` are `UNIMPLEMENTED`. Needs `throttlekit@^1.4.0`.
+
 ## Concurrency & unified admission (the in-flight axis)
 
 For limiting *concurrent* work — not a rate, but how many requests are in flight at once — a policy can
@@ -242,7 +269,7 @@ your terminal, alongside gRPC — no browser, no metrics backend:
 
 ```bash
 throttlekit-server --config .throttlekit.yaml --tui
-#  → gRPC on :50051  +  a live dashboard (q quit · 1-7/Tab switch · ↑↓ scroll · p pause · r what-if)
+#  → gRPC on :50051  +  a live dashboard (q quit · 1-8/Tab switch · ↑↓ scroll · p pause · r what-if · P plan)
 ```
 
 It taps every limiter and unified admitter into an in-process hub (synchronous, exception-swallowing, O(1)
@@ -251,13 +278,14 @@ attribution**: for a unified policy, *which* of rate / concurrency / cost (or th
 throttling each key right now. It works for **every** policy — a plain `gcra` limiter gets the board and the
 "why throttled" attribution by policy + key; the axis lane lights up for unified admitters.
 
-The dashboard is organized into **seven views** — press `1`–`7` or `Tab` / `Shift-Tab` to switch:
+The dashboard is organized into **eight views** — press `1`–`8` or `Tab` / `Shift-Tab` to switch:
 **Overview**, **Latency** (avg / p50 / p99 / max admit-path latency), **Fairness** (per-tenant
 weighted-fair-escrow share), **Capacity** (per-key spendable + refill ETA), **Guarantee** (concurrency
 headroom to each guard's enforced ceiling + self-fence status), **Cost Room** (per-tenant cost-axis
-burn-down for a `fairEscrow` policy), and **Replay** (deterministic what-if — see below). Fairness +
-Cost Room light up for a `fairEscrow` policy (served by `check`, the key being the tenant); Guarantee lights
-up for any `concurrency` policy (the admitter's guard is surfaced to the dashboard).
+burn-down for a `fairEscrow` policy), **Replay** (deterministic what-if), and **Plan** (a whole-config
+"terraform plan for limits" — see *Policy Plans* below). Fairness + Cost Room light up for a `fairEscrow`
+(or `federatedFairEscrow`) policy (served by `check`, the key being the tenant); Guarantee lights up for any
+`concurrency` policy (the admitter's guard is surfaced to the dashboard).
 
 A TUI owns the terminal, so it is **opt-in** and needs an interactive TTY (a non-TTY warns and serves
 without it). For **headless / production** monitoring, emit OpenTelemetry → Grafana, or read the same
@@ -380,6 +408,38 @@ traffic shape** — *not* a replay of production's exact decisions (a Redis-back
 decides differently from the cold shadow). Keys are redacted before they enter a shadow. Replay is a `--tui`
 feature (the what-if is a keybind); configuring `replay:` without `--tui` warns. It is **distinct from
 capture** above: capture is the durable, forensic record; replay is the in-memory, deterministic what-if.
+
+## Policy Plans — a "terraform plan" for your limits (experimental)
+
+What-If Replay answers *"what would this change flip?"* for one policy, live. **Policy Plans** answers it for
+your **whole config**, as a CI-gateable artifact: replay your **recorded** traffic against a **candidate**
+config and read the exact per-policy allow↔deny diff **before** you deploy.
+
+```bash
+# diff a candidate config against the current one over recorded traffic
+throttlekit-server policy plan \
+  --config .throttlekit.yaml --candidate candidate.yaml \
+  --corpus traffic.json            # or --from-capture to read the durable capture store
+
+# gate it in CI — non-zero exit if the change is too big
+throttlekit-server policy plan -c current.yaml --candidate candidate.yaml --from-capture \
+  --credential "$TK_CAP" --max-allow-deny 0 --require-replayable
+```
+
+The corpus is either a **trace JSON file** (e.g. assembled from `capture export`) or the server's **durable
+capture store** (`--from-capture`, read through the same fail-closed + audited path as `capture` — every
+leaf-rate segment decrypted, projected, and audited). The plan covers **leaf-rate** policies; every non-rate
+axis (cost meter / concurrency / two-tier / escrow / federated / `federatedFairEscrow`) is reported
+`not-replayable` ("observe live via attribution"), never scored as a fabricated zero. `--json` emits the
+machine-readable Plan; the `--max-allow-deny` / `--max-deny-allow` / `--max-flips` / `--max-keys` /
+`--require-replayable` gate exits non-zero past the predicted blast radius. The diff baseline is the current
+policy **cold-replayed over your arrival timing** — not a warm-production comparison (a cold replay can't
+reproduce those exact decisions).
+
+You can also run a whole-config plan **live in the `--tui`**: start with `--plan-candidate <config>` (plus an
+enabled `replay:` block for the corpus), open the **Plan** tab (`8`), and press **`P`** to diff the candidate
+against the running config over the shadow-recorded traffic. Built on the published core's `throttlekit/policy`
+(`^1.4.0`); no wire change.
 
 ## Embed it (Node)
 

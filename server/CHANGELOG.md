@@ -9,6 +9,34 @@ conformance-tested against the golden vectors).
 
 ### Added
 
+- **Cross-region fair escrow (`federatedFairEscrow`).** A new policy block — the **cross-region** face of
+  `fairEscrow` — that splits one **global** per-window budget `L` weighted-fair across tenants while bounding
+  the fleet's total admits at `L` across **every region instance**, via the core's
+  `federatedWeightedFairEscrow` over a store-backed `RedisRegionFairPool`. Served over the **same `Check`
+  RPC** (the request key is the tenant; no client change, **no wire change**) — the 4th-of-4 fleet-distributed
+  features reachable from any client over an existing RPC. `createStore` now exposes a region-fair-pool
+  factory over the raw Redis client (`--redis` only today; `memory` / `postgres` / `dynamodb` error at load,
+  pointing at plain `fairEscrow:` for a single instance). The decision is the core's (one oracle); the
+  federated limiter's richer cross-region stats are adapted to the shape the Fairness view + Cost Room already
+  read, so monitoring is unchanged. Built on the published core (`throttlekit@^1.4.0`); `debit` / `admit`
+  return `UNIMPLEMENTED`. See the README's *Cross-region fair escrow* section.
+- **`policy plan` — a "terraform plan" for your limits.** A new fail-closed, audited subcommand that replays
+  your **recorded** traffic against a **candidate** config and prints the exact per-policy allow↔deny diff
+  **before** you deploy: `throttlekit-server policy plan --config <current> --candidate <path>
+  (--corpus <file> | --from-capture) [gate]`. Covers **leaf-rate** policies; every non-rate axis (cost meter /
+  concurrency / two-tier / escrow / federated / `federatedFairEscrow`) is reported `not-replayable` ("observe
+  live via attribution"), never scored as a fabricated zero. The corpus is either a trace JSON file or the
+  server's **durable capture store** — read through the existing **fail-closed + audited** capture CLI (each
+  leaf-rate segment decrypted, projected, and audited). The `--max-allow-deny` / `--max-deny-allow` /
+  `--max-flips` / `--max-keys` / `--require-replayable` gate exits non-zero when the predicted blast radius is
+  exceeded (drop it into CI); `--json` emits the machine-readable Plan artifact. The diff baseline is the
+  current policy **cold-replayed over your arrival timing** — not a warm-production comparison (a cold replay
+  can't reproduce those). Built on the published core's `throttlekit/policy` (`^1.4.0`); **no wire change**.
+- **`--tui` Plan tab.** A whole-config Plan in the live dashboard: start with `--plan-candidate <config>` and
+  press `P` to diff the candidate against the running config over the **live deterministic-capture shadow**
+  corpus (the same shadows the Replay tab records), reading the per-policy allow↔deny ledger + honest states
+  without leaving the terminal. Off ⇒ an honest placeholder (no candidate, or no `replay:` block). Reuses the
+  `policy plan` engine off the decision path; **no wire change**.
 - **Fleet-coordinated concurrency (`distributedConcurrency`).** A new policy block — the **fleet-shared** face
   of `concurrency` — that holds **one in-flight ceiling across every instance** on a shared store via the
   core's `distributedAdaptiveConcurrency`, served over the **same `Admit` RPC** (no client change, **no wire
