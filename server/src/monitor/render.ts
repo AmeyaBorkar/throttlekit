@@ -29,7 +29,8 @@ export type TabId =
   | "capacity"
   | "guarantee"
   | "cost"
-  | "replay";
+  | "replay"
+  | "plan";
 
 /**
  * The tabs in display + cycle order. Exported so the shell (`tui.ts`) maps number keys / Tab to them
@@ -44,6 +45,7 @@ export const TABS: readonly { readonly id: TabId; readonly label: string }[] = [
   { id: "guarantee", label: "Guarantee" },
   { id: "cost", label: "Cost Room" },
   { id: "replay", label: "Replay" },
+  { id: "plan", label: "Plan" },
 ];
 
 /** Live view state owned by the shell and threaded through each render. */
@@ -762,6 +764,110 @@ function replayBody(snap: LensSnapshot, cols: number): Line[] {
 }
 
 /**
+ * The Plan view (#312): a whole-config "terraform plan for limits" run on demand (the `P` key) against the
+ * LIVE shadow corpus — the current running config vs the operator's `--plan-candidate`. Per policy it shows
+ * the candidate-vs-current allow↔deny flip ledger when it replayed, or the honest state (no traffic / not
+ * replayable / refused). The footer carries the load-bearing non-claim: the diff is candidate-vs-the-current-
+ * cold-baseline over THIS traffic, not a replay of production's exact decisions. Pure projection over
+ * `snap.plan`; the plan ran in the shell off the decision path. Off ⇒ an honest placeholder, never a faked panel.
+ */
+function planBody(snap: LensSnapshot, cols: number): Line[] {
+  const p = snap.plan;
+  const header = sectionHeader("PLAN  ·  whole-config what-if", cols);
+  if (p === undefined || !p.enabled) {
+    const why =
+      p?.off === "no-candidate"
+        ? "no candidate — start the server with --plan-candidate <config> to diff a proposed config"
+        : "deterministic capture off — add a `replay:` block to record, and --plan-candidate <config>";
+    return [
+      header,
+      BLANK,
+      [seg(`  (${why})`, "dim")],
+      [
+        seg(
+          `  a terraform-plan for limits: candidate vs current over recorded traffic — ${DOCS_URL}`,
+          "gray",
+        ),
+      ],
+    ];
+  }
+
+  const out: Line[] = [header];
+  out.push([seg("  candidate  ", "dim"), seg(p.candidateLabel ?? "(configured)", "bold")]);
+
+  const last = p.last;
+  if (last === undefined) {
+    out.push(BLANK, [
+      seg("  press ", "dim"),
+      seg("P", "bold"),
+      seg(" to plan the candidate over recorded traffic", "dim"),
+    ]);
+    return out;
+  }
+  if (last.error !== undefined) {
+    out.push(BLANK, [seg("  error  ", "bold"), seg(last.error, "red")]);
+    return out;
+  }
+
+  const ageSec = Math.round(Math.max(0, snap.meta.generatedAt - last.ranAt) / 1000);
+  out.push([
+    seg("  corpus", "dim"),
+    seg(
+      `   ${compact(last.corpusSteps)} arrival(s) across ${last.corpusPolicies} policy(ies)`,
+      "dim",
+    ),
+    seg(last.truncated ? "  (TRUNCATED — diff understates)" : "", "yellow"),
+  ]);
+  out.push([
+    seg("  summary", "bold"),
+    seg(`  ${last.allowToDeny} newly DENIED`, last.allowToDeny > 0 ? "yellow" : "green"),
+    seg(`, ${last.denyToAllow} newly ALLOWED`, "dim"),
+    seg(
+      ` across ${last.affectedKeys} key(s); ${last.replayable}/${last.policies} replayable`,
+      "dim",
+    ),
+  ]);
+  out.push(BLANK);
+
+  // Per-policy diff rows (the whole-config ledger).
+  out.push([
+    seg("  policy".padEnd(22), "dim"),
+    seg("allow→deny".padStart(12), "dim"),
+    seg("deny→allow".padStart(12), "dim"),
+    seg("arrivals".padStart(10), "dim"),
+  ]);
+  for (const d of last.diffs.slice(0, 8)) {
+    const name = `  ${d.policy}`;
+    const nameSeg = seg(name.length > 22 ? `${name.slice(0, 21)}…` : name.padEnd(22));
+    if (d.state === "ok" || d.state === "truncated") {
+      out.push([
+        nameSeg,
+        seg(String(d.allowToDeny).padStart(12), d.allowToDeny > 0 ? "yellow" : "dim"),
+        seg(String(d.denyToAllow).padStart(12), d.denyToAllow > 0 ? "cyan" : "dim"),
+        seg(compact(d.steps).padStart(10), "dim"),
+      ]);
+    } else {
+      const label =
+        d.state === "empty"
+          ? "no recorded traffic"
+          : d.state === "not-replayable"
+            ? "not replayable (observe live)"
+            : "refused";
+      out.push([nameSeg, seg(label.padStart(34), d.state === "empty" ? "dim" : "gray")]);
+    }
+  }
+  if (last.diffs.length > 8) out.push([seg(`  … +${last.diffs.length - 8} more`, "dim")]);
+
+  out.push(BLANK, [
+    seg(
+      `  candidate vs the current-cold baseline over THIS traffic (ran ${ageSec}s ago) — not production's exact decisions`,
+      "dim",
+    ),
+  ]);
+  return out;
+}
+
+/**
  * The Guarantee view: concurrency headroom to a known line — an OBSERVED-state readout, never a "the proof
  * is holding" needle. Per node it shows what this process sees now: each guard's inflight against its
  * **enforced** ceiling (`stats().limit` = min(share, local.limit), 0 when fenced), how many guards are
@@ -1011,6 +1117,8 @@ export function renderFrame(snap: LensSnapshot, opts: RenderOptions): string[] {
     content.push(...costRoomBody(snap, cols));
   } else if (opts.view.tab === "replay") {
     content.push(...replayBody(snap, cols));
+  } else if (opts.view.tab === "plan") {
+    content.push(...planBody(snap, cols));
   } else {
     content.push(...placeholderBody(opts.view.tab));
   }

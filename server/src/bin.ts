@@ -10,6 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { basename } from "node:path";
 
 import type { FailMode } from "throttlekit";
 import type { PlanBudget, TraceCorpus } from "throttlekit/policy";
@@ -59,6 +60,7 @@ interface Args {
   monitorSecret?: string;
   metricsPort?: number;
   metricsHost?: string;
+  planCandidate?: string;
   help: boolean;
 }
 
@@ -166,6 +168,9 @@ function parseArgs(argv: string[]): Args {
       case "--metrics-host":
         args.metricsHost = argv[++i];
         break;
+      case "--plan-candidate":
+        args.planCandidate = argv[++i];
+        break;
       default:
         throw new Error(`unknown argument: ${arg}`);
     }
@@ -204,6 +209,7 @@ Options:
       --monitor-secret <s>  secret to read Monitor beyond loopback (call metadata; or THROTTLEKIT_MONITOR_SECRET)
       --metrics-port <n>  serve Prometheus /metrics + /healthz on this HTTP port (needs monitoring on)
       --metrics-host <h>  bind the metrics port (default 127.0.0.1; aggregate + PII-free, set to expose)
+      --plan-candidate <p> candidate config for the --tui Plan tab (press P to diff it vs --config over recorded traffic; needs a replay: block)
   -h, --help              show this help
 
 Subcommands:
@@ -619,6 +625,11 @@ async function main(): Promise<void> {
   if (args.tui && !tui) {
     console.warn("warning: --tui needs an interactive terminal; serving without the dashboard.");
   }
+  if (args.planCandidate !== undefined && !tui) {
+    console.warn(
+      "warning: --plan-candidate drives the --tui Plan tab; it is ignored without --tui.",
+    );
+  }
   // The Monitor door is available by default (loopback-bound); `--monitor off` opts out.
   const monitorOn = args.monitor !== "off";
   let hub: LensHub | undefined;
@@ -762,10 +773,21 @@ async function main(): Promise<void> {
 
   if (tui && hub !== undefined) {
     // The dashboard owns the screen; its header carries the listening status, so don't log over it.
+    // --plan-candidate feeds the Plan tab: the candidate config diffed vs the running config (`text`) over
+    // the live shadow corpus on the `P` key. Reading it here fails loudly if the path is bad (an operator error).
+    const planOpt =
+      args.planCandidate !== undefined
+        ? {
+            current: text,
+            candidate: readFileSync(args.planCandidate, "utf8"),
+            candidateLabel: basename(args.planCandidate),
+          }
+        : undefined;
     tuiHandle = runTui(hub, {
       nodeId: `${args.host}:${args.port}`,
       onQuit: () => shutdown("quit"),
       ...(replay?.enabled ? { replay } : {}),
+      ...(planOpt !== undefined ? { plan: planOpt } : {}),
     });
   } else {
     const monitorTag =

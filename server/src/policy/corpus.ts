@@ -21,6 +21,7 @@ import { type TraceCorpus, corpusFromTraces } from "throttlekit/policy";
 import type { ReplayTrace } from "throttlekit/testkit";
 import type { CaptureCliDeps, CaptureExport, CaptureListRow } from "../capture/cli.js";
 import { runCaptureCli } from "../capture/cli.js";
+import type { Shadow } from "../replay/shadow.js";
 
 /**
  * Parse a corpus JSON file — a map of policy name → one trace or an array of traces (the `corpusFromTraces`
@@ -138,4 +139,39 @@ export async function corpusFromCapture(
     segments,
   }));
   return { ok: true, corpus: corpusFromTraces(traces), sources, skipped };
+}
+
+/** The outcome of {@link corpusFromShadow}: the corpus plus the policies that contributed nothing, and why. */
+export interface ShadowCorpusResult {
+  readonly corpus: TraceCorpus;
+  /** Shadowed policies with no recorded steps yet (drive traffic first) — reported, never faked into arrivals. */
+  readonly empty: readonly string[];
+  /** Shadowed policies whose shadow was poisoned (a redaction collision) — excluded; its trace is unreliable. */
+  readonly poisoned: readonly string[];
+}
+
+/**
+ * Build a corpus from the LIVE deterministic-capture shadows (#290) — one trace per shadowed leaf-rate
+ * policy — for the TUI Plan tab's whole-config plan over real recorded traffic. Each {@link Shadow}'s
+ * `trace()` is already a manual-clock, full-spec `ReplayTrace`, so it feeds {@link corpusFromTraces}
+ * directly (same type — no cast). A poisoned shadow is excluded (its trace can't be trusted); an empty
+ * shadow contributes nothing and is reported, so the plan never invents arrivals.
+ */
+export function corpusFromShadow(shadows: ReadonlyMap<string, Shadow>): ShadowCorpusResult {
+  const traces: Record<string, ReplayTrace[]> = {};
+  const empty: string[] = [];
+  const poisoned: string[] = [];
+  for (const [policy, shadow] of shadows) {
+    if (shadow.poisoned) {
+      poisoned.push(policy);
+      continue;
+    }
+    const t = shadow.trace();
+    if (t.steps.length === 0) {
+      empty.push(policy);
+      continue;
+    }
+    traces[policy] = [t];
+  }
+  return { corpus: corpusFromTraces(traces), empty, poisoned };
 }

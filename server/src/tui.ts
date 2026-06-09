@@ -10,9 +10,14 @@
 
 import type { LensHub } from "./monitor/hub.js";
 import { TABS, type TabId, type ViewState, renderFrame } from "./monitor/render.js";
-import type { LensReplaySnapshot, LensSnapshot } from "./monitor/types.js";
+import type { LensPlanSnapshot, LensReplaySnapshot, LensSnapshot } from "./monitor/types.js";
+import { corpusFromShadow } from "./policy/corpus.js";
+import { runPolicyPlan } from "./policy/plan.js";
 import { type ReplayDivergenceSnapshot, describeCandidate } from "./replay/whatif.js";
 import type { WiredReplay } from "./replay/wire.js";
+
+/** The last plan a `P` keypress produced, projected for {@link LensPlanSnapshot}. */
+type PlanLast = NonNullable<LensPlanSnapshot["last"]>;
 
 /** True only when both ends are a real interactive terminal (else the alt-screen / raw-mode dance fails). */
 export function canRunTui(): boolean {
@@ -37,6 +42,13 @@ export interface RunTuiOptions {
    * shows an honest "deterministic capture off" placeholder.
    */
   replay?: WiredReplay;
+  /**
+   * Whole-config Plan inputs (#312), when `--plan-candidate` is set: the current (running) + candidate config
+   * texts. The `P` key diffs the candidate against the current over the LIVE shadow corpus (from {@link
+   * replay}). Omit ⇒ the Plan tab shows an honest "no candidate" placeholder. Needs an enabled `replay:` block
+   * too (the shadows ARE the corpus); without it the tab shows "no shadows".
+   */
+  plan?: { current: string; candidate: string; candidateLabel?: string };
 }
 
 const ALT_ON = "\x1b[?1049h";
@@ -81,17 +93,82 @@ export function runTui(hub: LensHub, opts: RunTuiOptions): RunningTui {
       ...(lastReplay !== undefined ? { lastResult: lastReplay } : {}),
     };
   };
-  // The hub snapshot, augmented with the Replay panel (additive — absent when no replay is wired).
-  const snapshotWithReplay = (): LensSnapshot => {
+  // Whole-config Plan (#312): the `P` key diffs the candidate config vs the current over the LIVE shadow
+  // corpus. The Plan tab needs BOTH the shadows (corpus) and a --plan-candidate (the candidate config).
+  const planOpt = opts.plan;
+  let lastPlan: PlanLast | undefined;
+  /** Run a whole-config plan off the decision path; `undefined` when the Plan tab isn't fully wired. */
+  const runPlan = (): PlanLast | undefined => {
+    if (planOpt === undefined || replay === undefined || !replay.enabled) return undefined;
+    const ranAt = Date.now();
+    const { corpus } = corpusFromShadow(replay.shadows);
+    const result = runPolicyPlan({
+      currentConfig: planOpt.current,
+      candidateConfig: planOpt.candidate,
+      corpus,
+    });
+    if (!result.ok || result.plan === undefined) {
+      return {
+        ok: false,
+        ranAt,
+        corpusSteps: 0,
+        corpusPolicies: 0,
+        truncated: false,
+        allowToDeny: 0,
+        denyToAllow: 0,
+        affectedKeys: 0,
+        replayable: 0,
+        policies: 0,
+        diffs: [],
+        ...(result.error !== undefined ? { error: result.error } : {}),
+      };
+    }
+    const pl = result.plan;
+    return {
+      ok: true,
+      ranAt,
+      corpusSteps: pl.corpus.steps,
+      corpusPolicies: pl.corpus.policies,
+      truncated: pl.corpus.truncated,
+      allowToDeny: pl.summary.allowToDeny,
+      denyToAllow: pl.summary.denyToAllow,
+      affectedKeys: pl.summary.affectedKeys,
+      replayable: pl.summary.replayable,
+      policies: pl.summary.policies,
+      diffs: pl.diffs.map((d) => ({
+        policy: d.policy,
+        state: d.state,
+        allowToDeny: d.allowToDeny,
+        denyToAllow: d.denyToAllow,
+        steps: d.steps,
+      })),
+    };
+  };
+  const buildPlanSnapshot = (): LensPlanSnapshot => {
+    const haveShadows = replay?.enabled === true && replay.shadows.size > 0;
+    const enabled = planOpt !== undefined && haveShadows;
+    const snap: LensPlanSnapshot = { enabled };
+    if (!enabled) snap.off = planOpt === undefined ? "no-candidate" : "no-shadows";
+    if (planOpt?.candidateLabel !== undefined) snap.candidateLabel = planOpt.candidateLabel;
+    if (lastPlan !== undefined) snap.last = lastPlan;
+    return snap;
+  };
+
+  // The hub snapshot, augmented with the Replay + Plan panels (additive — each absent when not wired).
+  const composeSnapshot = (): LensSnapshot => {
     const base = hub.snapshot();
     const rs = buildReplaySnapshot();
-    return rs !== undefined ? { ...base, replay: rs } : base;
+    return {
+      ...base,
+      ...(rs !== undefined ? { replay: rs } : {}),
+      plan: buildPlanSnapshot(),
+    };
   };
-  let frozen = snapshotWithReplay();
+  let frozen = composeSnapshot();
 
   const paint = (): void => {
     if (stopped) return;
-    const snap = view.paused ? frozen : snapshotWithReplay();
+    const snap = view.paused ? frozen : composeSnapshot();
     if (!view.paused) {
       // Per-frame new denials = the sparkline's "activity" signal (resets cleanly each analytics window).
       let denied = 0;
@@ -166,7 +243,7 @@ export function runTui(hub: LensHub, opts: RunTuiOptions): RunningTui {
       goToTab(t.id);
     } else if (k === "p") {
       view.paused = !view.paused;
-      if (view.paused) frozen = snapshotWithReplay();
+      if (view.paused) frozen = composeSnapshot();
     } else if (k === "r") {
       // Run the configured what-if (off the decision path, over the shadow's isolated store) and show it on
       // the Replay tab. A no-op what-if (no replay/candidate wired) just navigates there — the tab explains
@@ -174,9 +251,17 @@ export function runTui(hub: LensHub, opts: RunTuiOptions): RunningTui {
       if (replay !== undefined) {
         const res = replay.runConfiguredWhatIf();
         if (res !== undefined) lastReplay = res;
-        if (view.paused) frozen = snapshotWithReplay();
+        if (view.paused) frozen = composeSnapshot();
       }
       goToTab("replay");
+    } else if (k === "P") {
+      // Run a WHOLE-CONFIG plan (the candidate vs the current over the live shadow corpus, off the decision
+      // path) and show it on the Plan tab. A no-op when the tab isn't fully wired — it then just navigates
+      // and the tab explains what to configure. Refresh the frozen snapshot if paused so the plan is visible.
+      const res = runPlan();
+      if (res !== undefined) lastPlan = res;
+      if (view.paused) frozen = composeSnapshot();
+      goToTab("plan");
     } else return;
     paint();
   };

@@ -252,6 +252,60 @@ export interface LensReplaySnapshot {
   lastResult?: ReplayDivergenceSnapshot;
 }
 
+/** One policy's row in a {@link LensPlanSnapshot} — the candidate-vs-current diff over the shadow corpus. */
+export interface LensPlanDiffRow {
+  /** The policy name. */
+  policy: string;
+  /** The honest per-policy outcome (mirrors the core `PolicyDiffState`): never a fabricated zero. */
+  state: "ok" | "empty" | "truncated" | "not-replayable" | "refused";
+  /** Requests the current policy admitted that the candidate would deny (the tightening blast radius). */
+  allowToDeny: number;
+  /** Requests the current policy denied that the candidate would admit (the loosening). */
+  denyToAllow: number;
+  /** Arrivals replayed for this policy. */
+  steps: number;
+}
+
+/**
+ * The **Plan** panel (#312): a whole-config "terraform plan for limits" run on demand against the LIVE
+ * shadow corpus — the current running config vs an operator-supplied candidate (`--plan-candidate`).
+ * Optional + additive on {@link LensSnapshot.plan}; the shell builds it from the wired shadows + the latest
+ * `P`-triggered plan. Absent unless the Plan tab is reachable, so existing consumers are untouched. The
+ * diff baseline is the current policy cold-replayed over THIS traffic — not production's exact decisions.
+ */
+export interface LensPlanSnapshot {
+  /** Whether the Plan tab can run: deterministic-capture shadows AND a `--plan-candidate` config are wired. */
+  enabled: boolean;
+  /** When disabled, why — `"no-candidate"` (no `--plan-candidate`) or `"no-shadows"` (no enabled `replay:`). */
+  off?: "no-candidate" | "no-shadows";
+  /** A short label for the candidate config (its file basename), when one is configured. */
+  candidateLabel?: string;
+  /** The most recent plan (from the `P` keybind), if one has been run this session. */
+  last?: {
+    /** True iff the plan built cleanly (the TUI sets no budget, so this is false only on a bad candidate). */
+    ok: boolean;
+    /** Epoch-ms the plan ran — the renderer derives "ran Ns ago" against `meta.generatedAt`. */
+    ranAt: number;
+    /** Total recorded arrivals across all shadowed policies. */
+    corpusSteps: number;
+    /** How many policies the corpus covered. */
+    corpusPolicies: number;
+    /** Any shadow hit its cap — the diff then understates (honest flag). */
+    truncated: boolean;
+    /** Fleet-wide flip totals (summed across policies). */
+    allowToDeny: number;
+    denyToAllow: number;
+    affectedKeys: number;
+    /** Policies that produced a ledger (`ok`/`truncated`) out of the total in the candidate set. */
+    replayable: number;
+    policies: number;
+    /** Per-policy diff rows (bounded by the renderer). */
+    diffs: readonly LensPlanDiffRow[];
+    /** A build error (e.g. a malformed candidate config) — rendered honestly instead of a faked plan. */
+    error?: string;
+  };
+}
+
 /** The full snapshot the hub produces each frame; the TUI renders it. */
 export interface LensSnapshot {
   meta: LensMeta;
@@ -271,4 +325,9 @@ export interface LensSnapshot {
    * absent unless the shell wires an enabled `replay:` block, so older consumers ignore it.
    */
   replay?: LensReplaySnapshot;
+  /**
+   * The Plan panel — a whole-config policy plan over the shadow corpus (#312). Optional + additive: absent
+   * unless the shell wires the Plan tab (shadows + a `--plan-candidate` config), so older consumers ignore it.
+   */
+  plan?: LensPlanSnapshot;
 }
