@@ -33,8 +33,14 @@ export type {
  * (via a shared cross-region `regionFairPool` — a WFE over regions) into a GLOBAL weighted-max-min
  * guarantee. Design + composition theorem (T-FED-1..3): `research/gale/PILLAR4-fairness.md`.
  */
-export { federatedWeightedFairEscrow, regionFairPool } from "./federated-weighted-fair-escrow";
+export {
+  federatedWeightedFairEscrow,
+  isAsyncRegionFairPool,
+  regionFairPool,
+  testRegionFairPool,
+} from "./federated-weighted-fair-escrow";
 export type {
+  AsyncRegionFairPool,
   FederatedWeightedFairEscrowLimiter,
   FederatedWeightedFairEscrowOptions,
   FederatedWeightedFairEscrowStats,

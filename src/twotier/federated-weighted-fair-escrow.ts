@@ -65,6 +65,7 @@
  */
 
 import { systemClock } from "../core/clock";
+import { ThrottleKitError } from "../core/errors";
 import type { Clock, Decision } from "../core/types";
 import { requireCost, requirePositive } from "../core/validate";
 import type { Region } from "../federation/types";
@@ -206,6 +207,71 @@ export function regionFairPool(options: RegionFairPoolOptions): RegionFairPool {
   };
 }
 
+// ───────────────────── store-backed cross-region pool (DR-FWFE-1) ───────────
+
+/**
+ * The **async** face of {@link RegionFairPool} — the same weighted-max-min reservation, but where the
+ * region→{weight,granted} state lives in a **shared store** so the pool is the single authority across
+ * **separate region processes** (the production "DR-FWFE-1" path: a Redis hash, the weighted analog of
+ * {@link RegionalEscrow}'s Lua). The grant arithmetic is identical to {@link regionFairPool}; only the
+ * transport differs (a round-trip per grant). Because every grant is a network call, the methods are
+ * `Promise`-returning — `federatedWeightedFairEscrow` consumes an async pool through `check()` (its
+ * `checkSync()` becomes unavailable, exactly as a store-backed two-tier limiter's does).
+ *
+ * The `isAsync: true` marker discriminates it from the synchronous in-process {@link RegionFairPool} at
+ * runtime without widening (and so breaking) that frozen interface.
+ */
+export interface AsyncRegionFairPool {
+  /** Discriminant: this pool's `grant`/`release` are asynchronous (a shared-store round-trip each). */
+  readonly isAsync: true;
+  /** Global budget `L`. */
+  readonly limit: number;
+  /** Window width in ms. */
+  readonly windowMs: number;
+  /** The pool's clock (regions couple their tenant windows to it). */
+  readonly clock: Clock;
+  /** Async {@link RegionFairPool.grant}: grant region `region` up to `wantTotal` total credits this window. */
+  grant(region: string, weight: number, wantTotal: number, now: number): Promise<number>;
+  /** Async {@link RegionFairPool.release}: drop a region from the active set. */
+  release(region: string, now: number): Promise<void>;
+  /** Async {@link RegionFairPool.stats}: read-only snapshot of the current window. */
+  stats(): Promise<RegionFairPoolStats>;
+}
+
+/** Narrow a pool to the async (store-backed) variant. */
+export function isAsyncRegionFairPool(
+  pool: RegionFairPool | AsyncRegionFairPool,
+): pool is AsyncRegionFairPool {
+  return (pool as { isAsync?: unknown }).isAsync === true;
+}
+
+/**
+ * In-memory **async** {@link RegionFairPool} for tests + a single-process async deployment — it simply
+ * wraps an in-process {@link regionFairPool} behind a `Promise`-returning surface, so its grants are
+ * **byte-identical to the synchronous pool** (it *is* the same arithmetic). That makes it the conformance
+ * bridge: a `federatedWeightedFairEscrow` over `testRegionFairPool` admits exactly what one over
+ * `regionFairPool` does, and N regions sharing **one** instance hold `Σ granted ≤ L` — the property a
+ * production {@link AsyncRegionFairPool} (e.g. `RedisRegionFairPool`) must replicate atomically in its store.
+ */
+export function testRegionFairPool(options: RegionFairPoolOptions): AsyncRegionFairPool {
+  const inner = regionFairPool(options);
+  return {
+    isAsync: true,
+    limit: inner.limit,
+    windowMs: inner.windowMs,
+    clock: inner.clock,
+    async grant(region: string, weight: number, wantTotal: number, now: number): Promise<number> {
+      return inner.grant(region, weight, wantTotal, now);
+    },
+    async release(region: string, now: number): Promise<void> {
+      inner.release(region, now);
+    },
+    async stats(): Promise<RegionFairPoolStats> {
+      return inner.stats();
+    },
+  };
+}
+
 // ─────────────────────────── per-region limiter (level 2) ──────────────────
 
 /** Options for {@link federatedWeightedFairEscrow}. */
@@ -213,10 +279,13 @@ export interface FederatedWeightedFairEscrowOptions {
   /** This region's identity. */
   region: Region;
   /**
-   * The shared cross-region {@link RegionFairPool} (the global budget authority). All regions drawing
-   * from one global budget `L` MUST share one pool instance. `limit`/`windowMs`/`clock` come from it.
+   * The shared cross-region pool (the global budget authority). All regions drawing from one global
+   * budget `L` MUST share one instance. `limit`/`windowMs`/`clock` come from it. A synchronous
+   * {@link RegionFairPool} (in-process, single arbiter) keeps `checkSync` available; an
+   * {@link AsyncRegionFairPool} (store-backed, multi-process — DR-FWFE-1) routes through `check()` and
+   * makes `checkSync` throw, exactly as a store-backed two-tier limiter does.
    */
-  pool: RegionFairPool;
+  pool: RegionFairPool | AsyncRegionFairPool;
   /**
    * Per-tenant weight `w_{t,r}` as seen in this region. For a region-local tenant, return its global
    * weight `w_t`. For a tenant active in MULTIPLE regions, return the demand-proportional SPLIT
@@ -281,6 +350,9 @@ export function federatedWeightedFairEscrow(
   if (pool == null || typeof pool.grant !== "function") {
     throw new TypeError("federatedWeightedFairEscrow: pool must be a RegionFairPool");
   }
+  // A store-backed pool grants over the network, so it routes through `check()` (its grant is awaited);
+  // an in-process pool keeps the synchronous `checkSync` fast path.
+  const isAsync = isAsyncRegionFairPool(pool);
   const region = options.region;
   const L = pool.limit;
   const windowMs = pool.windowMs;
@@ -427,7 +499,33 @@ export function federatedWeightedFairEscrow(
       }
       const need = Math.min(L, totalUsed + reserveOthers + cost);
       const before = regionBudget;
-      regionBudget = pool.grant(region, totalWeight, need, now);
+      regionBudget = (pool as RegionFairPool).grant(region, totalWeight, need, now);
+      if (regionBudget <= before) return; // pool capped us at our weighted-fair share
+    }
+  }
+
+  /**
+   * The async sibling of {@link ensureRegionBudget} for a store-backed {@link AsyncRegionFairPool}:
+   * identical lease arithmetic, but each pool grant is a `Promise` (a store round-trip) that is awaited.
+   * Only ever called on the serialized async `check` path, so the shared region/tenant state it reads and
+   * the budget it writes are not raced by a concurrent check.
+   */
+  async function ensureRegionBudgetAsync(
+    entry: TenantEntry,
+    cost: number,
+    now: number,
+  ): Promise<void> {
+    for (let iter = 0; iter < MAX_LEASE_ITERS; iter++) {
+      if (regionBudget >= L || wouldAdmit(entry, cost)) return;
+      const { totalWeight, totalUsed } = aggregate();
+      let reserveOthers = 0;
+      for (const t of tenants.values()) {
+        if (t === entry) continue;
+        reserveOthers += Math.max(0, guaranteedShare(t.weight, totalWeight) - t.used);
+      }
+      const need = Math.min(L, totalUsed + reserveOthers + cost);
+      const before = regionBudget;
+      regionBudget = await (pool as AsyncRegionFairPool).grant(region, totalWeight, need, now);
       if (regionBudget <= before) return; // pool capped us at our weighted-fair share
     }
   }
@@ -443,6 +541,11 @@ export function federatedWeightedFairEscrow(
   }
 
   function checkSync(tenant: string, cost = 1): Decision {
+    if (isAsync) {
+      throw new ThrottleKitError(
+        "federatedWeightedFairEscrow: checkSync is unavailable with an async (store-backed) pool; use check()",
+      );
+    }
     const w = validateInputs(tenant, cost);
     const now = clock.now();
     rollWindow(now);
@@ -457,15 +560,41 @@ export function federatedWeightedFairEscrow(
     return decide(entry, cost, now);
   }
 
+  // With a store-backed pool, `ensureRegionBudgetAsync` awaits a round-trip, so two concurrent checks
+  // could interleave the shared region/tenant state and double-count. Serialize checks on this limiter
+  // (each runs after the prior settles) so every ensure+decide pair stays atomic — the async analog of
+  // the in-process pool's synchronous atomicity. The store grant is the real cost, so per-region
+  // serialization trades negligible throughput for the Σ ≤ L safety bound.
+  let checkChain: Promise<unknown> = Promise.resolve();
+  function checkAsync(tenant: string, cost: number): Promise<Decision> {
+    const run = checkChain.then(async (): Promise<Decision> => {
+      const w = validateInputs(tenant, cost);
+      const now = clock.now();
+      rollWindow(now);
+      let entry = tenants.get(tenant);
+      if (entry === undefined) entry = bootstrapTenant(tenant, w);
+      else entry.weight = w;
+      await ensureRegionBudgetAsync(entry, cost, now);
+      return decide(entry, cost, now);
+    });
+    checkChain = run.catch(() => undefined); // keep the chain alive past a rejected check
+    return run;
+  }
+
   return {
     checkSync,
     async check(tenant: string, cost = 1): Promise<Decision> {
-      return checkSync(tenant, cost);
+      return isAsync ? checkAsync(tenant, cost) : checkSync(tenant, cost);
     },
     reset(tenant?: string): void {
       if (tenant === undefined) {
         const now = clock.now();
-        if (Number.isFinite(windowStart)) pool.release(region, now);
+        if (Number.isFinite(windowStart)) {
+          // Return this region's grant to the pool. The async pool's release is a round-trip; fire it
+          // best-effort (the window PEXPIRE reclaims the grant regardless) so `reset` stays synchronous.
+          if (isAsync) void (pool as AsyncRegionFairPool).release(region, now);
+          else (pool as RegionFairPool).release(region, now);
+        }
         windowStart = Number.NEGATIVE_INFINITY;
         regionBudget = 0;
         evictedUsed = 0;
