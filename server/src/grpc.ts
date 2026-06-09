@@ -16,6 +16,8 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import type { Decision, Forecast } from "throttlekit";
 
+import { type FleetAuth, fleetHandlers } from "./fleet/service.js";
+import type { FleetLeaseSource } from "./fleet/source.js";
 import { healthHandlers, loadHealthDefinition } from "./health.js";
 import type { LensHub } from "./monitor/hub.js";
 import { type MonitorAuth, monitorHandlers } from "./monitor/service.js";
@@ -39,10 +41,11 @@ export function resolveProtoPath(explicit?: string): string {
   throw new Error(`throttlekit.proto not found; looked in:\n  ${candidates.join("\n  ")}`);
 }
 
-/** Load the `throttlekit.v1` service definitions (RateLimiter + the additive read-only Monitor). */
+/** Load the `throttlekit.v1` service definitions (RateLimiter + the additive Monitor + Fleet doors). */
 function loadServiceDefinitions(protoPath: string): {
   rateLimiter: grpc.ServiceDefinition;
   monitor: grpc.ServiceDefinition | undefined;
+  fleet: grpc.ServiceDefinition | undefined;
 } {
   const packageDefinition = protoLoader.loadSync(protoPath, {
     keepCase: false, // camelCase accessors line up with the core Decision field names
@@ -55,12 +58,14 @@ function loadServiceDefinitions(protoPath: string): {
   const rateLimiter = loaded?.throttlekit?.v1?.RateLimiter;
   if (rateLimiter === undefined)
     throw new Error(`proto ${protoPath} does not define throttlekit.v1.RateLimiter`);
-  // Monitor is additive + optional: only required when the caller actually serves the Monitor door, so an
-  // older proto without it still serves RateLimiter. The serve() path validates its presence on demand.
+  // Monitor + Fleet are additive + optional: each is only required when the caller actually serves that
+  // door, so an older proto without it still serves RateLimiter. serve() validates presence on demand.
   const monitor = loaded?.throttlekit?.v1?.Monitor;
+  const fleet = loaded?.throttlekit?.v1?.Fleet;
   return {
     rateLimiter: rateLimiter.service as grpc.ServiceDefinition,
     monitor: monitor?.service as grpc.ServiceDefinition | undefined,
+    fleet: fleet?.service as grpc.ServiceDefinition | undefined,
   };
 }
 
@@ -204,6 +209,15 @@ export interface ServeOptions {
     secret?: string;
   };
   /**
+   * Serve the Tier-2 `Fleet.Reserve` door over the same port, leasing from these per-policy sources (one per
+   * `federated:` policy). Omit to not serve Fleet. `secret` gates non-loopback access — handing out budget is
+   * a poisoning vector (SC-15); without a secret the door is loopback-only.
+   */
+  fleet?: {
+    sources: Record<string, FleetLeaseSource>;
+    secret?: string;
+  };
+  /**
    * How often to run the admission-lease reclaim sweep (ms). Default 1000 (the core heartbeat cadence);
    * the interval is `unref`'d so it never keeps the process alive, and is cleared on {@link RunningServer.close}.
    */
@@ -235,7 +249,7 @@ export async function serve(options: ServeOptions): Promise<RunningServer> {
   const host = options.host ?? "0.0.0.0";
   const requestedPort = options.port ?? 50051;
   const protoPath = resolveProtoPath(options.protoPath);
-  const { rateLimiter, monitor } = loadServiceDefinitions(protoPath);
+  const { rateLimiter, monitor, fleet } = loadServiceDefinitions(protoPath);
 
   const server = new grpc.Server();
   server.addService(rateLimiter, rateLimiterHandlers(options.service));
@@ -249,12 +263,24 @@ export async function serve(options: ServeOptions): Promise<RunningServer> {
       options.monitor.secret !== undefined ? { secret: options.monitor.secret } : {};
     server.addService(monitor, monitorHandlers(options.monitor.hub, auth));
   }
+  // The additive Tier-2 Fleet lease door, on the same port. Loopback-only unless a fleet secret is set
+  // (handing out budget is a poisoning vector). Served only when there are leasable (federated:) policies.
+  if (options.fleet !== undefined) {
+    if (fleet === undefined)
+      throw new Error(
+        `proto ${protoPath} does not define throttlekit.v1.Fleet (needed to serve the Fleet door)`,
+      );
+    const auth: FleetAuth =
+      options.fleet.secret !== undefined ? { secret: options.fleet.secret } : {};
+    server.addService(fleet, fleetHandlers(options.fleet.sources, auth));
+  }
 
   // The standard gRPC health service, on the same port — available by default and universal (it reports
   // only SERVING/NOT_SERVING, never traffic data, so it needs no auth and rides every serve path). Lets
   // `grpc_health_probe` / k8s gRPC probes work out of the box. Its proto is vendored outside the buf gate.
   const healthServices = new Set<string>(["throttlekit.v1.RateLimiter"]);
   if (options.monitor !== undefined) healthServices.add("throttlekit.v1.Monitor");
+  if (options.fleet !== undefined) healthServices.add("throttlekit.v1.Fleet");
   server.addService(loadHealthDefinition(), healthHandlers(healthServices));
 
   const credentials = options.credentials ?? grpc.ServerCredentials.createInsecure();

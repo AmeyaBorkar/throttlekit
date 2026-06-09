@@ -275,3 +275,71 @@ service Monitor {
   // A live server-streamed denial feed (best-effort: rate-capped + backpressured; slow readers drop events).
   rpc Watch(WatchRequest) returns (stream WatchResponse);
 }
+
+// ── Fleet — the Tier-2 client-held lease door (ADDITIVE: a THIRD service on the same gRPC port; it never
+// touches the RateLimiter / Monitor messages above). For a high-throughput client, a per-request
+// Check/Debit round trip is the bottleneck; `Reserve` hands the client a CHUNK of a policy's global
+// per-window budget to spend locally, round-tripping only to refresh. The SERVER stays the one oracle — it
+// computes the grant SIZE via the policy's coordinator; the client may only subtract from the granted
+// balance and synthesize an allow (the `LeaseSpender` contract, pinned by the golden lease vectors). The
+// grant is window-coupled: valid only until `expiry_ms`, and the client discards the remainder at that
+// boundary, so the per-window global total stays bounded independent of how many clients lease.
+//
+// AUTH POSTURE (mirrors Monitor): handing out budget is a poisoning vector, so the door is loopback-only by
+// default; exposing it beyond loopback requires a fleet secret in call metadata (`x-fleet-secret`, or
+// `authorization: Bearer <secret>`). Pair the secret with TLS on an exposed port. ──
+
+// Which axis of a policy's budget a lease draws from. AXIS_UNSPECIFIED (the proto3 zero) is treated as RATE.
+enum Axis {
+  AXIS_UNSPECIFIED = 0;
+  AXIS_RATE = 1; // a windowed rate / quota budget (the v1 leasable axis)
+  AXIS_CONCURRENCY = 2; // in-flight slots — NOT leasable in v1 (Reserve returns UNIMPLEMENTED)
+  AXIS_TOKEN_BUDGET = 3; // a windowed token budget (leased identically to RATE — windowed credits)
+}
+
+// Who is leasing — identity + telemetry. `domain` selects WHICH budget within the policy (the lease key);
+// the rest is attribution the server MAY use for sizing / observability (advisory in v1).
+message Caller {
+  string domain = 1; // the budget key to lease (e.g. a tenant id); "" ⇒ the policy's whole budget
+  string client_id = 2; // a stable id for the leasing client (telemetry)
+  string region = 3; // the client's region (telemetry / future region-aware sizing)
+  int64 priority = 4; // relative priority hint (reserved; ignored in v1)
+}
+
+// Lease up to `wants` units of `policy`'s global per-window budget. `has`/`used` report the client's
+// current local balance + spend (advisory — the coordinator enforces the global bound regardless).
+message ReserveRequest {
+  string policy = 1; // a policy configured for fleet leasing (a `federated:` policy)
+  Caller caller = 2;
+  int64 wants = 3; // units requested; 0 ⇒ 1
+  int64 has = 4; // the client's current local credits (advisory)
+  int64 used = 5; // units the client has spent since its last refresh (advisory)
+  Axis axis = 6;
+}
+
+// A granted lease: spend `capacity` units locally until `expiry_ms`, then re-lease. A `capacity` of 0 is a
+// refusal (the global budget is spent) — the client treats it as a denial, retrying after `retry_after_ms`.
+message Lease {
+  int64 capacity = 1; // GRANTED units (>= 0; may be < wants — a partial grant; 0 = refused)
+  int64 expiry_ms = 2; // epoch-ms window boundary; the client discards leftover credits at this instant
+  int64 refresh_interval_ms = 3; // hint: re-lease around here (the time remaining to expiry_ms)
+  int64 safe_capacity = 4; // capacity safe to spend under client clock uncertainty (v1: = capacity)
+  int64 retry_after_ms = 5; // when capacity == 0: ms until the budget refreshes; else 0
+  int64 limit = 6; // the policy's global per-window ceiling (for the client's synthesized Decision)
+}
+
+message ReserveResponse {
+  Lease lease = 1;
+  // `owner_redirect` (a sharded-owner hint) implies a topology that does not exist — the tag + name are
+  // reserved so a future additive shard map can never collide with a client shipped today.
+  reserved 2 to 15;
+  reserved "owner_redirect";
+}
+
+// The Tier-2 client-held lease door. One unary RPC in v1 — a streaming refresh (`ReserveStream`) is
+// intentionally deferred: the client polls `refresh_interval_ms`; streaming can be added additively later.
+service Fleet {
+  // Lease a chunk of a policy's global per-window budget for local spend. The returned Lease's `capacity`
+  // is the GRANTED amount (the one-oracle line: the server sizes the grant; the client only spends it).
+  rpc Reserve(ReserveRequest) returns (ReserveResponse);
+}

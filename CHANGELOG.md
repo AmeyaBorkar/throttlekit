@@ -6,7 +6,17 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Tier-2 fleet leasing — `LeaseSpender`** (`throttlekit/twotier`, `@experimental`). The client-side spend
+  of a window-coupled lease: a high-throughput client leases a chunk of a global budget from the service's
+  `Fleet.Reserve` door and serves it locally, round-tripping only to **refresh** — collapsing the per-request
+  network hop to roughly one per batch. `LeaseSpender` is a **verbatim port** of the
+  `twoTier(leased, windowCoupled)` L1 spend (`applyLease` + `spend` + the window-coupled discard), so the
+  service stays the **one oracle** for the grant *size* and the client only spends what it is granted — it
+  never synthesizes a denial (it surfaces the server's verbatim). Proven **byte-identical** to the shipped
+  `twoTier` leased path (a conformance test drives both over a random timeline) and pinned by a new `lease`
+  **golden-vector suite** (`wire/vectors`) every polyglot port replays. No change to the frozen core.
 
 ## [1.4.0] — 2026-06-10
 

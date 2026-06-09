@@ -176,6 +176,30 @@ calendar-cadence quota; and a coordinator store is required (`memory` / `dynamod
 budget is the strategy's `limit`; `batch` (default 16) trades cross-region round-trips for some unused
 capacity under skew — which does not add overshoot under window-coupling, only affects utilization.
 
+## Tier-2 fleet leasing (`Fleet.Reserve` — lease a chunk, spend it locally)
+
+A per-request `Check`/`Debit` round trip is the bottleneck for a very high-throughput client. The **Fleet
+door** (`throttlekit.v1.Fleet` / `Reserve`) hands such a client a **chunk** of a `federated:` policy's global
+per-window budget to spend **locally**, so it round-trips only to **refresh** — not once per request:
+
+```
+Reserve { policy: "global-api", caller: { domain: "acme" }, wants: 200 }
+  → Lease { capacity: 200, expiry_ms, refresh_interval_ms, safe_capacity, retry_after_ms, limit }
+```
+
+The **server is the one oracle**: it computes the grant *size* via the policy's federation coordinator (a
+partial grant — `capacity` may be `< wants` — is legitimate; the grant is **window-coupled** and discarded at
+`expiry_ms`). The client spends it with the core `LeaseSpender` (`throttlekit/twotier`) — a verbatim port of
+the leased-L1 spend, pinned **byte-for-byte** by the golden lease vectors — and surfaces the server's denial
+when `capacity` is `0` (it never invents one). `caller.domain` selects which budget to lease (a tenant id);
+empty leases the policy as a whole.
+
+The door is **served automatically whenever a `federated:` policy is configured**, on the same gRPC port. It
+is **loopback-only by default** (handing out budget is a poisoning vector): set `--fleet-secret <s>` (or
+`THROTTLEKIT_FLEET_SECRET`) to use it from a remote peer (`x-fleet-secret` metadata, or
+`authorization: Bearer <s>`), paired with TLS. v1 leases the **rate** axis; `Reserve` returns `UNIMPLEMENTED`
+for the concurrency axis and `NOT_FOUND` for a policy that isn't leasable.
+
 ## Cross-region fair escrow (`federatedFairEscrow`)
 
 `federatedFairEscrow` is the **cross-region** face of `fairEscrow`: the same weighted-fair split of one

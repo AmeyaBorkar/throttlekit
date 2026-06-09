@@ -9,6 +9,7 @@
 
 import { type FailMode, type Limiter, type UnifiedAdmitter, systemClock } from "throttlekit";
 import { type ServerLoadOptions, buildServiceConfig } from "../config.js";
+import type { FleetLeaseSource } from "../fleet/source.js";
 import { type RateLimiterService, createRateLimiterService } from "../service.js";
 import { costRoomSource } from "./burn.js";
 import { type LensHub, createLensHub } from "./hub.js";
@@ -17,6 +18,8 @@ import { type LensHub, createLensHub } from "./hub.js";
 export interface TappedService {
   service: RateLimiterService;
   hub: LensHub;
+  /** Tier-2 fleet-lease sources (one per `federated:` policy) for the `Fleet.Reserve` door. */
+  fleetSources: Record<string, FleetLeaseSource>;
 }
 
 /**
@@ -31,10 +34,8 @@ export function wireMonitor(
   mode: string,
   nodeId?: string,
 ): TappedService {
-  const { limiters, meters, admitters, guards, fairness, costRooms } = buildServiceConfig(
-    configText,
-    loadOptions,
-  );
+  const { limiters, meters, admitters, guards, fairness, costRooms, fleetSources } =
+    buildServiceConfig(configText, loadOptions);
   // Keep the hub + cost-room sources on the same clock as the limiters (deterministic under an injected
   // clock in tests; the system clock in production).
   const clock = loadOptions.clock ?? systemClock;
@@ -87,5 +88,5 @@ export function wireMonitor(
     fairLimiters: fairness,
     fail,
   });
-  return { service, hub };
+  return { service, hub, fleetSources };
 }

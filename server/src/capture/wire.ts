@@ -15,11 +15,8 @@
 import type { FailMode } from "throttlekit";
 import { parseYaml } from "throttlekit/config";
 import { type ServerLoadOptions, buildServiceConfig } from "../config.js";
-import {
-  type RateLimiterService,
-  createRateLimiterService,
-  createRateLimiterServiceFromConfig,
-} from "../service.js";
+import type { FleetLeaseSource } from "../fleet/source.js";
+import { type RateLimiterService, createRateLimiterService } from "../service.js";
 import { type AuditLog, createAuditLog } from "./audit.js";
 import { resolveCaptureConfig } from "./config.js";
 import { type FlushLoop, createFlushLoop } from "./flush.js";
@@ -41,6 +38,8 @@ export interface WiredCapture {
   readonly service: RateLimiterService;
   readonly recorder: CaptureRecorder;
   readonly config: CaptureConfig;
+  /** Tier-2 fleet-lease sources (one per `federated:` policy) for the `Fleet.Reserve` door. */
+  readonly fleetSources: Record<string, FleetLeaseSource>;
   /** Present when a durable store is configured. */
   readonly store?: SegmentStore;
   /** Present when a durable store is configured (segments live under `durable.dir`). */
@@ -85,10 +84,22 @@ export function wireCapture(
   const recorder = createCaptureRecorder(config, { clockSource: "system" });
 
   if (!config.enabled) {
+    // Build the config once (equivalent to createRateLimiterServiceFromConfig) so the fleet-lease sources
+    // are available to serve the Fleet door even when capture is off (the default path).
+    const plain = buildServiceConfig(text, loadOptions);
     return {
-      service: createRateLimiterServiceFromConfig(text, { ...loadOptions, fail }),
+      service: createRateLimiterService({
+        limiters: plain.limiters,
+        meters: plain.meters,
+        admitters: plain.admitters,
+        guards: plain.guards,
+        fairLimiters: plain.fairness,
+        fail,
+        ...(loadOptions.clock !== undefined ? { clock: loadOptions.clock } : {}),
+      }),
       recorder,
       config,
+      fleetSources: plain.fleetSources,
     };
   }
 
@@ -118,13 +129,15 @@ export function wireCapture(
   });
   const service = captureService(inner, recorder);
 
-  if (config.durable === undefined) return { service, recorder, config };
+  if (config.durable === undefined)
+    return { service, recorder, config, fleetSources: sc.fleetSources };
 
   const store = createSegmentStore(config.durable, config.retention);
   return {
     service,
     recorder,
     config,
+    fleetSources: sc.fleetSources,
     store,
     audit: createAuditLog(auditPath(config.durable.dir)),
     flush: createFlushLoop(recorder, store),

@@ -22,6 +22,7 @@ import { tokenBucket } from "../../src/algorithms/token-bucket";
 import { ManualClock } from "../../src/core/clock";
 import { rateLimit } from "../../src/core/limiter";
 import type { Decision, Strategy } from "../../src/core/types";
+import { LeaseSpender } from "../../src/twotier/lease-spender";
 import { version } from "../../src/version";
 
 /** The five frozen `Decision` fields, in their canonical order — the reply every port must match. */
@@ -69,12 +70,57 @@ interface TokenBudgetSuite {
   ops: TokenBudgetOp[];
 }
 
+// ── Tier-2 fleet-lease suites ─────────────────────────────────────────────────────────────────────
+// The client-side, window-coupled spend of a leased budget — the `LeaseSpender`, a verbatim port of the
+// `twoTier(leased, windowCoupled)` L1 path. A suite scripts an interleaving of `grant` events (a
+// `Fleet.Reserve` response landing) and `spend` events (one local request); the oracle fills each spend's
+// outcome — a synthesized allow, or `needsRefresh` (out of local credits ⇒ the client must Reserve). A
+// denial is NOT modelled here: the client never synthesizes one (it surfaces the server's verbatim), so
+// the post-exhaustion deny + retryAfterMs is pinned by the server's `Fleet.Reserve` test, not these vectors.
+
+/** A granted lease landed: `capacity` units valid until the `expiresAt` window boundary (epoch-ms). */
+export interface LeaseGrantEvent {
+  op: "grant";
+  capacity: number;
+  expiresAt: number;
+}
+
+/** One local spend attempt of `cost` units at `now` (epoch-ms). */
+export interface LeaseSpendEvent {
+  op: "spend";
+  now: number;
+  cost: number;
+}
+
+type LeaseEvent = LeaseGrantEvent | LeaseSpendEvent;
+
+/** The oracle outcome of a spend: a synthesized allow (with its Decision), or a refresh signal (no Decision). */
+export type LeaseSpendVector =
+  | { needsRefresh: false; decision: DecisionVector }
+  | { needsRefresh: true };
+
+interface LeaseSuite {
+  primitive: "lease";
+  name: string;
+  /** The synthesized allow's `limit` (the strategy ceiling / global per-window budget). */
+  limit: number;
+  /** Fallback `resetAt` when no lease has been applied yet (rarely reached; see `LeaseSpender`). */
+  ttlMs: number;
+  /** Discard credits once their granting window rolls — the safe default the Tier-2 lease is built on. */
+  windowCoupled: boolean;
+  events: LeaseEvent[];
+}
+
 /** One op with the oracle-produced expected decision attached. */
 type EmittedOp<Op> = Op & { expect: DecisionVector };
 
+/** A spend event with its oracle-produced outcome attached; a grant event passes through unchanged. */
+export type EmittedLeaseEvent = LeaseGrantEvent | (LeaseSpendEvent & { expect: LeaseSpendVector });
+
 type EmittedSuite =
   | (Omit<RateLimitSuite, "ops"> & { ops: EmittedOp<RateLimitOp>[] })
-  | (Omit<TokenBudgetSuite, "ops"> & { ops: EmittedOp<TokenBudgetOp>[] });
+  | (Omit<TokenBudgetSuite, "ops"> & { ops: EmittedOp<TokenBudgetOp>[] })
+  | (Omit<LeaseSuite, "events"> & { events: EmittedLeaseEvent[] });
 
 export interface VectorDocument {
   /**
@@ -272,6 +318,112 @@ const TOKEN_BUDGET_SUITES: TokenBudgetSuite[] = [
   },
 ];
 
+const LEASE_SUITES: LeaseSuite[] = [
+  {
+    primitive: "lease",
+    name: "lease/spend-to-exhaustion",
+    // Serve a granted batch down to exactly 0 (overshoot Δ = 0 at the boundary), then signal a refresh.
+    limit: 5,
+    ttlMs: 1000,
+    windowCoupled: true,
+    events: [
+      { op: "grant", capacity: 5, expiresAt: 1000 },
+      { op: "spend", now: 0, cost: 1 }, // remaining 4
+      { op: "spend", now: 0, cost: 1 },
+      { op: "spend", now: 0, cost: 1 },
+      { op: "spend", now: 0, cost: 1 },
+      { op: "spend", now: 0, cost: 1 }, // exact exhaustion → remaining 0
+      { op: "spend", now: 0, cost: 1 }, // out of credits → needsRefresh
+    ],
+  },
+  {
+    primitive: "lease",
+    name: "lease/refresh-mid-window",
+    // A refresh arriving inside the same window tops credits back up and serving resumes.
+    limit: 3,
+    ttlMs: 1000,
+    windowCoupled: true,
+    events: [
+      { op: "grant", capacity: 3, expiresAt: 1000 },
+      { op: "spend", now: 0, cost: 1 },
+      { op: "spend", now: 0, cost: 1 },
+      { op: "spend", now: 0, cost: 1 }, // remaining 0
+      { op: "spend", now: 0, cost: 1 }, // needsRefresh
+      { op: "grant", capacity: 3, expiresAt: 1000 }, // same-window refresh
+      { op: "spend", now: 0, cost: 1 }, // remaining 2, resetAt still 1000
+      { op: "spend", now: 500, cost: 1 }, // remaining 1
+    ],
+  },
+  {
+    primitive: "lease",
+    name: "lease/window-coupled-discard",
+    // Once the granting window rolls, the remaining credits are DISCARDED (not carried) — the sole source
+    // of leased overshoot, removed. A fresh grant for the next window then serves.
+    limit: 5,
+    ttlMs: 1000,
+    windowCoupled: true,
+    events: [
+      { op: "grant", capacity: 5, expiresAt: 1000 },
+      { op: "spend", now: 0, cost: 2 }, // remaining 3
+      { op: "spend", now: 1000, cost: 1 }, // now >= expiry → discard the 3 → needsRefresh
+      { op: "grant", capacity: 5, expiresAt: 2000 }, // next window
+      { op: "spend", now: 1000, cost: 1 }, // remaining 4, resetAt 2000
+      { op: "spend", now: 2000, cost: 1 }, // now >= expiry → discard the 4 → needsRefresh
+    ],
+  },
+  {
+    primitive: "lease",
+    name: "lease/cost-gt-1-and-gt-capacity",
+    // cost > 1 spends in whole chunks; a cost that exceeds the local credits cannot be served from them
+    // (needsRefresh) — even right after a too-small grant — until a grant large enough lands.
+    limit: 100,
+    ttlMs: 1000,
+    windowCoupled: true,
+    events: [
+      { op: "grant", capacity: 10, expiresAt: 1000 },
+      { op: "spend", now: 0, cost: 4 }, // remaining 6
+      { op: "spend", now: 0, cost: 6 }, // remaining 0
+      { op: "spend", now: 0, cost: 1 }, // needsRefresh
+      { op: "grant", capacity: 5, expiresAt: 1000 }, // credits 5
+      { op: "spend", now: 0, cost: 8 }, // cost 8 > credits 5 → needsRefresh
+      { op: "grant", capacity: 10, expiresAt: 1000 }, // credits 15
+      { op: "spend", now: 0, cost: 8 }, // remaining 7
+      { op: "spend", now: 0, cost: 8 }, // credits 7 < 8 → needsRefresh
+    ],
+  },
+  {
+    primitive: "lease",
+    name: "lease/large-epoch",
+    // Realistic wall-clock epochs, where naive boundary math risks ULP/rounding surprises.
+    limit: 60,
+    ttlMs: 60_000,
+    windowCoupled: true,
+    events: [
+      { op: "grant", capacity: 10, expiresAt: 1_700_000_040_000 },
+      { op: "spend", now: 1_700_000_000_000, cost: 4 }, // remaining 6
+      { op: "spend", now: 1_700_000_040_000, cost: 1 }, // now >= expiry → discard → needsRefresh
+      { op: "grant", capacity: 10, expiresAt: 1_700_000_100_000 },
+      { op: "spend", now: 1_700_000_040_000, cost: 1 }, // remaining 9, resetAt 1_700_000_100_000
+    ],
+  },
+  {
+    primitive: "lease",
+    name: "lease/carry-over-when-not-coupled",
+    // The legacy contrast: with windowCoupled:false the credits CARRY across the boundary and the stale
+    // resetAt is retained until the next grant — pinned so the coupling toggle's effect can't drift.
+    limit: 5,
+    ttlMs: 1000,
+    windowCoupled: false,
+    events: [
+      { op: "grant", capacity: 5, expiresAt: 1000 },
+      { op: "spend", now: 0, cost: 2 }, // remaining 3, resetAt 1000
+      { op: "spend", now: 2000, cost: 1 }, // no discard → remaining 2, resetAt still 1000
+      { op: "spend", now: 2000, cost: 2 }, // remaining 0
+      { op: "spend", now: 2000, cost: 1 }, // needsRefresh
+    ],
+  },
+];
+
 // ── Oracle: run the inputs through the shipped Node core ────────────────────────────────────────
 
 function decisionVector(d: Decision): DecisionVector {
@@ -322,11 +474,32 @@ function runTokenBudgetSuite(suite: TokenBudgetSuite): EmittedOp<TokenBudgetOp>[
   });
 }
 
+/** Replay a lease suite through the {@link LeaseSpender} oracle, attaching each spend's outcome. */
+function runLeaseSuite(suite: LeaseSuite): EmittedLeaseEvent[] {
+  const spender = new LeaseSpender({
+    limit: suite.limit,
+    ttlMs: suite.ttlMs,
+    windowCoupled: suite.windowCoupled,
+  });
+  return suite.events.map((ev) => {
+    if (ev.op === "grant") {
+      spender.applyLease({ capacity: ev.capacity, expiresAt: ev.expiresAt });
+      return ev;
+    }
+    const r = spender.spend(ev.now, ev.cost);
+    const expect: LeaseSpendVector = r.needsRefresh
+      ? { needsRefresh: true }
+      : { needsRefresh: false, decision: decisionVector(r.decision) };
+    return { ...ev, expect };
+  });
+}
+
 /** Produce the full, oracle-filled vector document. Pure — safe to call from tests. */
 export function buildDocument(): VectorDocument {
   const suites: EmittedSuite[] = [
     ...RATE_LIMIT_SUITES.map((s) => ({ ...s, ops: runRateLimitSuite(s) })),
     ...TOKEN_BUDGET_SUITES.map((s) => ({ ...s, ops: runTokenBudgetSuite(s) })),
+    ...LEASE_SUITES.map((s) => ({ ...s, events: runLeaseSuite(s) })),
   ];
   return {
     contractVersion: "1",

@@ -5,6 +5,22 @@ All notable changes to **throttlekit-server** are documented here. The format fo
 core's public, frozen API and versions independently of it (0.x maturity; the gRPC wire is frozen and
 conformance-tested against the golden vectors).
 
+## [Unreleased]
+
+### Added
+
+- **Tier-2 Fleet lease door (`throttlekit.v1.Fleet` / `Reserve`).** A high-throughput client can now **lease**
+  a chunk of a `federated:` policy's global per-window budget and spend it locally (with the core
+  `LeaseSpender`), round-tripping only to refresh instead of once per request. The server computes the grant
+  **size** via the policy's federation coordinator — the **one oracle** — returning a partial, window-coupled
+  `Lease` (`capacity` / `expiry_ms` / `refresh_interval_ms` / `safe_capacity` / `retry_after_ms` / `limit`);
+  the client only spends it, byte-identically to the core's leased L1 (pinned by the golden lease vectors).
+  `Fleet` is a purely **additive** third service on the same gRPC port (buf-verified) and is **available by
+  default whenever a `federated:` policy is configured** — **loopback-only** until `--fleet-secret` (or
+  `THROTTLEKIT_FLEET_SECRET`) is set, since handing out budget is a poisoning vector. The `Axis` enum reserves
+  `concurrency` (returns `UNIMPLEMENTED` in v1) and `token_budget` for future axes. Tracks
+  `throttlekit@^1.4.0`. See the README's *Tier-2 fleet leasing* section.
+
 ## [0.3.0] — 2026-06-10
 
 The fleet + plan release: the four fleet-distributed features now reach any client over existing RPCs

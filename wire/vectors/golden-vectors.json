@@ -1,6 +1,6 @@
 {
   "contractVersion": "1",
-  "generatedFrom": "throttlekit@1.0.1",
+  "generatedFrom": "throttlekit@1.4.0",
   "frozen": false,
   "decisionFields": [
     "allowed",
@@ -915,6 +915,487 @@
             "remaining": 9,
             "resetAt": 3000,
             "retryAfterMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "lease",
+      "name": "lease/spend-to-exhaustion",
+      "limit": 5,
+      "ttlMs": 1000,
+      "windowCoupled": true,
+      "events": [
+        {
+          "op": "grant",
+          "capacity": 5,
+          "expiresAt": 1000
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 4,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 3,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 2,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 1,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 0,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": true
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "lease",
+      "name": "lease/refresh-mid-window",
+      "limit": 3,
+      "ttlMs": 1000,
+      "windowCoupled": true,
+      "events": [
+        {
+          "op": "grant",
+          "capacity": 3,
+          "expiresAt": 1000
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 3,
+              "remaining": 2,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 3,
+              "remaining": 1,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 3,
+              "remaining": 0,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": true
+          }
+        },
+        {
+          "op": "grant",
+          "capacity": 3,
+          "expiresAt": 1000
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 3,
+              "remaining": 2,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 500,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 3,
+              "remaining": 1,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "lease",
+      "name": "lease/window-coupled-discard",
+      "limit": 5,
+      "ttlMs": 1000,
+      "windowCoupled": true,
+      "events": [
+        {
+          "op": "grant",
+          "capacity": 5,
+          "expiresAt": 1000
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 2,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 3,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": true
+          }
+        },
+        {
+          "op": "grant",
+          "capacity": 5,
+          "expiresAt": 2000
+        },
+        {
+          "op": "spend",
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 4,
+              "resetAt": 2000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 2000,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": true
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "lease",
+      "name": "lease/cost-gt-1-and-gt-capacity",
+      "limit": 100,
+      "ttlMs": 1000,
+      "windowCoupled": true,
+      "events": [
+        {
+          "op": "grant",
+          "capacity": 10,
+          "expiresAt": 1000
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 4,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 100,
+              "remaining": 6,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 6,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 100,
+              "remaining": 0,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": true
+          }
+        },
+        {
+          "op": "grant",
+          "capacity": 5,
+          "expiresAt": 1000
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 8,
+          "expect": {
+            "needsRefresh": true
+          }
+        },
+        {
+          "op": "grant",
+          "capacity": 10,
+          "expiresAt": 1000
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 8,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 100,
+              "remaining": 7,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 8,
+          "expect": {
+            "needsRefresh": true
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "lease",
+      "name": "lease/large-epoch",
+      "limit": 60,
+      "ttlMs": 60000,
+      "windowCoupled": true,
+      "events": [
+        {
+          "op": "grant",
+          "capacity": 10,
+          "expiresAt": 1700000040000
+        },
+        {
+          "op": "spend",
+          "now": 1700000000000,
+          "cost": 4,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 60,
+              "remaining": 6,
+              "resetAt": 1700000040000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 1700000040000,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": true
+          }
+        },
+        {
+          "op": "grant",
+          "capacity": 10,
+          "expiresAt": 1700000100000
+        },
+        {
+          "op": "spend",
+          "now": 1700000040000,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 60,
+              "remaining": 9,
+              "resetAt": 1700000100000,
+              "retryAfterMs": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "primitive": "lease",
+      "name": "lease/carry-over-when-not-coupled",
+      "limit": 5,
+      "ttlMs": 1000,
+      "windowCoupled": false,
+      "events": [
+        {
+          "op": "grant",
+          "capacity": 5,
+          "expiresAt": 1000
+        },
+        {
+          "op": "spend",
+          "now": 0,
+          "cost": 2,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 3,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 2000,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 2,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 2000,
+          "cost": 2,
+          "expect": {
+            "needsRefresh": false,
+            "decision": {
+              "allowed": true,
+              "limit": 5,
+              "remaining": 0,
+              "resetAt": 1000,
+              "retryAfterMs": 0
+            }
+          }
+        },
+        {
+          "op": "spend",
+          "now": 2000,
+          "cost": 1,
+          "expect": {
+            "needsRefresh": true
           }
         }
       ]

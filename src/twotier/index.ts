@@ -57,6 +57,23 @@ export type {
 export { RedisRegionFairPool } from "./redis-region-fair-pool";
 export type { RedisRegionFairPoolOptions } from "./redis-region-fair-pool";
 
+/**
+ * `LeaseSpender` (Tier-2 fleet leasing) — the client-side, window-coupled spend of a leased budget: a
+ * verbatim port of the `twoTier(leased, windowCoupled)` L1 path. A high-throughput polyglot client leases
+ * a chunk of a global budget over the service's `Fleet.Reserve` door and serves it locally (one round trip
+ * per refresh, not per request); this synthesizes the allow while the service stays the *one oracle* for
+ * the grant size. Pinned by the golden lease vectors (`wire/vectors`).
+ */
+export { LeaseSpender } from "./lease-spender";
+export type {
+  LeaseDenied,
+  LeaseGrant,
+  LeaseSpend,
+  LeaseSpenderOptions,
+  ReserveFn,
+  ReserveResult,
+} from "./lease-spender";
+
 /** L1/L2 coordination mode. See docs and THROTTLEKIT.md §8. */
 export type TwoTierMode = "strict" | "cached-deny" | "leased";
 

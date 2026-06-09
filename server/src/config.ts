@@ -60,6 +60,7 @@ import {
   twoTier,
   weightedFairEscrow,
 } from "throttlekit/twotier";
+import { type FleetLeaseSource, makeFederatedFleetSource } from "./fleet/source.js";
 
 /** The optional `twoTier` block on a policy spec — turns a rate-limit policy into a two-tier limiter. */
 export interface TwoTierConfig {
@@ -363,6 +364,12 @@ export interface ServiceConfig {
   fairness: Record<string, WeightedFairEscrowLimiter>;
   /** Per-`fairEscrow`-policy Cost Room options (monitoring only); one entry per fairness policy. */
   costRooms: Record<string, CostRoomConfig>;
+  /**
+   * Tier-2 fleet-lease sources, one per `federated:` policy — the `Fleet.Reserve` door leases a chunk of a
+   * policy's global per-window budget from these for a client to spend locally (the same coordinator the
+   * policy's `check` path draws from, so both tiers share one global budget).
+   */
+  fleetSources: Record<string, FleetLeaseSource>;
 }
 
 /** What a {@link CoordinatorFactory} needs to build a federation coordinator sized to one federated policy. */
@@ -481,6 +488,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   const guards: Record<string, ConcurrencyGuard> = {};
   const fairness: Record<string, WeightedFairEscrowLimiter> = {};
   const costRooms: Record<string, CostRoomConfig> = {};
+  const fleetSources: Record<string, FleetLeaseSource> = {};
   const rateLimitOnly: Record<string, LimiterSpec> = {};
 
   for (const [name, rawSpec] of Object.entries(limitersIn)) {
@@ -508,7 +516,11 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
     } else if (spec != null && typeof spec === "object" && spec.fleetBudget !== undefined) {
       meters[name] = buildFleetMeter(name, spec, options, defaultPrefix);
     } else if (spec != null && typeof spec === "object" && spec.federated !== undefined) {
-      federatedLimiters[name] = buildFederated(name, spec, options);
+      // One coordinator builds both the Tier-1 limiter (served by `check`) and the Tier-2 fleet-lease source
+      // (served by `Fleet.Reserve`), so both tiers draw from one global per-window budget.
+      const fed = buildFederated(name, spec, options);
+      federatedLimiters[name] = fed.limiter;
+      fleetSources[name] = fed.fleetSource;
     } else if (spec != null && typeof spec === "object" && spec.fairEscrow !== undefined) {
       fairness[name] = buildFairEscrow(name, spec, options);
       costRooms[name] = resolveCostRoom(name, spec.fairEscrow as FairEscrowConfig);
@@ -551,6 +563,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
     guards,
     fairness,
     costRooms,
+    fleetSources,
   };
 }
 
@@ -721,7 +734,7 @@ function buildFederated(
   name: string,
   spec: ServerLimiterSpec,
   options: ServerLoadOptions,
-): Limiter {
+): { limiter: Limiter; fleetSource: FleetLeaseSource } {
   const fed = spec.federated as FederatedConfig;
   // Build the strategy via the core loader (the same indirection buildTwoTier uses) — `federated` and the
   // other server-only fields are ignored by the core's strategy builder.
@@ -750,13 +763,20 @@ function buildFederated(
   });
   const region = fed.region ?? options.region ?? "default";
   const clock = options.clock;
-  return federate({
+  const limiter = federate({
     strategy,
     coordinator,
     region,
     ...(fed.batch !== undefined ? { batch: fed.batch } : {}),
     ...(clock !== undefined ? { clock } : {}),
   });
+  // The Tier-2 fleet-lease source leases from the SAME coordinator (one global budget across both tiers).
+  const fleetSource = makeFederatedFleetSource(coordinator, {
+    windowMs,
+    limit: strategy.limit,
+    ...(clock !== undefined ? { clock } : {}),
+  });
+  return { limiter, fleetSource };
 }
 
 /**

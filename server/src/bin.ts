@@ -18,6 +18,7 @@ import type { PlanBudget, TraceCorpus } from "throttlekit/policy";
 import { runCaptureCli } from "./capture/cli.js";
 import { type WiredCapture, captureConfigFromText, wireCapture } from "./capture/wire.js";
 import type { ServerLoadOptions } from "./config.js";
+import type { FleetLeaseSource } from "./fleet/source.js";
 import { serve } from "./grpc.js";
 import type { LensHub } from "./monitor/hub.js";
 import { type RunningMetricsServer, startMetricsServer } from "./monitor/metrics.js";
@@ -58,6 +59,7 @@ interface Args {
   tui: boolean;
   monitor: "on" | "off";
   monitorSecret?: string;
+  fleetSecret?: string;
   metricsPort?: number;
   metricsHost?: string;
   planCandidate?: string;
@@ -162,6 +164,9 @@ function parseArgs(argv: string[]): Args {
       case "--monitor-secret":
         args.monitorSecret = argv[++i];
         break;
+      case "--fleet-secret":
+        args.fleetSecret = argv[++i];
+        break;
       case "--metrics-port":
         args.metricsPort = Number(argv[++i]);
         break;
@@ -207,6 +212,7 @@ Options:
       --tui               live terminal dashboard alongside gRPC (interactive TTY only; q to quit)
       --monitor on|off    read-only Monitor gRPC door on the same port (default on; loopback-only w/o a secret)
       --monitor-secret <s>  secret to read Monitor beyond loopback (call metadata; or THROTTLEKIT_MONITOR_SECRET)
+      --fleet-secret <s>    secret to use the Fleet lease door beyond loopback (call metadata; or THROTTLEKIT_FLEET_SECRET)
       --metrics-port <n>  serve Prometheus /metrics + /healthz on this HTTP port (needs monitoring on)
       --metrics-host <h>  bind the metrics port (default 127.0.0.1; aggregate + PII-free, set to expose)
       --plan-candidate <p> candidate config for the --tui Plan tab (press P to diff it vs --config over recorded traffic; needs a replay: block)
@@ -217,6 +223,8 @@ Subcommands:
   policy plan                   diff a candidate config vs the current one over recorded traffic (try \`policy --help\`)
 
 Serves throttlekit.v1.RateLimiter. A denial is a normal Decision (allowed:false), not an RPC error.
+The Tier-2 throttlekit.v1.Fleet lease door is served automatically when any \`federated:\` policy is present
+(loopback-only without --fleet-secret): a client leases a chunk of the global budget and spends it locally.
 Capture is opt-in via the config \`capture:\` block (default OFF) and active in this (non-TUI) serve path.
 Deterministic What-If Replay is opt-in via the \`replay:\` block (default OFF) and active with --tui — the
 Replay tab shows shadow status; press \`r\` to run the configured candidate what-if over recorded traffic.`;
@@ -636,6 +644,8 @@ async function main(): Promise<void> {
   let service: RateLimiterService;
   let capture: WiredCapture | undefined;
   let replay: WiredReplay | undefined;
+  // Tier-2 Fleet lease sources (one per `federated:` policy); the Fleet door is served when this is non-empty.
+  let fleetSources: Record<string, FleetLeaseSource> = {};
   if (tui) {
     // Capture is not composed with the live dashboard in this version — warn (best-effort) so an operator
     // who enabled both isn't silently left without capture. A malformed capture block surfaces non-TUI.
@@ -652,6 +662,7 @@ async function main(): Promise<void> {
     }
     const wired = wireMonitor(text, loadOptions, args.fail, mode, `${args.host}:${args.port}`);
     hub = wired.hub;
+    fleetSources = wired.fleetSources;
     // Deterministic What-If Replay (#290/#299): build the shadows + feed tap, compose them around the
     // monitored service (post-decision, over the shadow's own store — production decisions are untouched),
     // and hand the wired machinery to the TUI for the Replay tab + the `r` trigger. Off ⇒ a no-op wrap.
@@ -683,6 +694,7 @@ async function main(): Promise<void> {
       const wired = wireMonitor(text, loadOptions, args.fail, mode, `${args.host}:${args.port}`);
       hub = wired.hub;
       service = wired.service;
+      fleetSources = wired.fleetSources;
     } else {
       if (monitorOn && captureWanted) {
         console.warn(
@@ -692,6 +704,7 @@ async function main(): Promise<void> {
       // wireCapture returns the plain service when capture is disabled (the default) — zero overhead.
       capture = wireCapture(text, loadOptions, args.fail);
       service = capture.service;
+      fleetSources = capture.fleetSources;
     }
   }
 
@@ -701,12 +714,25 @@ async function main(): Promise<void> {
     hub !== undefined
       ? { monitor: { hub, ...(monitorSecret !== undefined ? { secret: monitorSecret } : {}) } }
       : {};
+  // The Tier-2 Fleet lease door rides the same port whenever there are leasable (federated:) policies —
+  // available by default, loopback-bound until a fleet secret is set (handing out budget is a poisoning vector).
+  const fleetSecret = args.fleetSecret ?? process.env.THROTTLEKIT_FLEET_SECRET;
+  const fleetOption =
+    Object.keys(fleetSources).length > 0
+      ? {
+          fleet: {
+            sources: fleetSources,
+            ...(fleetSecret !== undefined ? { secret: fleetSecret } : {}),
+          },
+        }
+      : {};
   const running = await serve({
     service,
     host: args.host,
     port: args.port,
     credentials: createServerCredentials(tls),
     ...monitorOption,
+    ...fleetOption,
   });
   const security = args.tlsCa !== undefined ? "mTLS" : secure ? "TLS" : "insecure";
 
@@ -715,6 +741,16 @@ async function main(): Promise<void> {
   if (hub !== undefined && monitorSecret === undefined && !LOOPBACK.has(args.host)) {
     console.warn(
       `⚠ Monitor door is loopback-only (no --monitor-secret) but bound to ${args.host}; remote Monitor calls are rejected UNAUTHENTICATED. Set --monitor-secret (or THROTTLEKIT_MONITOR_SECRET) to expose it.`,
+    );
+  }
+  // The Fleet lease door hands out budget, so it is loopback-only without a secret — warn if reachable remotely.
+  if (
+    Object.keys(fleetSources).length > 0 &&
+    fleetSecret === undefined &&
+    !LOOPBACK.has(args.host)
+  ) {
+    console.warn(
+      `⚠ Fleet lease door is loopback-only (no --fleet-secret) but bound to ${args.host}; remote Reserve calls are rejected UNAUTHENTICATED. Set --fleet-secret (or THROTTLEKIT_FLEET_SECRET) to expose it.`,
     );
   }
 

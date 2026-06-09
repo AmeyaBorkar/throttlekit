@@ -43,15 +43,19 @@ describe("wire conformance vectors", () => {
   it("pins the GCRA cold-burst boundary (5 admits from a burst of 5, then a paced denial)", () => {
     const suite = fresh.suites.find((s) => s.name === "gcra/burst5-rate10ps");
     expect(suite).toBeDefined();
-    const allowed = suite?.ops.map((o) => o.expect.allowed);
-    expect(allowed?.slice(0, 6)).toEqual([true, true, true, true, true, false]);
+    if (suite === undefined || suite.primitive === "lease")
+      throw new Error("expected a rate suite");
+    const allowed = suite.ops.map((o) => o.expect.allowed);
+    expect(allowed.slice(0, 6)).toEqual([true, true, true, true, true, false]);
     // the denied 6th request is paced one emission interval (T = periodMs/limit = 100ms) out
-    expect(suite?.ops[5]?.expect.retryAfterMs).toBe(100);
+    expect(suite.ops[5]?.expect.retryAfterMs).toBe(100);
   });
 
   it("pins tokenBudget stop-at-boundary (a crossing debit is admitted in full; the next is refused)", () => {
     const suite = fresh.suites.find((s) => s.name === "tokenBudget/crossing-debit");
-    const [first, crossing, after] = suite?.ops ?? [];
+    if (suite === undefined || suite.primitive === "lease")
+      throw new Error("expected a tokenBudget suite");
+    const [first, crossing, after] = suite.ops;
     expect(first?.expect.allowed).toBe(true); // served 80, remaining 20
     expect(crossing?.expect.allowed).toBe(true); // debit 50 admitted in full → served 130
     expect(crossing?.expect.remaining).toBe(0);
