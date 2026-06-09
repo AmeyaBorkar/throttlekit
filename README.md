@@ -153,6 +153,29 @@ Primitives that sit *upstream* of per-key limiters — overload, fairness, and c
 
 → [Overload, fairness & DDoS](https://github.com/AmeyaBorkar/throttlekit/wiki/Overload-Fairness-and-DDoS)
 
+## Test a policy change before you ship it (experimental)
+
+Changing a limit in production is usually a blind bet — ship it and watch the logs. `throttlekit/policy` makes it a **`terraform plan` for rate / cost limits**: replay your own *recorded* traffic against a candidate policy and read the exact, per-policy, per-key **allow↔deny diff** *before* you deploy.
+
+```ts
+import { recordLimiter } from "throttlekit/testkit";
+import { policy, policySet, corpusFromRecordings, plan, renderPlan, assertPlanAcceptable } from "throttlekit/policy";
+
+// record real traffic against today's limiter…
+const rec = recordLimiter({ strategy: "fixedWindow", limit: 3, windowMs: 1000 });
+for (let i = 0; i < 6; i++) rec.limiter.checkSync("tenant-a");
+
+// …then ask what tightening to limit 2 would have done — before shipping it
+const current   = policySet([policy("api", { strategy: "fixedWindow", limit: 3, windowMs: 1000 })]);
+const candidate = policySet([policy("api", { strategy: "fixedWindow", limit: 2, windowMs: 1000 })]);
+const result = plan(current, candidate, corpusFromRecordings({ api: rec }));
+
+console.log(renderPlan(result));                  // "api: 1 allow→deny, 0 deny→allow over 6 arrival(s)…"
+assertPlanAcceptable(result, { maxAllowToDeny: 0 }); // throws in CI — the change would 429 a live request
+```
+
+The baseline is your *current* policy replayed cold over the recorded arrival timing — not a guess, and never a comparison against a warm production node's exact decisions (a cold replay can't reproduce those). Leaf **rate + cost** limiters diff exactly; a concurrency / escrow axis is reported `not-replayable` (observe it live), never faked. Deterministic, and built entirely on `throttlekit/testkit` — no new moving parts.
+
 ## Monitoring — the live terminal dashboard (experimental)
 
 `throttlekit-server --config x.yaml --tui` opens a built-in, **zero-dependency** terminal dashboard (TUI) alongside gRPC — no browser, no metrics backend. It gives *every* policy the full ops board (throughput, deny rate, top denied keys, concurrency health, a live denial feed with exact per-axis numbers) plus the one view no other rate-limiter dashboard renders: **live binding-axis attribution**. Because `unifiedAdmission` composes rate × concurrency × cost in one decision, the dashboard shows **which axis is throttling each key right now** — `rate`, `concurrency`, `cost`, or the joint-LP `policy` lane.

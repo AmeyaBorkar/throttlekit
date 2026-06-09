@@ -8,6 +8,27 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
+## [1.4.0] — unreleased
+
+### Added
+
+- **Admission Policy Plans** (`throttlekit/policy`, `@experimental`) — a `terraform plan` for rate / cost
+  limits. Replay your own *recorded* traffic against a candidate policy set and read the exact, per-policy,
+  per-key **allow↔deny decision diff** *before* you deploy. `plan(current, candidate, corpus)` cold-records
+  the current policy over the recorded arrivals to derive the baseline, replays the candidate over the same
+  arrivals, and returns a directional flip ledger + top movers per policy — a **pure, never-throws**
+  function. Ships content-addressed `Policy` / `PolicySet` artifacts (`policy` / `policySet` /
+  `policySetFromConfig` / `serializePolicySet` / `parsePolicySet`), corpus adapters (`corpusFromRecordings`
+  / `corpusFromTraces`), a CI blast-radius gate (`assertPlanAcceptable`), and `renderPlan` / `planToJSON`
+  renderers. Built entirely on `throttlekit/testkit` — **no change to the frozen core**.
+  - Honest by construction: the baseline is the *current* policy replayed cold over your arrival timing,
+    **not** a warm-production comparison (a cold replay can't reproduce those). Leaf **rate + cost** limiters
+    diff exactly; concurrency / escrow / joint-LP axes are reported `not-replayable` (observe live via
+    binding-axis attribution), never a fabricated zero.
+
+Opt-in and outside the `1.x` SemVer freeze (see `STABILITY.md`); the frozen core API and the wire are
+unchanged.
+
 ## [1.3.0] — 2026-06-09
 
 ### Added
