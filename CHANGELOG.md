@@ -8,7 +8,7 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 _Nothing yet._
 
-## [1.4.0] — unreleased
+## [1.4.0] — 2026-06-10
 
 ### Added
 
@@ -25,9 +25,20 @@ _Nothing yet._
     **not** a warm-production comparison (a cold replay can't reproduce those). Leaf **rate + cost** limiters
     diff exactly; concurrency / escrow / joint-LP axes are reported `not-replayable` (observe live via
     binding-axis attribution), never a fabricated zero.
+- **Store-backed cross-region fair escrow** (`throttlekit/twotier`) — `federatedWeightedFairEscrow`'s global
+  weighted-max-min guarantee now holds across **separate region processes**, not just within one in-process
+  arbiter. New **`RedisRegionFairPool`** keeps the cross-region `region → {weight, granted}` reservation state
+  in a shared Redis hash via a single atomic Lua grant that runs the **byte-identical** arithmetic of the
+  in-process `regionFairPool` (pinned grant-for-grant against it in a gated conformance test), so
+  `Σ_r granted ≤ L` holds fleet-wide regardless of region count or interleaving. `federatedWeightedFairEscrow`
+  now accepts a synchronous `RegionFairPool` **or** an async **`AsyncRegionFairPool`**: with an async (store-
+  backed) pool its `check()` awaits the store and `checkSync` throws — exactly as a store-backed two-tier
+  limiter does — while the in-process path stays byte-for-byte unchanged. Also exports **`testRegionFairPool`**
+  (an in-memory async pool for tests / a single async process) and **`isAsyncRegionFairPool`**. Realises the
+  DR-FWFE-1 production path the federated-WFE module documented.
 
 Opt-in and outside the `1.x` SemVer freeze (see `STABILITY.md`); the frozen core API and the wire are
-unchanged.
+unchanged — the new fair-escrow surface is purely additive (a widened `pool` parameter + new exports).
 
 ## [1.3.0] — 2026-06-09
 

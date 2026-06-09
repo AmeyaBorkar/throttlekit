@@ -145,7 +145,7 @@ Front a distributed store (L2) with a local in-process tier (L1) and choose the 
 Primitives that sit *upstream* of per-key limiters — overload, fairness, and cost:
 
 - **`adaptiveThrottle`** — Google-SRE client-side load-shedding from a backend's recent accept rate.
-- **`weightedMaxMin` / `weightedFairShare`** — exact, work-conserving weighted max-min sharing so a greedy tenant can't starve the rest (GALE's *Weighted Fair Escrow*, machine-checked); `federatedWeightedFairEscrow` lifts it to a global guarantee across regions.
+- **`weightedMaxMin` / `weightedFairShare`** — exact, work-conserving weighted max-min sharing so a greedy tenant can't starve the rest (GALE's *Weighted Fair Escrow*, machine-checked); `federatedWeightedFairEscrow` lifts it to a global guarantee across regions — held within one process, or across a fleet of separate region processes via the store-backed `RedisRegionFairPool` (the Lua grant is verified byte-identical to the in-process pool).
 - **`tokenBudget` / `distributedTokenBudget`** — a streaming token-budget meter for *post-hoc* costs (LLM output tokens, known only as they stream): overshoot bounded by debit granularity — **Δ = 0 per token**, independent of concurrency (TALE Layer 1).
 - **`learnedReservation` / `predictiveReservation`** — pace LLM admission over a budget with an online newsvendor learner (`O(√T)` regret); the predictive variant blends an output-length hint with unconditional safety (the meter holds the bound, not the prediction).
 - **`unifiedAdmission`** — compose rate ∧ concurrency ∧ cost into one decision, sequential or atomic Lua-fused; opt into a revenue-management **bid-price** filter (`policy: "joint-lp"`).
