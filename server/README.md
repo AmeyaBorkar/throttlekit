@@ -231,9 +231,30 @@ Cost Room light up for a `fairEscrow` policy (served by `check`, the key being t
 up for any `concurrency` policy (the admitter's guard is surfaced to the dashboard).
 
 A TUI owns the terminal, so it is **opt-in** and needs an interactive TTY (a non-TTY warns and serves
-without it). For **headless / production** monitoring, emit OpenTelemetry → Grafana instead — including the
-`throttlekit.denies_by_axis{lane}` counter. See the
-[Monitoring](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens) guide.
+without it). For **headless / production** monitoring, emit OpenTelemetry → Grafana, or read the same
+operational state programmatically over the **Monitor door** (next section).
+
+## Read it remotely — the Monitor door
+
+The same operational state the dashboard renders is also a **read-only gRPC service**
+(`throttlekit.v1.Monitor`), so any language can read it remotely — no terminal, no scraping. It runs on the
+**same port** as the rate limiter and is **on by default** (`--monitor off` to disable).
+
+```
+rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);  // a point-in-time operational snapshot
+```
+
+`GetSnapshot` returns a typed envelope — per-policy `allowed`/`denied`/`limit`/latency + top keys, concurrency
+guard health, the recent denial feed — plus a `raw_json` field carrying the **full** dashboard snapshot (cost
+rooms, per-axis analytics, replay, custom stats) for depth and forward-compatibility. It is strictly
+**read-only**: it never computes, returns, or affects a rate-limit decision.
+
+**Auth (the snapshot carries traffic keys = PII).** The door is **loopback-only by default**. To read it from
+another host, set a secret with `--monitor-secret <s>` (or `THROTTLEKIT_MONITOR_SECRET`) and present it in call
+metadata (`x-monitor-secret: <s>`, or `authorization: Bearer <s>`); pair it with TLS for confidentiality. A
+non-loopback call without the secret is rejected `UNAUTHENTICATED`. (Not composed with `--tui` exclusivity:
+the door is served alongside the dashboard, and alongside the decision RPCs; it is *not* served together with
+**capture** in this version.)
 
 ## Decision capture (experimental, opt-in, default-OFF)
 

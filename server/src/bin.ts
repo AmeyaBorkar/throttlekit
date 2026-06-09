@@ -49,6 +49,8 @@ interface Args {
   tlsKey?: string;
   tlsCa?: string;
   tui: boolean;
+  monitor: "on" | "off";
+  monitorSecret?: string;
   help: boolean;
 }
 
@@ -59,6 +61,7 @@ function parseArgs(argv: string[]): Args {
     fail: "open",
     help: false,
     tui: false,
+    monitor: "on",
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -137,6 +140,15 @@ function parseArgs(argv: string[]): Args {
       case "--tui":
         args.tui = true;
         break;
+      case "--monitor": {
+        const v = argv[++i];
+        if (v !== "on" && v !== "off") throw new Error(`--monitor must be on|off, got ${v}`);
+        args.monitor = v;
+        break;
+      }
+      case "--monitor-secret":
+        args.monitorSecret = argv[++i];
+        break;
       default:
         throw new Error(`unknown argument: ${arg}`);
     }
@@ -170,6 +182,8 @@ Options:
       --tls-key <path>    PEM server private key   ┘
       --tls-ca <path>     PEM CA bundle ⇒ require + verify client certs (mTLS)
       --tui               live terminal dashboard alongside gRPC (interactive TTY only; q to quit)
+      --monitor on|off    read-only Monitor gRPC door on the same port (default on; loopback-only w/o a secret)
+      --monitor-secret <s>  secret to read Monitor beyond loopback (call metadata; or THROTTLEKIT_MONITOR_SECRET)
   -h, --help              show this help
 
 Subcommands:
@@ -339,6 +353,8 @@ async function main(): Promise<void> {
   if (args.tui && !tui) {
     console.warn("warning: --tui needs an interactive terminal; serving without the dashboard.");
   }
+  // The Monitor door is available by default (loopback-bound); `--monitor off` opts out.
+  const monitorOn = args.monitor !== "off";
   let hub: LensHub | undefined;
   let service: RateLimiterService;
   let capture: WiredCapture | undefined;
@@ -377,18 +393,53 @@ async function main(): Promise<void> {
         "warning: `replay:` (deterministic capture) is configured but needs --tui; run with --tui for the Replay tab.",
       );
     }
-    // wireCapture returns the plain service when capture is disabled (the default) — zero overhead.
-    capture = wireCapture(text, loadOptions, args.fail);
-    service = capture.service;
+    // Capture and the Monitor door aren't composed in this version (mirroring capture×--tui): if capture
+    // is configured it owns the service wiring; otherwise, when monitoring is on (the default), tap each
+    // policy into a hub so the Monitor door serves a live snapshot over gRPC.
+    let captureWanted = false;
+    try {
+      captureWanted = captureConfigFromText(text).enabled;
+    } catch {
+      /* a malformed capture block surfaces in wireCapture below */
+    }
+    if (monitorOn && !captureWanted) {
+      const wired = wireMonitor(text, loadOptions, args.fail, mode, `${args.host}:${args.port}`);
+      hub = wired.hub;
+      service = wired.service;
+    } else {
+      if (monitorOn && captureWanted) {
+        console.warn(
+          "warning: the Monitor door is NOT served alongside capture in this version; run without capture for the Monitor door, or pass --monitor off to silence this.",
+        );
+      }
+      // wireCapture returns the plain service when capture is disabled (the default) — zero overhead.
+      capture = wireCapture(text, loadOptions, args.fail);
+      service = capture.service;
+    }
   }
 
+  const monitorSecret = args.monitorSecret ?? process.env.THROTTLEKIT_MONITOR_SECRET;
+  // `hub` is set iff the Monitor door is being served (the --tui or non-capture monitor path above).
+  const monitorOption =
+    hub !== undefined
+      ? { monitor: { hub, ...(monitorSecret !== undefined ? { secret: monitorSecret } : {}) } }
+      : {};
   const running = await serve({
     service,
     host: args.host,
     port: args.port,
     credentials: createServerCredentials(tls),
+    ...monitorOption,
   });
   const security = args.tlsCa !== undefined ? "mTLS" : secure ? "TLS" : "insecure";
+
+  // The Monitor snapshot carries traffic keys (PII). Without a secret it is loopback-only, so warn loudly
+  // when the server is bound somewhere remote can reach it — remote Monitor calls will be rejected.
+  if (hub !== undefined && monitorSecret === undefined && !LOOPBACK.has(args.host)) {
+    console.warn(
+      `⚠ Monitor door is loopback-only (no --monitor-secret) but bound to ${args.host}; remote Monitor calls are rejected UNAUTHENTICATED. Set --monitor-secret (or THROTTLEKIT_MONITOR_SECRET) to expose it.`,
+    );
+  }
 
   if (capture?.config.enabled) {
     capture.flush?.start(CAPTURE_FLUSH_MS);
@@ -428,9 +479,13 @@ async function main(): Promise<void> {
       ...(replay?.enabled ? { replay } : {}),
     });
   } else {
+    const monitorTag =
+      hub !== undefined
+        ? `monitor:${monitorSecret !== undefined ? "secret" : "loopback"}`
+        : "monitor:off";
     console.log(
       `throttlekit-server listening on ${args.host}:${running.port} ` +
-        `[${mode}, ${security}, fail=${args.fail}] ` +
+        `[${mode}, ${security}, fail=${args.fail}, ${monitorTag}] ` +
         `(${service.policies().length} policies: ${service.policies().join(", ")})`,
     );
   }

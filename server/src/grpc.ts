@@ -16,6 +16,8 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import type { Decision, Forecast } from "throttlekit";
 
+import type { LensHub } from "./monitor/hub.js";
+import { type MonitorAuth, monitorHandlers } from "./monitor/service.js";
 import {
   type AdmitResult,
   OperationNotSupportedError,
@@ -36,8 +38,11 @@ export function resolveProtoPath(explicit?: string): string {
   throw new Error(`throttlekit.proto not found; looked in:\n  ${candidates.join("\n  ")}`);
 }
 
-/** Load the `throttlekit.v1.RateLimiter` service definition from the proto. */
-function loadServiceDefinition(protoPath: string): grpc.ServiceDefinition {
+/** Load the `throttlekit.v1` service definitions (RateLimiter + the additive read-only Monitor). */
+function loadServiceDefinitions(protoPath: string): {
+  rateLimiter: grpc.ServiceDefinition;
+  monitor: grpc.ServiceDefinition | undefined;
+} {
   const packageDefinition = protoLoader.loadSync(protoPath, {
     keepCase: false, // camelCase accessors line up with the core Decision field names
     longs: Number, // epoch-ms / counts fit comfortably in a JS safe integer
@@ -49,7 +54,13 @@ function loadServiceDefinition(protoPath: string): grpc.ServiceDefinition {
   const rateLimiter = loaded?.throttlekit?.v1?.RateLimiter;
   if (rateLimiter === undefined)
     throw new Error(`proto ${protoPath} does not define throttlekit.v1.RateLimiter`);
-  return rateLimiter.service as grpc.ServiceDefinition;
+  // Monitor is additive + optional: only required when the caller actually serves the Monitor door, so an
+  // older proto without it still serves RateLimiter. The serve() path validates its presence on demand.
+  const monitor = loaded?.throttlekit?.v1?.Monitor;
+  return {
+    rateLimiter: rateLimiter.service as grpc.ServiceDefinition,
+    monitor: monitor?.service as grpc.ServiceDefinition | undefined,
+  };
 }
 
 function decisionMessage(d: Decision) {
@@ -183,6 +194,15 @@ export interface ServeOptions {
   /** Server credentials. Default **insecure** — set mTLS/TLS creds for anything exposed. */
   credentials?: grpc.ServerCredentials;
   /**
+   * Serve the read-only `Monitor` door over the same port, projecting this {@link LensHub}. Omit to serve
+   * only `RateLimiter`. `secret` gates non-loopback access (the snapshot carries traffic keys = PII,
+   * SC-15); without a secret the door is loopback-only.
+   */
+  monitor?: {
+    hub: LensHub;
+    secret?: string;
+  };
+  /**
    * How often to run the admission-lease reclaim sweep (ms). Default 1000 (the core heartbeat cadence);
    * the interval is `unref`'d so it never keeps the process alive, and is cleared on {@link RunningServer.close}.
    */
@@ -214,10 +234,20 @@ export async function serve(options: ServeOptions): Promise<RunningServer> {
   const host = options.host ?? "0.0.0.0";
   const requestedPort = options.port ?? 50051;
   const protoPath = resolveProtoPath(options.protoPath);
-  const serviceDef = loadServiceDefinition(protoPath);
+  const { rateLimiter, monitor } = loadServiceDefinitions(protoPath);
 
   const server = new grpc.Server();
-  server.addService(serviceDef, rateLimiterHandlers(options.service));
+  server.addService(rateLimiter, rateLimiterHandlers(options.service));
+  // The additive read-only Monitor door, on the same port (SC-04). Loopback-only unless a secret is set.
+  if (options.monitor !== undefined) {
+    if (monitor === undefined)
+      throw new Error(
+        `proto ${protoPath} does not define throttlekit.v1.Monitor (needed to serve the Monitor door)`,
+      );
+    const auth: MonitorAuth =
+      options.monitor.secret !== undefined ? { secret: options.monitor.secret } : {};
+    server.addService(monitor, monitorHandlers(options.monitor.hub, auth));
+  }
 
   const credentials = options.credentials ?? grpc.ServerCredentials.createInsecure();
   const boundPort = await new Promise<number>((resolvePort, reject) => {

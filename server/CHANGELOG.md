@@ -9,6 +9,18 @@ conformance-tested against the golden vectors).
 
 ### Added
 
+- **Programmable Monitor door (`throttlekit.v1.Monitor`).** A new **read-only** gRPC service — the same
+  operational state the `--tui` dashboard renders, readable remotely from any language. `GetSnapshot` returns
+  a typed envelope (per-policy `allowed`/`denied`/`limit`/latency + top keys, concurrency-guard health, the
+  recent denial feed) plus a `raw_json` field carrying the full dashboard snapshot for depth +
+  forward-compatibility. It runs on the **same port** as the rate limiter and is **on by default**
+  (`--monitor off` to disable); it is strictly non-mutating. **Auth (the snapshot carries traffic keys =
+  PII):** loopback-only by default; set `--monitor-secret` (or `THROTTLEKIT_MONITOR_SECRET`, presented in
+  call metadata) to read it from another host — a non-loopback call without the secret is rejected
+  `UNAUTHENTICATED`. This is the **first additive wire change** under the new `buf breaking` gate: the
+  `Monitor` service + its messages are purely additive (a new service; the locked `RateLimiter` messages are
+  untouched), machine-verified non-breaking against the frozen baseline. Not composed with **capture** in this
+  version (it serves alongside the dashboard and the decision RPCs). See the README's *Monitor door* section.
 - **Cross-region federation (`federated`).** A new policy block that enforces **one global per-window rate
   budget across regions** through a cross-region coordinator (the core's `federate()`), served over the
   **same `Check` RPC** (no client change, **no wire change**). Each instance leases a slice of the global

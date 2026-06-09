@@ -169,3 +169,95 @@ service RateLimiter {
   rpc Release(ReleaseRequest)     returns (ReleaseResponse);
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
+
+// ── Monitor — a read-only observability door (ADDITIVE: a SECOND service on the same gRPC port; it never
+// touches the RateLimiter messages above and is strictly non-mutating). It projects the in-process
+// telemetry snapshot the `--tui` dashboard renders, so any language can read operational state remotely.
+//
+// AUTH POSTURE: the snapshot carries traffic keys (the limited identities = PII), so the server serves
+// Monitor loopback-only by default; exposing it beyond loopback requires a monitor secret presented in
+// call metadata (`x-monitor-secret`, or `authorization: Bearer <secret>`). The decision RPCs above are
+// unaffected. Pair the secret with TLS for confidentiality on an exposed port. ──
+
+message GetSnapshotRequest {}
+
+// Snapshot envelope metadata (mirrors the dashboard's `meta`).
+message MonitorMeta {
+  int64  generated_at = 1; // epoch-ms the snapshot was produced
+  int64  window_ms    = 2; // analytics window width the counters aggregate over
+  string mode         = 3; // "process" (single instance) | "fleet" (reserved)
+  string lens_version = 4; // the hub/dashboard version
+  string node_id      = 5; // stable node id (e.g. host:port), or "" if unset
+}
+
+// A key with an occurrence count (one heavy-hitter row).
+message KeyCount {
+  string key   = 1;
+  int64  count = 2;
+}
+
+// Recent admit-path latency summary for a policy (ms; p50/p99 nearest-rank). Absent (n=0) until traffic.
+message LatencySummary {
+  double avg_ms = 1;
+  double p50_ms = 2;
+  double p99_ms = 3;
+  double max_ms = 4;
+  int64  n      = 5;
+}
+
+// One tracked policy's at-a-glance counters — the STABLE projection; the full per-axis analytics ride in
+// Snapshot.raw_json so the frozen wire is never coupled to the evolving internal analytics shape.
+message PolicySummary {
+  string         name          = 1;
+  string         kind          = 2; // "limiter" | "admitter"
+  string         strategy      = 3; // e.g. "gcra"; "" for an admitter
+  int64          allowed       = 4; // admitted this window
+  int64          denied        = 5; // rejected this window
+  int64          limit         = 6; // most-recent observed ceiling; 0 if unknown
+  LatencySummary latency       = 7;
+  repeated KeyCount top_denied    = 8;
+  repeated KeyCount top_requested = 9;
+}
+
+// One concurrency guard's health (distributed extras present only for a distributed guard).
+message GuardSummary {
+  string name     = 1;
+  int64  limit    = 2;
+  int64  inflight = 3;
+  double share    = 4; // distributed: this node's share of the global ceiling; 0 if n/a
+  int64  l_global = 5; // distributed: aggregated global ceiling; 0 if n/a
+  int64  nodes    = 6; // distributed: live node count; 0 if n/a
+  bool   fenced   = 7; // distributed: node self-fenced (partitioned)
+}
+
+// One denial — the "why, with numbers". Used by the snapshot's recent feed (and the Watch stream).
+message DenialEvent {
+  int64  at             = 1; // epoch-ms
+  string policy         = 2;
+  string key            = 3; // the limited identity (PII — hence the Monitor's auth posture)
+  string axis           = 4; // binding lane "rate"|"concurrency"|"cost" (admitters), else ""
+  int64  limit          = 5;
+  int64  remaining      = 6;
+  int64  retry_after_ms = 7;
+}
+
+// The operational snapshot. The typed fields are the stable contract; `raw_json` carries the FULL
+// dashboard snapshot (cost rooms, per-axis analytics, replay, custom stats, fence feed) as JSON — for
+// depth + forward-compatibility, keeping the frozen wire decoupled from the internal snapshot shape.
+message Snapshot {
+  MonitorMeta            meta           = 1;
+  repeated PolicySummary policies       = 2;
+  repeated GuardSummary  guards         = 3;
+  repeated DenialEvent   recent_denials = 4;
+  string                 raw_json       = 5; // full LensSnapshot as JSON (see throttlekit-server docs)
+}
+
+message GetSnapshotResponse {
+  Snapshot snapshot = 1;
+}
+
+// Read-only observability. Strictly non-mutating; never returns or affects a rate-limit decision.
+service Monitor {
+  // A point-in-time operational snapshot (stateless, cacheable, individually load-balanced).
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+}
