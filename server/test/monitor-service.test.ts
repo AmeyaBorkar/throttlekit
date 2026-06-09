@@ -194,3 +194,82 @@ describe("Monitor door over gRPC (secret-gated)", () => {
     expect(resp.snapshot.meta.nodeId).toBe("secure-node");
   });
 });
+
+describe("Monitor.Watch (live denial stream) over gRPC", () => {
+  let running: RunningServer;
+  let runningSecret: RunningServer;
+  let h: ReturnType<typeof makeMonitorClient>;
+  let hSecret: ReturnType<typeof makeMonitorClient>;
+  let svc: Awaited<ReturnType<typeof populatedHub>>["service"];
+
+  beforeAll(async () => {
+    const open = await populatedHub("watch-node");
+    svc = open.service; // its limiters are tapped into the served hub — checks here feed the stream
+    running = await serve({ service: open.service, host: "127.0.0.1", port: 0, monitor: { hub: open.hub } });
+    h = makeMonitorClient(running.port);
+
+    const sec = await populatedHub("watch-secure");
+    runningSecret = await serve({
+      service: sec.service,
+      host: "127.0.0.1",
+      port: 0,
+      monitor: { hub: sec.hub, secret: "s3cr3t" },
+    });
+    hSecret = makeMonitorClient(runningSecret.port);
+
+    await Promise.all(
+      [h, hSecret].map(
+        (c) =>
+          new Promise<void>((res, rej) =>
+            c.client.waitForReady(Date.now() + 5000, (e: unknown) => (e ? rej(e) : res())),
+          ),
+      ),
+    );
+  });
+  afterAll(async () => {
+    h?.close();
+    hSecret?.close();
+    await running?.close();
+    await runningSecret?.close();
+  });
+
+  it("streams a live denial to a loopback subscriber", async () => {
+    const stream = h.client.watch({ policy: "" }); // all policies
+    const got = new Promise<any>((resolve, reject) => {
+      stream.on("data", resolve);
+      stream.on("error", reject);
+    });
+    // Pump denials (the gcra burst is already spent at the frozen clock) until one reaches the stream —
+    // covers the small subscribe-registration race without a fixed sleep.
+    const pump = setInterval(() => void svc.check("api", "alice"), 10);
+    const ev = await got;
+    clearInterval(pump);
+    stream.cancel();
+    expect(ev.denial.policy).toBe("api");
+    expect(ev.denial.key).toBe("alice");
+    expect(ev.denial.remaining).toBe(0);
+  });
+
+  it("filters by policy: a non-matching filter receives nothing", async () => {
+    const stream = h.client.watch({ policy: "does-not-exist" });
+    let received = false;
+    stream.on("data", () => {
+      received = true;
+    });
+    stream.on("error", () => {}); // ignore the post-cancel CANCELLED
+    const pump = setInterval(() => void svc.check("api", "alice"), 10);
+    await new Promise((r) => setTimeout(r, 200)); // let `api` denials flow and be filtered out
+    clearInterval(pump);
+    stream.cancel();
+    expect(received).toBe(false);
+  });
+
+  it("rejects an unauthenticated stream (secret-gated server)", async () => {
+    const stream = hSecret.client.watch({ policy: "" });
+    const err = await new Promise<any>((resolve) => {
+      stream.on("error", resolve);
+      stream.on("data", () => {});
+    });
+    expect(err.code).toBe(grpc.status.UNAUTHENTICATED);
+  });
+});

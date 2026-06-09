@@ -13,7 +13,9 @@ conformance-tested against the golden vectors).
   operational state the `--tui` dashboard renders, readable remotely from any language. `GetSnapshot` returns
   a typed envelope (per-policy `allowed`/`denied`/`limit`/latency + top keys, concurrency-guard health, the
   recent denial feed) plus a `raw_json` field carrying the full dashboard snapshot for depth +
-  forward-compatibility. It runs on the **same port** as the rate limiter and is **on by default**
+  forward-compatibility. `Watch` opens a **live, policy-filtered denial stream**, rate-capped and
+  backpressured server-side (a slow reader drops events — the feed never grows server memory or perturbs the
+  control path). It runs on the **same port** as the rate limiter and is **on by default**
   (`--monitor off` to disable); it is strictly non-mutating. **Auth (the snapshot carries traffic keys =
   PII):** loopback-only by default; set `--monitor-secret` (or `THROTTLEKIT_MONITOR_SECRET`, presented in
   call metadata) to read it from another host — a non-loopback call without the secret is rejected

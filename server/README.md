@@ -242,12 +242,16 @@ The same operational state the dashboard renders is also a **read-only gRPC serv
 
 ```
 rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);  // a point-in-time operational snapshot
+rpc Watch(WatchRequest) returns (stream WatchResponse);             // a live, filtered denial feed
 ```
 
 `GetSnapshot` returns a typed envelope — per-policy `allowed`/`denied`/`limit`/latency + top keys, concurrency
 guard health, the recent denial feed — plus a `raw_json` field carrying the **full** dashboard snapshot (cost
-rooms, per-axis analytics, replay, custom stats) for depth and forward-compatibility. It is strictly
-**read-only**: it never computes, returns, or affects a rate-limit decision.
+rooms, per-axis analytics, replay, custom stats) for depth and forward-compatibility. `Watch` opens a **live
+denial stream** (optionally filtered to one `policy`), each event the "why, with numbers" of a rejection. The
+stream is **rate-capped and backpressured server-side** — a slow reader drops events, so the feed never grows
+server memory or perturbs the control path (it is best-effort observability, not a durable log — use *capture*
+for that). Both are strictly **read-only**: they never compute, return, or affect a rate-limit decision.
 
 **Auth (the snapshot carries traffic keys = PII).** The door is **loopback-only by default**. To read it from
 another host, set a secret with `--monitor-secret <s>` (or `THROTTLEKIT_MONITOR_SECRET`) and present it in call

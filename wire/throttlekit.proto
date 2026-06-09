@@ -256,8 +256,22 @@ message GetSnapshotResponse {
   Snapshot snapshot = 1;
 }
 
+// Open a live denial feed (the hub emits one per rejected decision). Server-side rate-capped AND
+// backpressured: a slow reader simply DROPS events — the feed never grows server memory and never blocks
+// the control path. It is best-effort observability, not a durable log (use decision capture for that).
+message WatchRequest {
+  string policy = 1; // "" = every policy; else only this policy's denials
+}
+
+// One streamed denial. (A message per event; `Watch` returns a stream of these.)
+message WatchResponse {
+  DenialEvent denial = 1;
+}
+
 // Read-only observability. Strictly non-mutating; never returns or affects a rate-limit decision.
 service Monitor {
   // A point-in-time operational snapshot (stateless, cacheable, individually load-balanced).
   rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+  // A live server-streamed denial feed (best-effort: rate-capped + backpressured; slow readers drop events).
+  rpc Watch(WatchRequest) returns (stream WatchResponse);
 }

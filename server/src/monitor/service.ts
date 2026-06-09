@@ -176,9 +176,15 @@ export function snapshotToProto(snap: LensSnapshot): Record<string, unknown> {
 }
 
 /**
+ * Per-stream cap on `Watch` events per second. A denial storm beyond this is dropped (counted, not
+ * buffered) — the feed is best-effort observability, never a backlog that grows server memory.
+ */
+const WATCH_RATE_CAP = 500;
+
+/**
  * Build the `throttlekit.v1.Monitor` handler map over a live {@link LensHub}. `GetSnapshot` returns a
- * point-in-time projection; every call is authorized first (loopback-only, or secret-gated — see
- * {@link authorizeMonitor}).
+ * point-in-time projection; `Watch` streams a live denial feed. Every call is authorized first
+ * (loopback-only, or secret-gated — see {@link authorizeMonitor}).
  */
 export function monitorHandlers(
   hub: LensHub,
@@ -193,6 +199,46 @@ export function monitorHandlers(
       }
       // snapshot() is cheap + never throws (the hub isolates source throws); a fresh detached object.
       callback(null, { snapshot: snapshotToProto(hub.snapshot()) });
+    },
+
+    watch(call: any): void {
+      const denied = authorizeMonitor(call.getPeer(), call.metadata, auth);
+      if (denied !== null) {
+        // A server-stream has no callback; end it with the gRPC error status.
+        call.emit("error", {
+          code: denied.code,
+          details: denied.message,
+          metadata: new grpc.Metadata(),
+        });
+        return;
+      }
+      const policyFilter: string =
+        typeof call.request?.policy === "string" ? call.request.policy : "";
+      let writable = true; // false once the send buffer fills, until 'drain'
+      let windowStart = Date.now();
+      let inWindow = 0;
+      // The subscriber runs on the CONTROL PATH (inside the hub's tap), so it must be non-blocking and
+      // never throw. call.write() buffers (non-blocking); a slow consumer just drops (backpressure + cap).
+      const unsubscribe = hub.subscribe({
+        onDenial: (row) => {
+          if (policyFilter !== "" && row.policy !== policyFilter) return;
+          const t = Date.now();
+          if (t - windowStart >= 1000) {
+            windowStart = t;
+            inWindow = 0;
+          }
+          if (inWindow >= WATCH_RATE_CAP || !writable) return; // drop (rate cap or backpressure)
+          inWindow++;
+          writable = call.write({ denial: denialEvent(row) });
+        },
+      });
+      call.on("drain", () => {
+        writable = true;
+      });
+      const cleanup = (): void => unsubscribe();
+      call.on("cancelled", cleanup);
+      call.on("close", cleanup);
+      call.on("error", cleanup);
     },
   };
 }
