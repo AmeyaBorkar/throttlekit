@@ -183,7 +183,12 @@ function diffPolicy(
   }
 
   try {
-    const result = replay(baseline, { candidate: candidateSpec });
+    // `baseline` was just cold-recorded over the SAME deterministic substrate `replay` rebuilds on
+    // (rebuildLimiter + MemoryStore + ManualClock), so the engine's identity self-check — which exists
+    // to catch a broken substrate for *externally-supplied* traces — is provably redundant here. Skip it
+    // to avoid a third full O(steps) replay pass per policy; the divergence is still computed against the
+    // baseline's recorded decisions, so the result is identical.
+    const result = replay(baseline, { candidate: candidateSpec, skipIdentityCheck: true });
     const folded = foldDivergence(result.divergence, topK);
     return {
       policy: name,
