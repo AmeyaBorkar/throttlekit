@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 
 import type { FailMode } from "throttlekit";
+import type { PlanBudget, TraceCorpus } from "throttlekit/policy";
 
 import { runCaptureCli } from "./capture/cli.js";
 import { type WiredCapture, captureConfigFromText, wireCapture } from "./capture/wire.js";
@@ -20,6 +21,8 @@ import { serve } from "./grpc.js";
 import type { LensHub } from "./monitor/hub.js";
 import { type RunningMetricsServer, startMetricsServer } from "./monitor/metrics.js";
 import { wireMonitor } from "./monitor/wire.js";
+import { corpusFromCapture, corpusFromTraceFile } from "./policy/corpus.js";
+import { runPolicyPlan } from "./policy/plan.js";
 import { replayService } from "./replay/tap.js";
 import { type WiredReplay, replayConfigFromText, wireReplay } from "./replay/wire.js";
 import { createServerCredentials, createStore, isSecure } from "./runtime.js";
@@ -205,6 +208,7 @@ Options:
 
 Subcommands:
   capture <list|export|sweep>   admin for the opt-in decision-capture store (try \`capture --help\`)
+  policy plan                   diff a candidate config vs the current one over recorded traffic (try \`policy --help\`)
 
 Serves throttlekit.v1.RateLimiter. A denial is a normal Decision (allowed:false), not an RPC error.
 Capture is opt-in via the config \`capture:\` block (default OFF) and active in this (non-TUI) serve path.
@@ -313,9 +317,246 @@ async function runCaptureSubcommand(argv: string[]): Promise<void> {
   console.log(JSON.stringify(res.output, null, 2));
 }
 
+const POLICY_USAGE = `throttlekit-server policy plan — a "terraform plan" for your rate / cost limits
+
+Usage:
+  throttlekit-server policy plan --config <current> --candidate <path> (--corpus <file> | --from-capture) [options]
+
+Replay your own RECORDED arrivals against a CANDIDATE config and read the exact per-policy allow↔deny diff
+BEFORE you deploy. Covers leaf-rate policies; concurrency / escrow / two-tier / federated axes are reported
+\`not-replayable\` (observe live via attribution), never scored as a fabricated zero. Exits non-zero if a
+gate (\`--max-*\` / \`--require-replayable\`) is breached — drop it into CI.
+
+Corpus source (exactly one required):
+  --corpus <file>       JSON file of recorded traces keyed by policy name (e.g. assembled from \`capture export\`)
+  --from-capture        read the server's durable capture store (fail-closed + audited)
+  --credential <c>      capture operator credential for --from-capture (or THROTTLEKIT_CAPTURE_CREDENTIAL)
+  --principal <who>     who is running this, for the capture audit trail
+
+Options:
+  -c, --config <path>     the current (running) server config (required)
+      --candidate <path>  the proposed config to diff against it (required)
+      --json              emit the machine-readable Plan JSON (CI evidence) instead of the summary
+      --top <n>           top flipped keys to show per policy (default 3)
+      --max-allow-deny <n>  gate: max requests newly flipping allow→deny (the tightening blast radius)
+      --max-deny-allow <n>  gate: max requests newly flipping deny→allow (the loosening)
+      --max-flips <n>       gate: max total flips (allow→deny + deny→allow)
+      --max-keys <n>        gate: max distinct keys/tenants affected by a flip
+      --require-replayable  gate: fail if any policy could not be replayed
+  -h, --help              show this help
+
+The diff baseline is the CURRENT policy cold-replayed over your arrival timing — not a warm-production
+comparison (a cold replay cannot reproduce those). A truncated corpus is flagged; the diff then understates.`;
+
+interface PolicyArgs {
+  action?: string;
+  config?: string;
+  candidate?: string;
+  corpus?: string;
+  fromCapture: boolean;
+  credential?: string;
+  principal?: string;
+  json: boolean;
+  topKeys?: number;
+  maxAllowDeny?: number;
+  maxDenyAllow?: number;
+  maxFlips?: number;
+  maxKeys?: number;
+  requireReplayable: boolean;
+  help: boolean;
+}
+
+function parsePolicyArgs(argv: string[]): PolicyArgs {
+  const a: PolicyArgs = { fromCapture: false, json: false, requireReplayable: false, help: false };
+  const first = argv[0];
+  if (first !== undefined && !first.startsWith("-")) a.action = first;
+  const num = (label: string, raw: string | undefined): number => {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0)
+      throw new Error(`${label} must be a non-negative integer, got ${raw}`);
+    return n;
+  };
+  for (let i = a.action !== undefined ? 1 : 0; i < argv.length; i++) {
+    switch (argv[i]) {
+      case "-h":
+      case "--help":
+        a.help = true;
+        break;
+      case "-c":
+      case "--config":
+        a.config = argv[++i];
+        break;
+      case "--candidate":
+        a.candidate = argv[++i];
+        break;
+      case "--corpus":
+        a.corpus = argv[++i];
+        break;
+      case "--from-capture":
+        a.fromCapture = true;
+        break;
+      case "--credential":
+        a.credential = argv[++i];
+        break;
+      case "--principal":
+        a.principal = argv[++i];
+        break;
+      case "--json":
+        a.json = true;
+        break;
+      case "--top":
+        a.topKeys = num("--top", argv[++i]);
+        break;
+      case "--max-allow-deny":
+        a.maxAllowDeny = num("--max-allow-deny", argv[++i]);
+        break;
+      case "--max-deny-allow":
+        a.maxDenyAllow = num("--max-deny-allow", argv[++i]);
+        break;
+      case "--max-flips":
+        a.maxFlips = num("--max-flips", argv[++i]);
+        break;
+      case "--max-keys":
+        a.maxKeys = num("--max-keys", argv[++i]);
+        break;
+      case "--require-replayable":
+        a.requireReplayable = true;
+        break;
+      default:
+        throw new Error(`unknown policy argument: ${argv[i]}`);
+    }
+  }
+  return a;
+}
+
+/** Assemble a {@link PlanBudget} from the `--max-*` / `--require-replayable` gate flags; `undefined` if none. */
+function buildPlanBudget(a: PolicyArgs): PlanBudget | undefined {
+  const b: PlanBudget = {
+    ...(a.maxAllowDeny !== undefined ? { maxAllowToDeny: a.maxAllowDeny } : {}),
+    ...(a.maxDenyAllow !== undefined ? { maxDenyToAllow: a.maxDenyAllow } : {}),
+    ...(a.maxFlips !== undefined ? { maxFlippedTotal: a.maxFlips } : {}),
+    ...(a.maxKeys !== undefined ? { maxAffectedKeys: a.maxKeys } : {}),
+    ...(a.requireReplayable ? { requireAllReplayable: true } : {}),
+  };
+  return Object.keys(b).length > 0 ? b : undefined;
+}
+
+/** The `policy plan` subcommand: build a corpus (file or the audited capture store) and diff the candidate. */
+async function runPolicySubcommand(argv: string[]): Promise<void> {
+  const a = parsePolicyArgs(argv);
+  if (a.help || a.action === undefined) {
+    console.log(POLICY_USAGE);
+    if (a.action === undefined && !a.help) process.exitCode = 1;
+    return;
+  }
+  if (a.action !== "plan") {
+    console.error(`error: unknown policy action ${JSON.stringify(a.action)} (only \`plan\`)`);
+    process.exitCode = 1;
+    return;
+  }
+  if (a.config === undefined) {
+    console.error("error: --config (the current, running config) is required");
+    process.exitCode = 1;
+    return;
+  }
+  if (a.candidate === undefined) {
+    console.error("error: --candidate is required");
+    process.exitCode = 1;
+    return;
+  }
+  if (a.corpus === undefined && !a.fromCapture) {
+    console.error("error: a corpus source is required — pass --corpus <file> or --from-capture");
+    process.exitCode = 1;
+    return;
+  }
+  if (a.corpus !== undefined && a.fromCapture) {
+    console.error("error: pass only one corpus source (--corpus OR --from-capture)");
+    process.exitCode = 1;
+    return;
+  }
+
+  const currentConfig = readFileSync(a.config, "utf8");
+  const candidateConfig = readFileSync(a.candidate, "utf8");
+
+  // Build the corpus. Fail-closed: a bad file, an unauthorized capture read, or no durable store → non-zero
+  // exit with no plan (never plan over silently-empty arrivals).
+  let corpus: TraceCorpus;
+  if (a.corpus !== undefined) {
+    try {
+      corpus = corpusFromTraceFile(readFileSync(a.corpus, "utf8"));
+    } catch (e) {
+      console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    // --from-capture: read the durable capture store through the existing fail-closed + audited machinery.
+    const wired = wireCapture(currentConfig, {}, "open");
+    if (!wired.config.enabled) {
+      console.error(
+        "error: --from-capture needs capture enabled in --config (set capture.enabled: true)",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (wired.store === undefined || wired.audit === undefined) {
+      console.error(
+        "error: --from-capture needs a durable capture store (set a capture.durable block)",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (a.credential !== undefined) {
+      console.warn(
+        "warning: --credential is visible in process listings (ps / Task Manager); prefer the THROTTLEKIT_CAPTURE_CREDENTIAL env var.",
+      );
+    }
+    const credential = a.credential ?? process.env.THROTTLEKIT_CAPTURE_CREDENTIAL;
+    const res = await corpusFromCapture(
+      { config: wired.config, store: wired.store, audit: wired.audit },
+      {
+        ...(credential !== undefined ? { credential } : {}),
+        ...(a.principal !== undefined ? { principal: a.principal } : {}),
+      },
+    );
+    if (!res.ok || res.corpus === undefined) {
+      console.error(`error: ${res.error ?? "could not read the capture corpus"}`);
+      process.exitCode = 1;
+      return;
+    }
+    corpus = res.corpus;
+    // Provenance to STDERR so stdout stays clean for the plan (and its JSON, for piping into CI).
+    for (const s of res.sources ?? [])
+      console.error(`corpus: ${s.policy} ← ${s.segments} segment(s)`);
+    const skipped = res.skipped ?? [];
+    if (skipped.length > 0)
+      console.error(`corpus: skipped ${skipped.length} non-leaf-rate/unreadable segment(s)`);
+  }
+
+  const budget = buildPlanBudget(a);
+  const result = runPolicyPlan({
+    currentConfig,
+    candidateConfig,
+    corpus,
+    ...(budget !== undefined ? { budget } : {}),
+    json: a.json,
+    ...(a.topKeys !== undefined ? { topKeys: a.topKeys } : {}),
+  });
+  if (result.rendered !== undefined) console.log(result.rendered);
+  if (!result.ok) {
+    if (result.error !== undefined) console.error(`error: ${result.error}`);
+    for (const v of result.rejected ?? []) console.error(`rejected: ${v}`);
+    process.exitCode = 1;
+  }
+}
+
 async function main(): Promise<void> {
   if (process.argv[2] === "capture") {
     await runCaptureSubcommand(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === "policy") {
+    await runPolicySubcommand(process.argv.slice(3));
     return;
   }
   const args = parseArgs(process.argv.slice(2));
