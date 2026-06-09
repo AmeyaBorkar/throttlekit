@@ -50,9 +50,13 @@ import {
 } from "throttlekit/config";
 import { type GlobalCoordinator, federate } from "throttlekit/federation";
 import {
+  type AsyncRegionFairPool,
+  type FederatedWeightedFairEscrowLimiter,
   type LeaseOptions,
   type TwoTierMode,
   type WeightedFairEscrowLimiter,
+  type WeightedFairEscrowStats,
+  federatedWeightedFairEscrow,
   twoTier,
   weightedFairEscrow,
 } from "throttlekit/twotier";
@@ -210,6 +214,62 @@ export interface FairEscrowConfig {
 }
 
 /**
+ * The optional `federatedFairEscrow` block — the **cross-region** face of {@link FairEscrowConfig}. The same
+ * weighted-fair split of one shared per-window budget `L` across tenants, but `L` is now a GLOBAL budget
+ * shared across regions: a store-backed {@link AsyncRegionFairPool} reserves each region a weighted-max-min
+ * slice (region weight = Σ active tenant weights), and this region splits its slice across its own tenants —
+ * so the fleet's total admits stay ≤ `L` no matter how many region instances run. Served over the **EXISTING**
+ * `Check` RPC (key = tenant; no client change, no wire change). The decision is the core's
+ * `federatedWeightedFairEscrow` over `RedisRegionFairPool` (one oracle) — this only wires the config + the
+ * server-resolved region pool.
+ *
+ * **Requires a store-backed region pool** (`--redis` today — the only backend with a cross-region pool). On
+ * `memory` / `postgres` / `dynamodb` it errors at config time: use plain `fairEscrow:` for a single instance,
+ * or `--redis` for a multi-region fleet. (A Postgres region pool is a follow-up.) Multi-instance correctness
+ * comes from the shared pool's atomic per-region reservation — every instance draws from one global `L`.
+ */
+export interface FederatedFairEscrowConfig {
+  /**
+   * This instance's region identity (used in the pool's per-region reservation + telemetry). Falls back to
+   * the server-wide `--region` / `TK_REGION`, then `"default"`. All instances in one region pool their
+   * tenants' demand into that region's slice; the global bound holds across every region.
+   */
+  region?: string;
+  /** Global per-window budget `L` (> 0), shared across ALL regions. */
+  limit: number;
+  /** Window width in ms (epoch-aligned). On Redis the pool's window is rolled by the server clock (skew-proof). */
+  windowMs: number;
+  /** Per-tenant weights (each must be > 0); a tenant not listed defaults to weight 1. */
+  weights?: Record<string, number>;
+  /**
+   * The shared pool key every region coordinates on (default the policy name). Two instances pool into ONE
+   * global budget iff they resolve the same key — so the default (the shared policy name) makes instances
+   * running the same config coordinate automatically; override it only to deliberately share across
+   * differently-named policies or to namespace further.
+   */
+  key?: string;
+  /** Redis key prefix for the region pool (default the core's `"tk:rfp"`). */
+  prefix?: string;
+  /**
+   * Max distinct tenants to keep per-window state for, FIFO-evicting beyond it. The request `key` is the
+   * tenant and comes off the wire untrusted, so this bounds memory growth. Default 100_000.
+   */
+  maxKeys?: number;
+  /**
+   * **Cost Room** (the `--tui` cost-axis burn-down view, #282). Default **on** — set `false` to opt out. The
+   * burn-down reads this region's granted slice (`regionBudget`), so it shows THIS region's allocation
+   * draining, not the global pool. Pure monitoring; no decision-path cost.
+   */
+  costRoom?: boolean;
+  /** Cost Room: max tenants to keep a burn time-series for. Default 64. */
+  costRoomMaxKeys?: number;
+  /** Cost Room: per-tenant burn-ring capacity. Default 16. */
+  costRoomRingSize?: number;
+  /** Cost Room: the declared unit label, echoed verbatim (default `"units (cost)"`). */
+  unit?: string;
+}
+
+/**
  * The optional `federated` block — turns a policy into a **cross-region federated** rate limit: one global
  * per-window budget shared across regions through a {@link GlobalCoordinator} over the shared store, served
  * over the **EXISTING** `Check` RPC (no client change, no wire change). The decision is the core's
@@ -239,7 +299,7 @@ export interface FederatedConfig {
   prefix?: string;
 }
 
-/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `fleetBudget` / `concurrency` / `distributedConcurrency` / `fairEscrow` / `federated` blocks. */
+/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `fleetBudget` / `concurrency` / `distributedConcurrency` / `fairEscrow` / `federatedFairEscrow` / `federated` blocks. */
 export type ServerLimiterSpec = LimiterSpec & {
   twoTier?: TwoTierConfig;
   tokenBudget?: TokenBudgetConfig;
@@ -247,6 +307,7 @@ export type ServerLimiterSpec = LimiterSpec & {
   concurrency?: ConcurrencyConfig;
   distributedConcurrency?: DistributedConcurrencyConfig;
   fairEscrow?: FairEscrowConfig;
+  federatedFairEscrow?: FederatedFairEscrowConfig;
   federated?: FederatedConfig;
 };
 
@@ -339,6 +400,28 @@ export type ConcurrencyCoordinatorFactory = (
   spec: ConcurrencyCoordinatorSpec,
 ) => ConcurrencyCoordinator;
 
+/** What a {@link RegionFairPoolFactory} needs to build a cross-region fair pool sized to one policy. */
+export interface RegionFairPoolSpec {
+  /** Global per-window budget `L` — the federatedFairEscrow `limit`. */
+  limit: number;
+  /** Window length (ms) — the federatedFairEscrow `windowMs`. */
+  windowMs: number;
+  /** The single pool key all regions share (the federation key — defaults to the policy name). */
+  key: string;
+  /** Redis key prefix (optional; the core's `RedisRegionFairPool` defaults to `"tk:rfp"`). */
+  prefix?: string;
+  /** Clock the federated escrow uses for its per-tenant window + decide timing (mainly tests; else system). */
+  clock?: Clock;
+}
+
+/**
+ * Builds a store-backed cross-region {@link AsyncRegionFairPool} over the resolved shared store — `redis` →
+ * the core's `RedisRegionFairPool`. `undefined` for `memory` / `postgres` / `dynamodb`, which have no
+ * cross-region pool (a `federatedFairEscrow:` policy errors there). Injected via {@link ServerLoadOptions};
+ * the pool holds no background resources, so the store's disposer need not close it.
+ */
+export type RegionFairPoolFactory = (spec: RegionFairPoolSpec) => AsyncRegionFairPool;
+
 /** Options for {@link buildLimitersFromConfig}: the core loader options plus an injectable clock. */
 export interface ServerLoadOptions extends LoadConfigOptions {
   /** Clock for the two-tier / federated / distributed-concurrency limiters (mainly tests); else system. */
@@ -353,7 +436,15 @@ export interface ServerLoadOptions extends LoadConfigOptions {
    * `distributedConcurrency:` policy; supplied for `redis`/`postgres`, omitted for `memory`/`dynamodb`.
    */
   makeConcurrencyCoordinator?: ConcurrencyCoordinatorFactory;
-  /** This instance's region identity for `federated:` policies (a policy's own `region` wins; else this). */
+  /**
+   * Factory for a store-backed cross-region fair pool over the resolved store. Required to serve a
+   * `federatedFairEscrow:` policy; supplied for `redis`, omitted for `memory`/`postgres`/`dynamodb`.
+   */
+  makeRegionFairPool?: RegionFairPoolFactory;
+  /**
+   * This instance's region identity for `federated:` / `federatedFairEscrow:` policies (a policy's own
+   * `region` wins; else this).
+   */
   region?: string;
   /**
    * This process's unique fleet node id, required to serve a `distributedConcurrency:` policy (a collision
@@ -401,6 +492,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
         spec.tokenBudget,
         spec.fleetBudget,
         spec.fairEscrow,
+        spec.federatedFairEscrow,
         spec.concurrency,
         spec.distributedConcurrency,
         spec.twoTier,
@@ -408,7 +500,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
       ].filter((b) => b !== undefined).length;
       if (kinds > 1)
         throw new ThrottleKitError(
-          `config.limiters[${name}]: a policy may declare at most one of tokenBudget / fleetBudget / fairEscrow / concurrency / distributedConcurrency / twoTier / federated`,
+          `config.limiters[${name}]: a policy may declare at most one of tokenBudget / fleetBudget / fairEscrow / federatedFairEscrow / concurrency / distributedConcurrency / twoTier / federated`,
         );
     }
     if (spec != null && typeof spec === "object" && spec.tokenBudget !== undefined) {
@@ -420,6 +512,16 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
     } else if (spec != null && typeof spec === "object" && spec.fairEscrow !== undefined) {
       fairness[name] = buildFairEscrow(name, spec, options);
       costRooms[name] = resolveCostRoom(name, spec.fairEscrow as FairEscrowConfig);
+    } else if (spec != null && typeof spec === "object" && spec.federatedFairEscrow !== undefined) {
+      // The cross-region fair escrow is served by `check` (key = tenant) exactly like the L1 fairEscrow —
+      // the builder adapts its FederatedWeightedFairEscrowLimiter to the WeightedFairEscrowLimiter the
+      // service + monitor consume (one oracle; only `stats()` is reshaped). Same Cost Room wiring.
+      fairness[name] = buildFederatedFairEscrow(name, spec, options);
+      costRooms[name] = resolveCostRoom(
+        name,
+        spec.federatedFairEscrow as FederatedFairEscrowConfig,
+        "federatedFairEscrow",
+      );
     } else if (
       spec != null &&
       typeof spec === "object" &&
@@ -452,17 +554,31 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   };
 }
 
+/** The Cost Room fields shared by `fairEscrow` and `federatedFairEscrow` (both feed {@link resolveCostRoom}). */
+interface CostRoomSource {
+  windowMs: number;
+  costRoom?: boolean;
+  unit?: string;
+  costRoomMaxKeys?: number;
+  costRoomRingSize?: number;
+}
+
 /**
- * Resolve a `fairEscrow` policy's Cost Room options (#282 P3). Default-on; `costRoom: false` opts out.
- * Validates the optional bounds so a bad config fails fast with a clear message rather than being silently
- * clamped downstream.
+ * Resolve a fair-escrow policy's Cost Room options (#282 P3) — shared by `fairEscrow` and the cross-region
+ * `federatedFairEscrow` (same fields). Default-on; `costRoom: false` opts out. `kind` names the block in
+ * error messages. Validates the optional bounds so a bad config fails fast with a clear message rather than
+ * being silently clamped downstream.
  */
-function resolveCostRoom(name: string, fe: FairEscrowConfig): CostRoomConfig {
+function resolveCostRoom(
+  name: string,
+  fe: CostRoomSource,
+  kind: "fairEscrow" | "federatedFairEscrow" = "fairEscrow",
+): CostRoomConfig {
   const positiveInt = (label: string, v: number | undefined): number | undefined => {
     if (v === undefined) return undefined;
     if (typeof v !== "number" || !Number.isInteger(v) || v <= 0)
       throw new ThrottleKitError(
-        `config.limiters[${name}].fairEscrow.${label}: must be a positive integer`,
+        `config.limiters[${name}].${kind}.${label}: must be a positive integer`,
       );
     return v;
   };
@@ -766,4 +882,91 @@ function buildFairEscrow(
     l1: { maxKeys: fe.maxKeys ?? 100_000 },
     ...(clock !== undefined ? { clock } : {}),
   });
+}
+
+/**
+ * Adapt a {@link FederatedWeightedFairEscrowLimiter} to the {@link WeightedFairEscrowLimiter} the service +
+ * monitor consume, so a cross-region fair escrow slots into the **same** `fairness` map / `check` dispatch /
+ * Cost Room wiring as the L1 `fairEscrow` — zero new service or monitor surface.
+ *
+ * The decision methods pass through byte-for-byte (one oracle — the core computes every grant). Only the
+ * read-only `stats()` is reshaped: the federated `regionBudget` (the credits the cross-region pool granted
+ * THIS region this window) is exactly the L1 `effectiveLimit` (the budget visible to this process), so the
+ * Fairness view + Cost Room burn down this region's slice honestly. The federated-only fields (`region` /
+ * `activeWeight`) are not surfaced here — a richer cross-region panel is a follow-up. `checkSync` is forwarded
+ * as-is: it throws on the async (store-backed) pool the server always uses, but the service only ever calls
+ * the async `check`, so the throw is never reached in practice (and is the correct answer if it ever is).
+ */
+function adaptFederatedToWFE(fed: FederatedWeightedFairEscrowLimiter): WeightedFairEscrowLimiter {
+  return {
+    checkSync: (tenant, cost) => fed.checkSync(tenant, cost),
+    check: (tenant, cost) => fed.check(tenant, cost),
+    reset: (tenant) => fed.reset(tenant),
+    stats: (): WeightedFairEscrowStats => {
+      const s = fed.stats();
+      return {
+        windowStart: s.windowStart,
+        limit: s.limit,
+        // The region's granted slice plays the role of L_effective (the locally-visible budget); the Cost
+        // Room reads effectiveLimit + pool + tenants[].used to burn down THIS region's allocation.
+        effectiveLimit: s.regionBudget,
+        pool: Math.max(0, s.regionBudget - s.totalUsed),
+        totalUsed: s.totalUsed,
+        tenants: s.tenants,
+      };
+    },
+  };
+}
+
+/**
+ * Build a cross-region weighted-fair-escrow limiter from a policy's `federatedFairEscrow` block. The request
+ * key is the tenant; a tenant not in `weights` gets weight 1. The shared per-region pool (the global-budget
+ * authority) is resolved via `options.makeRegionFairPool` — required, and supplied only for `--redis` today.
+ * Returns a {@link WeightedFairEscrowLimiter} (the federated limiter adapted, see {@link adaptFederatedToWFE})
+ * so it serves over `check` exactly like the L1 `fairEscrow`. The decision is the core's
+ * `federatedWeightedFairEscrow` over the store-backed `RedisRegionFairPool` — one oracle.
+ */
+function buildFederatedFairEscrow(
+  name: string,
+  spec: ServerLimiterSpec,
+  options: ServerLoadOptions,
+): WeightedFairEscrowLimiter {
+  const fe = spec.federatedFairEscrow as FederatedFairEscrowConfig;
+  if (fe.limit === undefined || fe.windowMs === undefined)
+    throw new ThrottleKitError(
+      `config.limiters[${name}].federatedFairEscrow: both \`limit\` and \`windowMs\` are required`,
+    );
+  const weights = fe.weights ?? {};
+  // Validate weights up front (the core validates lazily inside check, where the throw would be swallowed by
+  // the service's fail-mode catch and mask the config bug) — exactly as buildFairEscrow does.
+  for (const [tenant, w] of Object.entries(weights)) {
+    if (typeof w !== "number" || !(w > 0))
+      throw new ThrottleKitError(
+        `config.limiters[${name}].federatedFairEscrow.weights[${tenant}]: weight must be a positive number`,
+      );
+  }
+  if (options.makeRegionFairPool === undefined)
+    throw new ThrottleKitError(
+      `config.limiters[${name}].federatedFairEscrow: needs a shared region-fair-pool store — run with --redis (memory / postgres / dynamodb have no cross-region pool yet; use \`fairEscrow:\` for a single instance)`,
+    );
+  const region = fe.region ?? options.region ?? "default";
+  // The shared pool key is what makes N region instances draw from ONE global budget — default the policy
+  // name so same-config instances coordinate automatically (mirrors fleetBudget's prefix default).
+  const key = fe.key ?? name;
+  const pool = options.makeRegionFairPool({
+    limit: fe.limit,
+    windowMs: fe.windowMs,
+    key,
+    ...(fe.prefix !== undefined ? { prefix: fe.prefix } : {}),
+    // The federated escrow takes its window/decide clock from the POOL (it has no clock param of its own),
+    // so a test's ManualClock must reach the pool. Production leaves it system (Redis rolls by server TIME).
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+  });
+  const fed = federatedWeightedFairEscrow({
+    region,
+    pool,
+    weightOf: (tenant) => weights[tenant] ?? 1,
+    l1: { maxKeys: fe.maxKeys ?? 100_000 },
+  });
+  return adaptFederatedToWFE(fed);
 }

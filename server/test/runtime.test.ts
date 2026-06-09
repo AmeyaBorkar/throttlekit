@@ -59,6 +59,7 @@ describe("runtime: store selection", () => {
     expect(resolved.distributed).toBe(false);
     expect(resolved.makeCoordinator).toBeUndefined(); // memory cannot federate
     expect(resolved.makeConcurrencyCoordinator).toBeUndefined(); // …nor coordinate concurrency
+    expect(resolved.makeRegionFairPool).toBeUndefined(); // …nor pool a cross-region fair budget
     await resolved.dispose();
   });
 
@@ -75,6 +76,11 @@ describe("runtime: store selection", () => {
     expect(resolved.makeConcurrencyCoordinator).toBeDefined();
     const cc = resolved.makeConcurrencyCoordinator?.({ aggregate: "median" });
     expect(typeof cc?.heartbeat).toBe("function");
+    // …and a store-backed cross-region fair pool over the same raw client (the 4th distributed feature).
+    expect(resolved.makeRegionFairPool).toBeDefined();
+    const rfp = resolved.makeRegionFairPool?.({ limit: 100, windowMs: 60_000, key: "fe" });
+    expect(rfp?.isAsync).toBe(true); // the async (network round-trip) RedisRegionFairPool
+    expect(typeof rfp?.grant).toBe("function");
     await resolved.dispose(); // disconnect the lazy (never-connected) client
   });
 
@@ -95,6 +101,8 @@ describe("runtime: store selection", () => {
     expect(resolved.makeConcurrencyCoordinator).toBeDefined();
     const cc = resolved.makeConcurrencyCoordinator?.({ aggregate: "median" });
     expect(typeof cc?.heartbeat).toBe("function");
+    // …but NO cross-region fair pool yet: there is no PostgresRegionFairPool (Redis-only today).
+    expect(resolved.makeRegionFairPool).toBeUndefined();
     await resolved.dispose(); // end the lazy pool + stop the coordinators' background GC timers
   });
 
@@ -120,6 +128,7 @@ describe("runtime: store selection", () => {
     expect(resolved.distributed).toBe(true);
     expect(resolved.makeCoordinator).toBeUndefined(); // dynamodb has no coordinator impl
     expect(resolved.makeConcurrencyCoordinator).toBeUndefined(); // …nor a concurrency one
+    expect(resolved.makeRegionFairPool).toBeUndefined(); // …nor a cross-region fair pool
     await resolved.dispose(); // destroy the never-used client
   });
 

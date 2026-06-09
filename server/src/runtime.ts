@@ -27,7 +27,12 @@ import { PostgresStore } from "throttlekit/postgres";
 import type { PgPoolLike } from "throttlekit/postgres";
 import { RedisStore } from "throttlekit/redis";
 import type { RedisClientLike } from "throttlekit/redis";
-import type { ConcurrencyCoordinatorFactory, CoordinatorFactory } from "./config.js";
+import { RedisRegionFairPool } from "throttlekit/twotier";
+import type {
+  ConcurrencyCoordinatorFactory,
+  CoordinatorFactory,
+  RegionFairPoolFactory,
+} from "./config.js";
 
 /** Which backend holds the limiter state. `memory` is per-policy in-process; the rest are shared. */
 export type StoreType = "memory" | "redis" | "postgres" | "dynamodb";
@@ -84,6 +89,13 @@ export interface ResolvedStore {
    * `distributedConcurrency:` policy errors there). Any coordinator built is closed by {@link ResolvedStore.dispose}.
    */
   makeConcurrencyCoordinator?: ConcurrencyCoordinatorFactory;
+  /**
+   * Build a store-backed cross-region fair pool over this backend — `redis` → {@link RedisRegionFairPool}
+   * over the raw client. `undefined` for `memory` / `postgres` / `dynamodb`, which have no cross-region pool
+   * (a `federatedFairEscrow:` policy errors there). The pool holds no background resources, so nothing extra
+   * is closed by {@link ResolvedStore.dispose} (the shared client it borrows is disposed already).
+   */
+  makeRegionFairPool?: RegionFairPoolFactory;
   /** Release the store's resources (close any coordinators, then the Redis connection / pg Pool). */
   dispose(): Promise<void>;
 }
@@ -300,6 +312,19 @@ export async function createStore(spec: StoreSpec): Promise<ResolvedStore> {
           concCoordinators.push(coordinator);
           return coordinator;
         },
+        // A RedisRegionFairPool over the SAME raw client — the cross-region budget authority for a
+        // `federatedFairEscrow:` policy. Atomic per-region reservation in Lua over a Redis hash bounds the
+        // fleet's total admits at `L` across however many region instances draw from this key. It owns no
+        // timers, so (unlike the coordinators) there is nothing to push onto a disposal list.
+        makeRegionFairPool: (rspec) =>
+          new RedisRegionFairPool({
+            client: client as unknown as RedisClientLike,
+            limit: rspec.limit,
+            windowMs: rspec.windowMs,
+            key: rspec.key,
+            ...(rspec.prefix !== undefined ? { prefix: rspec.prefix } : {}),
+            ...(rspec.clock !== undefined ? { clock: rspec.clock } : {}),
+          }),
         dispose: async () => {
           for (const c of coordinators) closeCoordinator(c);
           for (const c of concCoordinators) closeConcurrencyCoordinator(c);

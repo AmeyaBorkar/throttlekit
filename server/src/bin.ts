@@ -191,7 +191,7 @@ Options:
       --dynamodb-endpoint <url> override the endpoint (e.g. http://localhost:8000 for dynamodb-local)
       --dynamodb-prefix <p>     key prefix for the shared DynamoDB store
       --dynamodb-create-table   create the table if absent (dev convenience), then wait for it
-      --region <id>       this instance's region for federated: policies (or TK_REGION; default "default")
+      --region <id>       this instance's region for federated: / federatedFairEscrow: policies (or TK_REGION; default "default")
       --node-id <id>      unique per-process id for distributedConcurrency: policies (or TK_NODE_ID; default host#pid)
       --tls-cert <path>   PEM server certificate  ┐ enable TLS
       --tls-key <path>    PEM server private key   ┘
@@ -342,19 +342,20 @@ async function main(): Promise<void> {
   }
 
   const text = readFileSync(args.config, "utf8");
-  const { store, mode, dispose, makeCoordinator, makeConcurrencyCoordinator } = await createStore({
-    store: args.store,
-    redisUrl: args.redis,
-    redisPrefix: args.redisPrefix,
-    postgresUrl: args.postgresUrl,
-    postgresTable: args.postgresTable,
-    postgresPrefix: args.postgresPrefix,
-    dynamodbTable: args.dynamodbTable,
-    dynamodbRegion: args.dynamodbRegion,
-    dynamodbEndpoint: args.dynamodbEndpoint,
-    dynamodbPrefix: args.dynamodbPrefix,
-    dynamodbCreateTable: args.dynamodbCreateTable,
-  });
+  const { store, mode, dispose, makeCoordinator, makeConcurrencyCoordinator, makeRegionFairPool } =
+    await createStore({
+      store: args.store,
+      redisUrl: args.redis,
+      redisPrefix: args.redisPrefix,
+      postgresUrl: args.postgresUrl,
+      postgresTable: args.postgresTable,
+      postgresPrefix: args.postgresPrefix,
+      dynamodbTable: args.dynamodbTable,
+      dynamodbRegion: args.dynamodbRegion,
+      dynamodbEndpoint: args.dynamodbEndpoint,
+      dynamodbPrefix: args.dynamodbPrefix,
+      dynamodbCreateTable: args.dynamodbCreateTable,
+    });
   // Region identity for `federated:` policies (a policy's own `region` overrides this); `makeCoordinator`
   // is how the config layer builds a cross-region coordinator over the shared store (redis/postgres only).
   const region = args.region ?? process.env.TK_REGION ?? "default";
@@ -366,6 +367,7 @@ async function main(): Promise<void> {
     ...(store !== undefined ? { store } : {}),
     ...(makeCoordinator !== undefined ? { makeCoordinator } : {}),
     ...(makeConcurrencyCoordinator !== undefined ? { makeConcurrencyCoordinator } : {}),
+    ...(makeRegionFairPool !== undefined ? { makeRegionFairPool } : {}),
     region,
     nodeId,
   };
