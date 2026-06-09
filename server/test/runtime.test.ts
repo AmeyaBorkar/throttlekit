@@ -57,6 +57,7 @@ describe("runtime: store selection", () => {
     expect(resolved.store).toBeUndefined();
     expect(resolved.mode).toBe("memory");
     expect(resolved.distributed).toBe(false);
+    expect(resolved.makeCoordinator).toBeUndefined(); // memory cannot federate
     await resolved.dispose();
   });
 
@@ -65,6 +66,10 @@ describe("runtime: store selection", () => {
     expect(resolved.store).toBeDefined();
     expect(resolved.mode).toBe("redis");
     expect(resolved.distributed).toBe(true);
+    // A federation coordinator is available over the raw client (constructed without connecting).
+    expect(resolved.makeCoordinator).toBeDefined();
+    const coordinator = resolved.makeCoordinator?.({ windowMs: 60_000, budgetPerWindow: 100 });
+    expect(typeof coordinator?.lease).toBe("function");
     await resolved.dispose(); // disconnect the lazy (never-connected) client
   });
 
@@ -77,7 +82,11 @@ describe("runtime: store selection", () => {
     expect(resolved.store).toBeDefined();
     expect(resolved.mode).toBe("postgres");
     expect(resolved.distributed).toBe(true);
-    await resolved.dispose(); // end the lazy (never-connected) pool
+    // A federation coordinator is available over the same pool (constructed without querying).
+    expect(resolved.makeCoordinator).toBeDefined();
+    const coordinator = resolved.makeCoordinator?.({ windowMs: 60_000, budgetPerWindow: 100 });
+    expect(typeof coordinator?.lease).toBe("function");
+    await resolved.dispose(); // end the lazy pool + stop the coordinator's background GC timer
   });
 
   it("rejects an explicit --store postgres with no --postgres-url", async () => {
@@ -100,6 +109,7 @@ describe("runtime: store selection", () => {
     expect(resolved.store).toBeDefined();
     expect(resolved.mode).toBe("dynamodb");
     expect(resolved.distributed).toBe(true);
+    expect(resolved.makeCoordinator).toBeUndefined(); // dynamodb has no coordinator impl
     await resolved.dispose(); // destroy the never-used client
   });
 

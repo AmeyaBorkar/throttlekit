@@ -14,6 +14,7 @@ import type { FailMode } from "throttlekit";
 
 import { runCaptureCli } from "./capture/cli.js";
 import { type WiredCapture, captureConfigFromText, wireCapture } from "./capture/wire.js";
+import type { ServerLoadOptions } from "./config.js";
 import { serve } from "./grpc.js";
 import type { LensHub } from "./monitor/hub.js";
 import { wireMonitor } from "./monitor/wire.js";
@@ -43,6 +44,7 @@ interface Args {
   dynamodbEndpoint?: string;
   dynamodbPrefix?: string;
   dynamodbCreateTable?: boolean;
+  region?: string;
   tlsCert?: string;
   tlsKey?: string;
   tlsCa?: string;
@@ -120,6 +122,9 @@ function parseArgs(argv: string[]): Args {
       case "--dynamodb-create-table":
         args.dynamodbCreateTable = true;
         break;
+      case "--region":
+        args.region = argv[++i];
+        break;
       case "--tls-cert":
         args.tlsCert = argv[++i];
         break;
@@ -160,6 +165,7 @@ Options:
       --dynamodb-endpoint <url> override the endpoint (e.g. http://localhost:8000 for dynamodb-local)
       --dynamodb-prefix <p>     key prefix for the shared DynamoDB store
       --dynamodb-create-table   create the table if absent (dev convenience), then wait for it
+      --region <id>       this instance's region for federated: policies (or TK_REGION; default "default")
       --tls-cert <path>   PEM server certificate  ┐ enable TLS
       --tls-key <path>    PEM server private key   ┘
       --tls-ca <path>     PEM CA bundle ⇒ require + verify client certs (mTLS)
@@ -305,7 +311,7 @@ async function main(): Promise<void> {
   }
 
   const text = readFileSync(args.config, "utf8");
-  const { store, mode, dispose } = await createStore({
+  const { store, mode, dispose, makeCoordinator } = await createStore({
     store: args.store,
     redisUrl: args.redis,
     redisPrefix: args.redisPrefix,
@@ -318,7 +324,14 @@ async function main(): Promise<void> {
     dynamodbPrefix: args.dynamodbPrefix,
     dynamodbCreateTable: args.dynamodbCreateTable,
   });
-  const loadOptions = store !== undefined ? { store } : {};
+  // Region identity for `federated:` policies (a policy's own `region` overrides this); `makeCoordinator`
+  // is how the config layer builds a cross-region coordinator over the shared store (redis/postgres only).
+  const region = args.region ?? process.env.TK_REGION ?? "default";
+  const loadOptions: ServerLoadOptions = {
+    ...(store !== undefined ? { store } : {}),
+    ...(makeCoordinator !== undefined ? { makeCoordinator } : {}),
+    region,
+  };
 
   // `--tui` taps every policy into a telemetry hub for the live dashboard. A TUI owns the terminal, so it
   // needs an interactive TTY — fall back to the plain (untapped) service otherwise.

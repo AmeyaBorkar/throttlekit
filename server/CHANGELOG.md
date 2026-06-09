@@ -9,6 +9,18 @@ conformance-tested against the golden vectors).
 
 ### Added
 
+- **Cross-region federation (`federated`).** A new policy block that enforces **one global per-window rate
+  budget across regions** through a cross-region coordinator (the core's `federate()`), served over the
+  **same `Check` RPC** (no client change, **no wire change**). Each instance leases a slice of the global
+  budget, so the fleet admits at most the strategy's `limit` per window regardless of region/instance count.
+  Built on the published core's `RedisCoordinator` / `PostgresCoordinator` (no core release needed) — the
+  store resolver (`createStore`) now exposes a coordinator factory over the raw client/pool for `redis` /
+  `postgres` (and closes the Postgres GC timer on dispose); `memory` / `dynamodb` cannot federate. Requires a
+  **window-coupled** strategy (`fixedWindow` / `slidingWindow` / a fixed-cadence quota) — a continuous-rate
+  strategy (`gcra` / `tokenBucket`, which has a `windowMs` but no discrete window) and a calendar-cadence
+  quota are rejected at load. `Peek` / `Forecast` are `UNIMPLEMENTED` on a federated policy. New `--region`
+  flag (or `TK_REGION`; default `"default"`) sets the instance's region. See the README's *Cross-region
+  federation* section.
 - **Fleet token budgets (`fleetBudget`).** A new policy block that enforces **one** token budget across every
   server instance pointed at a shared store — the fleet-shared face of `tokenBudget`. It is the same cost axis
   served by the **same `Debit` RPC** (no client change, **no wire change** — the wire stays frozen and

@@ -149,6 +149,33 @@ Without a shared store a `fleetBudget` policy is process-local — identical to 
 a single instance and becomes fleet-coordinated the moment you add the store. `check` on a `fleetBudget` policy
 returns `UNIMPLEMENTED` (it is a meter, like `tokenBudget`).
 
+## Cross-region federation (one global rate limit across regions)
+
+A plain rate-limit policy on a shared store already coordinates a fleet, but each cross-region trip pays the
+full store round-trip. A `federated` block instead enforces **one global per-window budget across regions**
+through a cross-region **coordinator** (the core's `federate()`), served over the **same `Check` RPC** (no
+client change, no wire change). Each instance leases a slice of the global budget from the coordinator, so
+the fleet admits at most the strategy's `limit` per window — regardless of region or instance count.
+
+```yaml
+version: 1
+limiters:
+  global-api:
+    federated: { batch: 16 }   # ← cross-region: one global budget, leased per region
+    strategy: fixedWindow       # MUST be window-coupled (fixedWindow / slidingWindow / fixed-cadence quota)
+    limit: 10000
+    period: 1m
+```
+
+Run it with `--redis` (or `--postgres`) and `--region <id>` (or `TK_REGION`; default `"default"`); the
+coordinator lives in that shared store. A client's `Check { policy: "global-api", key }` is then bound by the
+one global budget. **Constraints (enforced at load, fail-fast):** the strategy must have a **discrete window**
+— `gcra` / `tokenBucket` are rejected (a continuous rate has no window boundary to couple to), as is a
+calendar-cadence quota; and a coordinator store is required (`memory` / `dynamodb` cannot federate). `Peek` /
+`Forecast` are `UNIMPLEMENTED` on a federated policy (it is async + window-based). The coordinator's global
+budget is the strategy's `limit`; `batch` (default 16) trades cross-region round-trips for some unused
+capacity under skew — which does not add overshoot under window-coupling, only affects utilization.
+
 ## Concurrency & unified admission (the in-flight axis)
 
 For limiting *concurrent* work — not a rate, but how many requests are in flight at once — a policy can

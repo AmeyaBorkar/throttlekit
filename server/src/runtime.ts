@@ -20,10 +20,13 @@ import type {
   DynamoGetInput,
   DynamoPutInput,
 } from "throttlekit/dynamodb";
+import { PostgresCoordinator, RedisCoordinator } from "throttlekit/federation";
+import type { GlobalCoordinator } from "throttlekit/federation";
 import { PostgresStore } from "throttlekit/postgres";
 import type { PgPoolLike } from "throttlekit/postgres";
 import { RedisStore } from "throttlekit/redis";
 import type { RedisClientLike } from "throttlekit/redis";
+import type { CoordinatorFactory } from "./config.js";
 
 /** Which backend holds the limiter state. `memory` is per-policy in-process; the rest are shared. */
 export type StoreType = "memory" | "redis" | "postgres" | "dynamodb";
@@ -67,8 +70,21 @@ export interface ResolvedStore {
   mode: StoreType;
   /** Whether a distributed (non-memory) store was built. */
   distributed: boolean;
-  /** Release the store's resources (close the Redis connection / end the pg Pool). */
+  /**
+   * Build a cross-region federation coordinator over this backend — `redis` → {@link RedisCoordinator}
+   * over the raw client, `postgres` → {@link PostgresCoordinator} over the pool. `undefined` for
+   * `memory` / `dynamodb`, which have no coordinator impl (a `federated:` policy errors clearly there).
+   * Any coordinator built is closed by {@link ResolvedStore.dispose}.
+   */
+  makeCoordinator?: CoordinatorFactory;
+  /** Release the store's resources (close any coordinators, then the Redis connection / pg Pool). */
   dispose(): Promise<void>;
+}
+
+/** Close a coordinator's background resources if it has any (PostgresCoordinator's GC timer); else a no-op. */
+function closeCoordinator(c: GlobalCoordinator): void {
+  const maybe = c as { close?: () => void };
+  if (typeof maybe.close === "function") maybe.close();
 }
 
 /**
@@ -241,11 +257,25 @@ export async function createStore(spec: StoreSpec): Promise<ResolvedStore> {
         client: client as unknown as RedisClientLike,
         ...(spec.redisPrefix !== undefined ? { prefix: spec.redisPrefix } : {}),
       });
+      const coordinators: GlobalCoordinator[] = [];
       return {
         store,
         mode,
         distributed: true,
+        // A RedisCoordinator over the SAME raw client — which is why createStore (not the RedisStore
+        // wrapper) owns coordinator construction: the coordinator needs the ioredis client directly.
+        makeCoordinator: (cspec) => {
+          const coordinator = new RedisCoordinator({
+            client: client as unknown as RedisClientLike,
+            windowMs: cspec.windowMs,
+            budgetPerWindow: cspec.budgetPerWindow,
+            ...(cspec.prefix !== undefined ? { prefix: cspec.prefix } : {}),
+          });
+          coordinators.push(coordinator);
+          return coordinator;
+        },
         dispose: async () => {
+          for (const c of coordinators) closeCoordinator(c);
           client.disconnect();
         },
       };
@@ -262,11 +292,25 @@ export async function createStore(spec: StoreSpec): Promise<ResolvedStore> {
         ...(spec.postgresTable !== undefined ? { table: spec.postgresTable } : {}),
         ...(spec.postgresPrefix !== undefined ? { prefix: spec.postgresPrefix } : {}),
       });
+      const coordinators: GlobalCoordinator[] = [];
       return {
         store,
         mode,
         distributed: true,
+        // A PostgresCoordinator over the SAME pool the store uses.
+        makeCoordinator: (cspec) => {
+          const coordinator = new PostgresCoordinator({
+            pool,
+            windowMs: cspec.windowMs,
+            budgetPerWindow: cspec.budgetPerWindow,
+            ...(cspec.prefix !== undefined ? { prefix: cspec.prefix } : {}),
+          });
+          coordinators.push(coordinator);
+          return coordinator;
+        },
         dispose: async () => {
+          // PostgresCoordinator runs a background GC interval — close it before ending the pool.
+          for (const c of coordinators) closeCoordinator(c);
           await pool.end();
         },
       };

@@ -46,6 +46,7 @@ import {
   loadConfigObject,
   parseYaml,
 } from "throttlekit/config";
+import { type GlobalCoordinator, federate } from "throttlekit/federation";
 import {
   type LeaseOptions,
   type TwoTierMode,
@@ -169,13 +170,44 @@ export interface FairEscrowConfig {
   unit?: string;
 }
 
-/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `fleetBudget` / `concurrency` / `fairEscrow` blocks. */
+/**
+ * The optional `federated` block — turns a policy into a **cross-region federated** rate limit: one global
+ * per-window budget shared across regions through a {@link GlobalCoordinator} over the shared store, served
+ * over the **EXISTING** `Check` RPC (no client change, no wire change). The decision is the core's
+ * `federate()` (one oracle); this only wires the config + the server-resolved coordinator.
+ *
+ * **Requires a window-based strategy** (`fixedWindow` / `slidingWindow` / a windowed quota) — the
+ * window-coupling rule needs a discrete window boundary, so a pure-rate strategy (`gcra` / `tokenBucket`)
+ * is rejected at config time. **Requires a coordinator store** (`--redis` / `--postgres`); `memory` /
+ * `dynamodb` cannot federate. `Peek` / `Forecast` are `UNIMPLEMENTED` on a federated policy (it is async +
+ * window-based). Multi-instance correctness comes from the coordinator (L3): every instance leases from one
+ * global budget, so the fleet admits at most the strategy's `limit` per window regardless of instance count.
+ */
+export interface FederatedConfig {
+  /**
+   * This instance's region identity (used in coordinator keys + telemetry). Falls back to the server-wide
+   * `--region` / `TK_REGION`, then `"default"`. Instances in the same region share a global-budget slice;
+   * the cross-region global bound holds across all regions.
+   */
+  region?: string;
+  /**
+   * Escrow lease size per global window per region (default 16). A larger batch means fewer cross-region
+   * round-trips at the cost of some unused capacity under skew — which does NOT contribute to overshoot
+   * under window-coupling (Δ = 0), only to utilization.
+   */
+  batch?: number;
+  /** Coordinator key prefix in the shared store (default the core's `"tk:fed"`). */
+  prefix?: string;
+}
+
+/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `fleetBudget` / `concurrency` / `fairEscrow` / `federated` blocks. */
 export type ServerLimiterSpec = LimiterSpec & {
   twoTier?: TwoTierConfig;
   tokenBudget?: TokenBudgetConfig;
   fleetBudget?: FleetBudgetConfig;
   concurrency?: ConcurrencyConfig;
   fairEscrow?: FairEscrowConfig;
+  federated?: FederatedConfig;
 };
 
 /**
@@ -232,10 +264,34 @@ export interface ServiceConfig {
   costRooms: Record<string, CostRoomConfig>;
 }
 
+/** What a {@link CoordinatorFactory} needs to build a federation coordinator sized to one federated policy. */
+export interface CoordinatorSpec {
+  /** Window length (ms) — MUST equal the federated strategy's `windowMs`. */
+  windowMs: number;
+  /** Global per-window budget — the federated strategy's `limit`. */
+  budgetPerWindow: number;
+  /** Coordinator key prefix (optional; the core defaults to `"tk:fed"`). */
+  prefix?: string;
+}
+
+/**
+ * Builds a cross-region {@link GlobalCoordinator} over the resolved shared store. Provided by the runtime
+ * for `redis`/`postgres` backends (the store resolver owns the raw client + the coordinator's lifecycle);
+ * absent for `memory`/`dynamodb`, which cannot federate. Injected via {@link ServerLoadOptions}.
+ */
+export type CoordinatorFactory = (spec: CoordinatorSpec) => GlobalCoordinator;
+
 /** Options for {@link buildLimitersFromConfig}: the core loader options plus an injectable clock. */
 export interface ServerLoadOptions extends LoadConfigOptions {
-  /** Clock for the two-tier limiters (mainly tests); the runtime uses the system clock. */
+  /** Clock for the two-tier / federated limiters (mainly tests); the runtime uses the system clock. */
   clock?: Clock;
+  /**
+   * Factory for a cross-region federation coordinator over the resolved store. Required to serve a
+   * `federated:` policy; the runtime supplies it for `redis`/`postgres` and omits it for `memory`/`dynamodb`.
+   */
+  makeCoordinator?: CoordinatorFactory;
+  /** This instance's region identity for `federated:` policies (a policy's own `region` wins; else this). */
+  region?: string;
 }
 
 function parseConfigText(text: string, format: "yaml" | "json" | undefined): ConfigFile {
@@ -260,6 +316,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   const defaultPrefix = data.defaults?.prefix;
   const meters: Record<string, MeterPolicy> = {};
   const twoTierLimiters: Record<string, Limiter> = {};
+  const federatedLimiters: Record<string, Limiter> = {};
   const admitters: Record<string, UnifiedAdmitter> = {};
   const guards: Record<string, ConcurrencyGuard> = {};
   const fairness: Record<string, WeightedFairEscrowLimiter> = {};
@@ -277,16 +334,19 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
         spec.fairEscrow,
         spec.concurrency,
         spec.twoTier,
+        spec.federated,
       ].filter((b) => b !== undefined).length;
       if (kinds > 1)
         throw new ThrottleKitError(
-          `config.limiters[${name}]: a policy may declare at most one of tokenBudget / fleetBudget / fairEscrow / concurrency / twoTier`,
+          `config.limiters[${name}]: a policy may declare at most one of tokenBudget / fleetBudget / fairEscrow / concurrency / twoTier / federated`,
         );
     }
     if (spec != null && typeof spec === "object" && spec.tokenBudget !== undefined) {
       meters[name] = buildMeter(name, spec, options);
     } else if (spec != null && typeof spec === "object" && spec.fleetBudget !== undefined) {
       meters[name] = buildFleetMeter(name, spec, options, defaultPrefix);
+    } else if (spec != null && typeof spec === "object" && spec.federated !== undefined) {
+      federatedLimiters[name] = buildFederated(name, spec, options);
     } else if (spec != null && typeof spec === "object" && spec.fairEscrow !== undefined) {
       fairness[name] = buildFairEscrow(name, spec, options);
       costRooms[name] = resolveCostRoom(name, spec.fairEscrow as FairEscrowConfig);
@@ -309,7 +369,7 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
   const rest = loadConfigObject({ ...data, limiters: rateLimitOnly }, coreOptions).limiters;
 
   return {
-    limiters: { ...rest, ...twoTierLimiters },
+    limiters: { ...rest, ...twoTierLimiters, ...federatedLimiters },
     meters,
     admitters,
     guards,
@@ -448,6 +508,65 @@ function buildFleetMeter(
       }),
     maxKeys: fb.maxKeys ?? 100_000,
   };
+}
+
+/**
+ * Strategies `federate()` supports — window-coupled with a DISCRETE window boundary (the core-documented
+ * scope). A continuous-rate strategy (`gcra` / `tokenBucket`) HAS a `windowMs` (its period) but no discrete
+ * window, so it is intentionally excluded: window-coupling would silently mis-admit. `slidingWindowLog` is
+ * also excluded (outside the documented federatable scope) — over-restricting is safe; it errors clearly.
+ */
+const FEDERATABLE_STRATEGIES = new Set(["fixedWindow", "slidingWindow", "quota"]);
+
+/**
+ * Build a cross-region federated limiter from a policy's `federated` block. Same decision as the core's
+ * `federate()` (one oracle): its global per-window budget is the strategy's `limit`, coupled to the
+ * strategy's window. The strategy is built by the core loader (the server-only fields are ignored); a
+ * {@link GlobalCoordinator} over the shared store is resolved via `options.makeCoordinator`. Returns a
+ * `Limiter`, so it slots into the service's `limiters` map and is served by `check` exactly like a plain
+ * rate limit — and because `federate()`'s limiter has no `peek`/`forecast` (federation is async +
+ * window-based), those ops resolve to `UNIMPLEMENTED` through the service's existing gate, no extra wiring.
+ */
+function buildFederated(
+  name: string,
+  spec: ServerLimiterSpec,
+  options: ServerLoadOptions,
+): Limiter {
+  const fed = spec.federated as FederatedConfig;
+  // Build the strategy via the core loader (the same indirection buildTwoTier uses) — `federated` and the
+  // other server-only fields are ignored by the core's strategy builder.
+  const built = loadConfigObject({ limiters: { [name]: spec } }).limiters[name];
+  if (built === undefined)
+    throw new ThrottleKitError(`config.limiters[${name}]: could not build a strategy`);
+  const strategy: Strategy = built.strategy;
+  // federate() needs a strategy with a DISCRETE window boundary and does NOT validate this itself: a
+  // continuous-rate strategy (gcra / tokenBucket) HAS a `windowMs` (its period) yet has no discrete window,
+  // so window-coupling would silently mis-admit. Allowlist the core-documented federatable strategies AND
+  // require a fixed window (a calendar-cadence quota has `windowMs` undefined → also correctly rejected).
+  const windowMs = strategy.windowMs;
+  if (!FEDERATABLE_STRATEGIES.has(strategy.name) || typeof windowMs !== "number" || !(windowMs > 0))
+    throw new ThrottleKitError(
+      `config.limiters[${name}].federated: requires a window-coupled strategy with a fixed window (fixedWindow / slidingWindow / a fixed-cadence quota); ${JSON.stringify(strategy.name)} cannot be federated (a continuous-rate strategy like gcra / tokenBucket has no discrete window boundary)`,
+    );
+  if (options.makeCoordinator === undefined)
+    throw new ThrottleKitError(
+      `config.limiters[${name}].federated: needs a shared coordinator store — run with --redis or --postgres (memory / dynamodb cannot federate)`,
+    );
+  // The coordinator's global budget IS the strategy's `limit` (the per-window ceiling enforced fleet-wide).
+  const coordinator = options.makeCoordinator({
+    windowMs,
+    budgetPerWindow: strategy.limit,
+    ...(fed.prefix !== undefined ? { prefix: fed.prefix } : {}),
+  });
+  const region = fed.region ?? options.region ?? "default";
+  const clock = options.clock;
+  return federate({
+    strategy,
+    coordinator,
+    region,
+    ...(fed.batch !== undefined ? { batch: fed.batch } : {}),
+    ...(clock !== undefined ? { clock } : {}),
+  });
 }
 
 /**
