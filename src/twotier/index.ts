@@ -49,6 +49,14 @@ export type {
   RegionFairPoolStats,
 } from "./federated-weighted-fair-escrow";
 
+/**
+ * `RedisRegionFairPool` (DR-FWFE-1) — the production store-backed {@link AsyncRegionFairPool}: the
+ * cross-region weighted-fair pool with its state in a shared Redis hash, so separate region processes
+ * draw from ONE global budget. The grant runs the in-process pool's exact arithmetic, atomically in Lua.
+ */
+export { RedisRegionFairPool } from "./redis-region-fair-pool";
+export type { RedisRegionFairPoolOptions } from "./redis-region-fair-pool";
+
 /** L1/L2 coordination mode. See docs and THROTTLEKIT.md §8. */
 export type TwoTierMode = "strict" | "cached-deny" | "leased";
 

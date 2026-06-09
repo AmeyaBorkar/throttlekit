@@ -35,6 +35,7 @@ const SANCTIONED_SHARE = new Map<number, ReadonlySet<string>>([
       "node-redis.test.ts",
       "weighted-fair-escrow-properties.test.ts",
       "cross-store-equivalence.test.ts",
+      "redis-region-fair-pool.test.ts",
     ]),
   ],
 ]);
@@ -96,6 +97,7 @@ describe("Redis logical-DB allocation (static guard, no Redis required)", () => 
     expect(owners).toEqual([
       "cross-store-equivalence.test.ts",
       "node-redis.test.ts",
+      "redis-region-fair-pool.test.ts",
       "weighted-fair-escrow-properties.test.ts",
     ]);
   });
