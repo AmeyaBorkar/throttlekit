@@ -5,6 +5,29 @@ All notable changes to **throttlekit-server** are documented here. The format fo
 core's public, frozen API and versions independently of it (0.x maturity; the gRPC wire is frozen and
 conformance-tested against the golden vectors).
 
+## [Unreleased]
+
+### Added
+
+- **Fleet token budgets (`fleetBudget`).** A new policy block that enforces **one** token budget across every
+  server instance pointed at a shared store — the fleet-shared face of `tokenBudget`. It is the same cost axis
+  served by the **same `Debit` RPC** (no client change, **no wire change** — the wire stays frozen and
+  conformance-tested), built on the published core's atomic `distributedTokenBudget` (one oracle; no core
+  release needed). Each per-key counter lives in the shared store (`--redis` / `--postgres` / DynamoDB) and is
+  debited atomically, so the budget holds regardless of instance count. **Key-semantics:** the request `key`
+  selects *which* budget (an independent counter at store key `"<prefix>:<key>"`, prefix defaulting to the
+  policy name); same-config instances coordinate automatically, and an explicit `prefix` can deliberately share
+  one budget across differently-named policies. Without a shared store it is process-local (identical to
+  `tokenBudget`), so it is correct single-instance and fleet-coordinated the moment a store is configured.
+  `check` on a `fleetBudget` policy returns `UNIMPLEMENTED` (it is a meter). See the README's *Fleet token
+  budgets* section.
+
+### Changed
+
+- The cost-axis debit path now uses the meter's async `debit()` (was `debitSync()`), so a `fleetBudget` policy
+  backed by an async store (Redis/Postgres/DynamoDB) debits correctly. Decisions for an in-process `tokenBudget`
+  policy are byte-identical — `debit()` resolves synchronously there — so existing behavior is unchanged.
+
 ## [0.2.0] — 2026-06-09
 
 ### Added

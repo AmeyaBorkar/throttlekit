@@ -119,9 +119,35 @@ limiters:
 ```
 
 A client calls `Debit { policy: "completions", key: tenant, tokens: n }` per chunk. The service keeps one
-meter per key (bounded by `maxKeys`, default 100k). It is **single-instance** today (the core primitive is
-per-gateway; a fleet-shared budget is a planned enhancement). `check` on a token-budget policy — and
-`debit` on a rate limiter — return `UNIMPLEMENTED`.
+meter per key (bounded by `maxKeys`, default 100k). A `tokenBudget` meter is **process-local** (each instance
+counts independently); for one budget shared across the fleet, use `fleetBudget` (next section). `check` on a
+token-budget policy — and `debit` on a rate limiter — return `UNIMPLEMENTED`.
+
+## Fleet token budgets (one budget across the whole fleet)
+
+A `tokenBudget` meter counts per instance. To enforce **one** token budget across every server instance — the
+same fleet promise the shared store already gives rate limits and two-tier leasing — use a `fleetBudget` block.
+It is the same cost axis served by the **same `Debit` RPC** (no client change, no wire change), but each per-key
+counter lives in the shared store (`--redis` / `--postgres` / …) and is debited atomically, so the budget holds
+no matter how many instances point at it.
+
+```yaml
+version: 1
+limiters:
+  completions:
+    fleetBudget:        # like tokenBudget, but ONE budget shared across every instance on the same store
+      budget: 1000000   # tokens per window, per key, fleet-wide
+      windowMs: 60000
+```
+
+Run two instances against one `--redis` and a client's `Debit { policy: "completions", key: tenant }` calls are
+metered against a single global budget. **Key-semantics (read this):** the request `key` selects *which* budget
+— each distinct key is an independent counter at store key `"<prefix>:<key>"`, the prefix defaulting to the
+policy name. Two instances coordinate **iff** they resolve the same store key, which same-config instances do
+automatically; set an explicit `prefix` only to deliberately share one budget across differently-named policies.
+Without a shared store a `fleetBudget` policy is process-local — identical to `tokenBudget` — so it is correct on
+a single instance and becomes fleet-coordinated the moment you add the store. `check` on a `fleetBudget` policy
+returns `UNIMPLEMENTED` (it is a meter, like `tokenBudget`).
 
 ## Concurrency & unified admission (the in-flight axis)
 

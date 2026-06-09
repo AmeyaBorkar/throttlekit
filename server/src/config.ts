@@ -25,6 +25,7 @@ import {
   MemoryStore,
   ThrottleKitError,
   adaptiveConcurrency,
+  distributedTokenBudget,
   tokenBudget,
   unifiedAdmission,
 } from "throttlekit";
@@ -32,6 +33,7 @@ import type {
   AdaptiveConcurrencyOptions,
   Clock,
   ConcurrencyGuard,
+  DistributedTokenBudgetMeter,
   Limiter,
   Strategy,
   TokenBudgetMeter,
@@ -74,6 +76,35 @@ export interface TokenBudgetConfig {
   windowMs: number;
   /** Max distinct keys to keep a live meter for; the oldest is dropped past this (default 100_000). */
   maxKeys?: number;
+}
+
+/**
+ * The optional `fleetBudget` block — the **fleet-shared** face of {@link TokenBudgetConfig}. The same
+ * windowed token-budget (cost axis), but enforced across every server instance pointed at one shared store
+ * (`--redis` / `--postgres` / …) via the core's atomic `distributedTokenBudget`. So a polyglot client's
+ * plain `debit` (no client change, no wire change) is now metered against ONE fleet-wide budget per key.
+ *
+ * **Key-semantics (honest boundary):** the request `key` selects *which* budget — each distinct key gets
+ * its own atomic counter at store key `"<prefix>:<key>"`, and every instance sharing the store + that key
+ * forms one global budget. A `fleetBudget` policy's `key` therefore means something subtly different from a
+ * single-instance {@link TokenBudgetConfig} policy's (which is process-local). Without a shared store this
+ * is process-local — equivalent to a plain `tokenBudget` — so a `fleetBudget` policy is correct on one
+ * instance and becomes fleet-coordinated the moment a shared store is configured (available-by-default).
+ */
+export interface FleetBudgetConfig {
+  /** Token budget enforced over each window, shared across the whole fleet (positive integer). */
+  budget: number;
+  /** Window width in ms (epoch-aligned). On Redis the window is rolled by the server clock (skew-proof). */
+  windowMs: number;
+  /** Max distinct keys to keep a live meter for; the oldest is dropped past this (default 100_000). */
+  maxKeys?: number;
+  /**
+   * Store-key prefix for this policy's budgets (default the policy name). The request `key` is appended as
+   * `"<prefix>:<key>"`. Two instances coordinate iff they resolve the same store key, so the default — the
+   * shared policy name — makes instances running the same config share a budget automatically; override it
+   * only to deliberately share a budget across differently-named policies or to namespace further.
+   */
+  prefix?: string;
 }
 
 /**
@@ -138,22 +169,31 @@ export interface FairEscrowConfig {
   unit?: string;
 }
 
-/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `concurrency` / `fairEscrow` blocks. */
+/** A policy spec, extended with the optional server-only `twoTier` / `tokenBudget` / `fleetBudget` / `concurrency` / `fairEscrow` blocks. */
 export type ServerLimiterSpec = LimiterSpec & {
   twoTier?: TwoTierConfig;
   tokenBudget?: TokenBudgetConfig;
+  fleetBudget?: FleetBudgetConfig;
   concurrency?: ConcurrencyConfig;
   fairEscrow?: FairEscrowConfig;
 };
 
 /**
- * A token-budget (cost-axis) policy. The service keeps one {@link TokenBudgetMeter} per key (made by
- * `create`, bounded by `maxKeys`). The meter is single-instance by nature (per the core primitive) — a
- * fleet-shared budget is a future enhancement via the core's `DistributedTokenBudgetMeter`.
+ * A cost-axis meter as the service holds it: a process-local {@link TokenBudgetMeter} (`tokenBudget`) or a
+ * fleet-shared {@link DistributedTokenBudgetMeter} (`fleetBudget`). The service uses only the common async
+ * `debit(tokens)` — identical decision logic, the distributed one reaching the shared store atomically.
+ */
+export type ServerMeter = TokenBudgetMeter | DistributedTokenBudgetMeter;
+
+/**
+ * A token-budget (cost-axis) policy. The service keeps one {@link ServerMeter} per key (made by `create`,
+ * bounded by `maxKeys`). A `tokenBudget` policy makes process-local meters (the request `key` is ignored —
+ * each key is independent in-process); a `fleetBudget` policy bakes the request `key` into the meter's
+ * shared store key, so every instance sharing the store enforces one global budget per key.
  */
 export interface MeterPolicy {
-  /** Make a fresh meter for one key. */
-  create(): TokenBudgetMeter;
+  /** Make a fresh meter for one `key`. (Process-local meters ignore `key`; fleet meters key the store.) */
+  create(key: string): ServerMeter;
   /** Max distinct keys to retain meters for (FIFO-evict beyond this). */
   maxKeys: number;
 }
@@ -231,16 +271,22 @@ export function buildServiceConfig(text: string, options: ServerLoadOptions = {}
     // The kind blocks are mutually exclusive — a policy is one of them. Reject a spec that declares more
     // than one loudly (the dispatch below is first-match-wins, which would otherwise silently drop the rest).
     if (spec != null && typeof spec === "object") {
-      const kinds = [spec.tokenBudget, spec.fairEscrow, spec.concurrency, spec.twoTier].filter(
-        (b) => b !== undefined,
-      ).length;
+      const kinds = [
+        spec.tokenBudget,
+        spec.fleetBudget,
+        spec.fairEscrow,
+        spec.concurrency,
+        spec.twoTier,
+      ].filter((b) => b !== undefined).length;
       if (kinds > 1)
         throw new ThrottleKitError(
-          `config.limiters[${name}]: a policy may declare at most one of tokenBudget / fairEscrow / concurrency / twoTier`,
+          `config.limiters[${name}]: a policy may declare at most one of tokenBudget / fleetBudget / fairEscrow / concurrency / twoTier`,
         );
     }
     if (spec != null && typeof spec === "object" && spec.tokenBudget !== undefined) {
       meters[name] = buildMeter(name, spec, options);
+    } else if (spec != null && typeof spec === "object" && spec.fleetBudget !== undefined) {
+      meters[name] = buildFleetMeter(name, spec, options, defaultPrefix);
     } else if (spec != null && typeof spec === "object" && spec.fairEscrow !== undefined) {
       fairness[name] = buildFairEscrow(name, spec, options);
       costRooms[name] = resolveCostRoom(name, spec.fairEscrow as FairEscrowConfig);
@@ -362,6 +408,45 @@ function buildMeter(
     create: (): TokenBudgetMeter =>
       tokenBudget({ budget, windowMs, ...(clock !== undefined ? { clock } : {}) }),
     maxKeys: tb.maxKeys ?? 100_000,
+  };
+}
+
+/**
+ * Build a fleet-shared cost-axis meter from a policy's `fleetBudget` block. Same decision as `tokenBudget`
+ * (the core's `distributedTokenBudget` is the atomic, fleet-wide face of `tokenBudget` — one oracle), but
+ * each per-key meter targets the shared store so every instance enforces one global budget. The request
+ * key is baked into the store key (`"<prefix>:<key>"`); without a shared store this falls back to a private
+ * `MemoryStore` (process-local, exactly like `tokenBudget`), so the policy is correct single-instance and
+ * fleet-coordinated the moment `--redis`/`--postgres`/… is configured — no client and no wire change.
+ */
+function buildFleetMeter(
+  name: string,
+  spec: ServerLimiterSpec,
+  options: ServerLoadOptions,
+  defaultPrefix: string | undefined,
+): MeterPolicy {
+  const fb = spec.fleetBudget as FleetBudgetConfig;
+  if (fb.budget === undefined || fb.windowMs === undefined)
+    throw new ThrottleKitError(
+      `config.limiters[${name}].fleetBudget: both \`budget\` and \`windowMs\` are required`,
+    );
+  const { budget, windowMs } = fb;
+  // The shared store makes this ONE fleet budget; without one it is process-local (a private MemoryStore).
+  const store = options.store ?? new MemoryStore();
+  const clock = options.clock;
+  // The request key selects WHICH budget; instances sharing this store key share the budget. Default the
+  // prefix to the policy name so same-config instances coordinate automatically (see FleetBudgetConfig).
+  const keyPrefix = fb.prefix ?? defaultPrefix ?? name;
+  return {
+    create: (key: string): DistributedTokenBudgetMeter =>
+      distributedTokenBudget({
+        budget,
+        windowMs,
+        store,
+        key: `${keyPrefix}:${key}`,
+        ...(clock !== undefined ? { clock } : {}),
+      }),
+    maxKeys: fb.maxKeys ?? 100_000,
   };
 }
 

@@ -13,17 +13,14 @@
  */
 
 import { type Enforcer, ThrottleKitError, createEnforcer } from "throttlekit";
-import type {
-  Clock,
-  Decision,
-  FailMode,
-  Forecast,
-  Limiter,
-  TokenBudgetMeter,
-  UnifiedAdmitter,
-} from "throttlekit";
+import type { Clock, Decision, FailMode, Forecast, Limiter, UnifiedAdmitter } from "throttlekit";
 import type { WeightedFairEscrowLimiter } from "throttlekit/twotier";
-import { type MeterPolicy, type ServerLoadOptions, buildServiceConfig } from "./config.js";
+import {
+  type MeterPolicy,
+  type ServerLoadOptions,
+  type ServerMeter,
+  buildServiceConfig,
+} from "./config.js";
 
 /** Per-call options for {@link RateLimiterService.admit} (the concurrency / unified axes). */
 export interface AdmitOptions {
@@ -199,7 +196,7 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     enforcers.set(name, createEnforcer({ limiter, fail, policyName: name }));
   }
   // Token-budget (cost-axis) policies: one meter per key, lazily created and FIFO-bounded by `maxKeys`.
-  const meters = new Map<string, { policy: MeterPolicy; cache: Map<string, TokenBudgetMeter> }>();
+  const meters = new Map<string, { policy: MeterPolicy; cache: Map<string, ServerMeter> }>();
   for (const [name, policy] of Object.entries(options.meters ?? {})) {
     if (enforcers.has(name))
       throw new ThrottleKitError(`policy ${JSON.stringify(name)} is both a limiter and a meter`);
@@ -254,8 +251,8 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     throw new PolicyNotFoundError(policy, order);
   }
 
-  /** Resolve (lazily creating) the per-key meter for a token-budget policy. */
-  function resolveMeter(policy: string, key: string): TokenBudgetMeter {
+  /** Resolve (lazily creating) the per-key meter for a token-budget / fleet-budget policy. */
+  function resolveMeter(policy: string, key: string): ServerMeter {
     const entry = meters.get(policy);
     if (entry === undefined) {
       if (enforcers.has(policy) || admitters.has(policy) || fairLimiters.has(policy))
@@ -268,7 +265,9 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
         const oldest = entry.cache.keys().next(); // FIFO eviction by insertion order
         if (!oldest.done) entry.cache.delete(oldest.value);
       }
-      meter = entry.policy.create();
+      // The key is baked into a fleet meter's shared store key; an in-process meter ignores it. Evicting
+      // a fleet meter is safe — the budget lives in the shared store, so rebuilding re-attaches to it.
+      meter = entry.policy.create(key);
       entry.cache.set(key, meter);
     }
     return meter;
@@ -326,8 +325,11 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     },
 
     async debit(policy, key, tokens = 1): Promise<Decision> {
-      // The meter is the core's `tokenBudget` primitive — the debit decision is computed by the core.
-      return resolveMeter(policy, key).debitSync(tokens);
+      // The meter is the core's `tokenBudget` (process-local) or `distributedTokenBudget` (fleet-shared)
+      // primitive — the debit decision is computed by the core (one oracle). `debit()` resolves
+      // synchronously for an in-process meter and runs one atomic read-modify-write against the shared
+      // store for a fleet meter; `debitSync()` would throw on an async (Redis/Postgres/Dynamo) store.
+      return resolveMeter(policy, key).debit(tokens);
     },
 
     async admit(policy, key, opts): Promise<AdmitResult> {
