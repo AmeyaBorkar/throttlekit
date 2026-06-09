@@ -27,6 +27,7 @@ export default defineConfig({
     cli: "src/cli/bin.ts",
     twotier: "src/twotier/index.ts",
     federation: "src/federation/index.ts",
+    policy: "src/policy/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,

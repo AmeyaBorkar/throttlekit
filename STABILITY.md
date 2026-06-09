@@ -88,6 +88,13 @@ depend on their exact shape.
   block they rest on, `buildStrategy` on `throttlekit/config`. Library-only, read-only over the existing
   pure algorithms; the trace format (`TRACE_FORMAT_VERSION`) is versioned and rejects incompatible traces.
   Their shapes may change in a minor.
+- **Admission Policy Plans:** the `throttlekit/policy` subpath — `policy` / `policySet` /
+  `policySetFromConfig` / `parsePolicySet` (the content-addressed `Policy` / `PolicySet` artifact),
+  `plan` (the recorded-traffic decision diff) with its `Plan` / `PolicyDiff` shapes, the corpus adapters
+  (`corpusFromRecordings` / `corpusFromTraces`), `assertPlanAcceptable` (the CI gate), and the
+  `renderPlan` / `planToJSON` renderers. A pure orchestration layer over the replay testkit; no core
+  change. The artifact format (`POLICY_SET_FORMAT_VERSION`) is versioned and rejects incompatible sets.
+  Their shapes may change in a minor.
 
 ## Explicitly out of scope at `1.0`
 

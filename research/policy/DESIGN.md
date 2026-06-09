@@ -193,52 +193,66 @@ loader) and `throttlekit/testkit` (recorder, `replay`, `divergence`, candidate D
 `scorecard`, `ReplayFingerprint`, the refusal taxonomy). **No frozen-core change**; marked
 `@experimental` in `STABILITY.md`, outside the 1.x freeze, exactly like the testkit.
 
-Frozen shapes (the P0 contract):
+Frozen shapes (the P0 contract — as built; see PP-09 for the corpus-model refinement):
 
 ```ts
-interface Policy        { name: string; spec: LimiterSpec; fingerprint: ReplayFingerprint }
-interface PolicySet     { label?: string; policies: Policy[]; contentHash: string }
+interface Policy            { name: string; spec: LimiterSpec; fingerprint: ReplayFingerprint }
+interface UnreplayablePolicy { name: string; reason: string }     // concurrency / escrow / joint-LP
+interface PolicySet         { label?: string; policies: Policy[]; unreplayable?: UnreplayablePolicy[]; contentHash: string }
 
-type TraceCorpus = readonly ReplayTrace[]      // one or many recorded traces
+// A corpus is fundamentally an ARRIVAL STREAM (key, cost, at) grouped by policy — NOT a decision
+// trace. The baseline is re-derived by cold-recording `current` over the arrivals (see PP-09).
+interface Arrival       { key: string; cost: number; at: number }
+interface PolicyCorpus  { arrivals: Arrival[]; truncated: boolean; traces: number }
+type TraceCorpus = Readonly<Record<string /*policy*/, PolicyCorpus>>
 
+interface KeyFlip   { key: string; allowToDeny: number; denyToAllow: number; total: number }
 interface PolicyDiff {
   policy: string;
   state: "ok" | "empty" | "truncated" | "not-replayable" | "refused";
-  allowToDeny: number;
-  denyToAllow: number;
-  flippedTotal: number;
-  steps: number;                                // recorded arrivals replayed
-  topFlippedKeys: { key: string; flips: number; lane?: "rate" | "cost" }[];
+  allowToDeny: number; denyToAllow: number; flippedTotal: number;
+  divergent: number; steps: number; affectedKeys: number;
+  topFlippedKeys: KeyFlip[];
   refusal?: { reason: ReplayRefusal | "not-replayable"; message: string };
 }
-
 interface Plan {
-  current: { contentHash: string; label?: string };
+  current:   { contentHash: string; label?: string };
   candidate: { contentHash: string; label?: string };
-  corpus: { traces: number; steps: number; truncated: boolean };
+  corpus:    { policies: number; steps: number; truncated: boolean };
   diffs: PolicyDiff[];
-  summary: { policies: number; replayable: number; allowToDeny: number; denyToAllow: number };
+  summary: { policies: number; replayable: number; allowToDeny: number; denyToAllow: number;
+             flippedTotal: number; affectedKeys: number; added: string[]; removed: string[] };
 }
 
 function plan(current: PolicySet, candidate: PolicySet, corpus: TraceCorpus): Plan  // pure, never throws
 ```
 
-`plan()` is a **pure orchestration** over the existing `replay()` / `divergence` /
-`scorecard` machinery: for each policy it identity-self-checks the recorded baseline, runs the
-candidate, and folds the per-step `divergence` into the flip ledger + top-K movers; every
-testkit refusal maps to an honest `PolicyDiff.state`. It mirrors `runWhatIf`'s "never throw,
-always return a typed state" contract, generalized from one policy to a whole set.
+`plan()` is a **pure orchestration** over the existing `replay()` / `divergence` machinery: for each
+policy present in both sets it **cold-records `current` over the recorded arrivals** to derive the
+baseline trace, replays the `candidate` against it, and folds the per-step `divergence` into the
+directional flip ledger + top-K movers; every testkit refusal maps to an honest `PolicyDiff.state`. It
+mirrors `runWhatIf`'s "never throw, always return a typed state" contract, generalized from one policy to
+a whole set. (Per-key lane labels were dropped: a leaf diff is single-axis by construction — the
+*multi-axis* story is that a Plan covers every policy, diffing rate/cost and flagging concurrency/escrow
+as `not-replayable`, not that one leaf decomposes into axes.)
 
 ### 5.2 Corpus adapters — pluggable, reuse all three existing producers
 
 ```ts
-fromRecordings(recordings: Recording[]): TraceCorpus      // library: throttlekit/testkit
-fromCaptureExport(json: string): TraceCorpus              // server: `capture export` (#289)
-fromShadow(shadow: Shadow): TraceCorpus                    // server: live shadow (#290/#299)
+// core (throttlekit/policy) — manual-clock traces / recordings
+corpusFromRecordings(recordings: Record<name, Recording | Recording[]>): TraceCorpus
+corpusFromTraces(traces: Record<name, ReplayTrace | ReplayTrace[]>): TraceCorpus
+arrivalsFromTrace(trace: ReplayTrace): Arrival[]
+
+// server (P5) — adapters over the server-only producers, built on the core helpers
+corpusFromShadow(name, shadow): TraceCorpus               // live shadow (#290/#299) — manual clock
+corpusFromCaptureExport(json: string): TraceCorpus        // `capture export` (#289) — see PP-09
 ```
 
-No new capture mechanism is invented — the durable forensic store (#289) already emits
-ReplayTrace JSON, and the shadow (#290/#299) already produces a `clock:"manual"` trace.
+No new capture mechanism is invented — the durable forensic store (#289) already emits ReplayTrace JSON,
+and the shadow (#290/#299) already produces a `clock:"manual"` trace. Because `plan()` only consumes the
+**arrivals** and re-derives the baseline cold (PP-09), even the system-clock capture export is usable —
+its warm-production decisions are intentionally ignored, only its arrival timing is replayed.
 
 ### 5.3 The governance hook — the adaptive lever
 
@@ -322,6 +336,7 @@ Plans informs a *human/CI* decision, it does not silently move limits.
 | **PP-06** | Ship a **CI-gate assertion** + machine-readable Plan JSON from day one. | The artifact-in-CI loop is the adaptive lever and the sharpest differentiator vs live-forward shadow modes. |
 | **PP-07** | **Positioning leads with the 3-part delta** over shadow mode (recorded→zero-wait, multi-axis binding attribution, deterministic per-tenant artifact). Closest honest analog named = `terraform plan`; no competitor-by-name matrix in public docs. | The novelty is a *combination*; stated imprecisely it reads as me-too. Public `research/` docs stay vendor-neutral (per the established practice of stripping competitor comparisons from public notes). |
 | **PP-08** | Fleet plans + canary + continuous-plan are **future**; fleet rides the deferred #283 track and stays artifact-based (**no wire reopen**). | Road B holds the wire bullet; the artifact design slots these in without rework. |
+| **PP-09** | A corpus is an **arrival stream** `(key, cost, at)`, not a decision trace; `plan()` **cold-rederives the baseline** by recording `current` over the arrivals (it never trusts a trace's recorded decisions). *Why changed (P0 spike): `replay()` refuses non-manual clocks, and the #289 capture is `clock:"system"`. Rederiving from arrivals makes the baseline always = current-cold (never stale), works for every source uniformly, and turns the warm-vs-cold caveat (§4) into a structural guarantee rather than a footnote.* | The arrival stream is the only honest, source-agnostic input; the recorded warm decision is never the baseline. |
 
 ---
 
