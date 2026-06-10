@@ -105,14 +105,12 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Run bench:gate
+        # The threshold, the cross-OS reference-mix residual rationale, and the sub-ns noise floor all
+        # live in bench/gate.ts (default 2.0 — the win32 baseline read on ubuntu carries a measured
+        # ~50% residual since the clock read is far cheaper on Linux, and clock-free sub-30ns rows like
+        # `lease spend` are reported but not gated). No env override here ⇒ bench/gate.ts is the single
+        # source of truth. A failure is a real relative hot-path regression, not a slow runner.
         run: npm run bench:gate
-        env:
-          # Relative threshold: fail when a row's normalised cost grows > 50% vs baseline. The
-          # win32-recorded baseline read here on ubuntu carries a MEASURED systematic ~20-30%
-          # cross-OS reference-mix residual (the clock read is much cheaper on Linux), so 1.5 clears
-          # it while still catching the deopts this gate exists for (hot-path megamorphism is ~3× =
-          # +200%). For a tighter gate, record the baseline on this OS, or diff against the base commit.
-          BENCH_REGRESSION_THRESHOLD: "1.5"
 
   server:
     name: Server (gRPC door)

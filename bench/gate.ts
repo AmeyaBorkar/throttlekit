@@ -33,12 +33,22 @@
  * reference's instruction MIX doesn't perfectly track each strategy's. Most of the gap is the clock
  * read — `Date.now()` is a larger fraction of the reference than of a `checkSync`, and its cost
  * differs sharply across OSes (~3× cheaper on Linux than Windows). So a win32-recorded baseline read
- * on an `ubuntu-latest` runner sees every relative cost rise a *systematic* ~20–30% (measured: gcra
- * +25%, tokenBucket +19%, fixedWindow +30%). The threshold is therefore **1.5** — clear of that
- * cross-OS residual, yet far below the regressions this gate exists to catch: a hot path
- * deoptimising (a closure megamorphising `checkSync`) is ~3× = +200%. For a *tighter* gate, record
- * the baseline on the CI OS (then the residual is just same-OS generation variance, a few percent),
- * or compare the PR against its base commit measured on the same runner.
+ * on an `ubuntu-latest` runner sees every relative cost rise a *systematic* residual — measured up to
+ * ~50% on the checkSync rows (gcra +35%, tokenBucket +51%, fixedWindow +53% on one ubuntu-24 runner,
+ * larger than an early 20–30% estimate). The threshold is therefore **2.0**: clear of that cross-OS
+ * residual with margin for runner-generation variance, yet still well below the regressions this gate
+ * exists to catch — a hot path deoptimising (a closure megamorphising `checkSync`) is ~3× = +200%.
+ * For a *tighter* gate, record the baseline on the CI OS (then the residual is just same-OS generation
+ * variance, a few percent), or compare the PR against its base commit measured on the same runner.
+ *
+ * The noise floor ({@link NOISE_FLOOR_NS}): the ratio trick only works once the measured op is slow
+ * enough that the reference normalisation resolves it. An op whose *baseline* time is a handful of ns
+ * — e.g. `lease spend` ≈ 22 ns, a pure credit decrement that, unlike `checkSync`, reads no clock at
+ * all — is dominated by timer resolution and the reference's clock-mix mismatch, so its cross-machine
+ * ratio is pure noise (it swung +130% on the same runner with no code change). Such rows are MEASURED
+ * and shown but NOT gated *here*; their performance is pinned instead by their own absolute-time bench
+ * (`bench/lease.ts`) and unit coverage, which need no cross-machine normalisation. The floor is keyed
+ * on the BASELINE size, so a merely-slow runner can never tip a fast row into a false regression.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -60,7 +70,15 @@ const BASELINE_PATH = resolvePath(HERE, "baseline.json");
 // (which is ~100k iters), so the timed window is steady-state.
 const RUNS = 10;
 const ITERS = 2_000_000;
-const DEFAULT_THRESHOLD = 1.5;
+const DEFAULT_THRESHOLD = 2.0;
+/**
+ * Ratio-gate noise floor (ns). A row whose BASELINE absolute time is below this is too fast for the
+ * reference normalisation to resolve across machines — its cross-OS ratio is noise (see the header).
+ * Such rows are reported but never marked `regressed`. 30 ns sits comfortably under the gated
+ * checkSync rows (≈170–200 ns on the baseline machine) and above the sub-credit ops (`lease spend`
+ * ≈ 22 ns), so it excuses exactly the rows the ratio trick can't resolve, and no real strategy hot path.
+ */
+const NOISE_FLOOR_NS = 30;
 // Bump on incompatible shape changes so old files fail loud. v2 added machine-independent
 // `relative` + the reference denominator (v1 stored only absolute `nsPerOp` and could not block).
 const BASELINE_SCHEMA_VERSION = 2 as const;
@@ -219,7 +237,7 @@ interface CompareRow {
   baselineRel: number | undefined;
   /** currentRel / baselineRel — dimensionless, machine-independent. */
   ratio: number | undefined;
-  status: "ok" | "improved" | "regressed" | "new";
+  status: "ok" | "improved" | "regressed" | "new" | "fast";
 }
 
 export function compareRows(current: Row[], baseline: Baseline, threshold: number): CompareRow[] {
@@ -236,8 +254,16 @@ export function compareRows(current: Row[], baseline: Baseline, threshold: numbe
       };
     }
     const ratio = cur.relative / base.relative;
+    // Below the noise floor the cross-machine ratio is meaningless (see NOISE_FLOOR_NS) — measure and
+    // show it, but never let it fail the gate. Keyed on the BASELINE size so a slow runner can't false-fail.
     const status: CompareRow["status"] =
-      ratio > threshold ? "regressed" : ratio < 0.9 ? "improved" : "ok";
+      base.nsPerOp < NOISE_FLOOR_NS
+        ? "fast"
+        : ratio > threshold
+          ? "regressed"
+          : ratio < 0.9
+            ? "improved"
+            : "ok";
     return {
       label: cur.label,
       currentNs: cur.nsPerOp,
@@ -249,7 +275,7 @@ export function compareRows(current: Row[], baseline: Baseline, threshold: numbe
   });
 }
 
-const MARK = { ok: "✓", improved: "↓", regressed: "✗", new: "?" } as const;
+const MARK = { ok: "✓", improved: "↓", regressed: "✗", new: "?", fast: "·" } as const;
 
 function fmtNs(ns: number): string {
   return ns.toFixed(0).padStart(6);

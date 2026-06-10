@@ -98,6 +98,37 @@ describe("bench gate — compareRows (relative metric)", () => {
     );
     expect(out[0]?.status).toBe("regressed");
   });
+
+  it("does not gate a sub-noise-floor baseline row (cross-machine ratio is noise)", () => {
+    // A row whose BASELINE absolute time is a handful of ns (e.g. a clock-free `lease spend`) has a
+    // meaningless cross-machine ratio — report it, but never mark it regressed however big the swing.
+    const tiny = makeBaseline(
+      [{ label: "lease spend", nsPerOp: 22, relative: 0.17 }],
+      128,
+      10,
+      1_000_000,
+    );
+    const out = compareRows(
+      [{ label: "lease spend", nsPerOp: 18, relative: 0.4 }], // +135% relative — pure cross-OS noise
+      tiny,
+      1.5,
+    );
+    expect(out[0]?.status).toBe("fast");
+    expect(out[0]?.ratio).toBeGreaterThan(2); // the ratio is still computed + shown…
+    expect(out.filter((r) => r.status === "regressed")).toHaveLength(0); // …just never gated
+  });
+
+  it("keys the noise floor on the BASELINE size, so a slow current run can't false-fail", () => {
+    const tiny = makeBaseline([{ label: "x", nsPerOp: 20, relative: 0.16 }], 125, 10, 1_000_000);
+    // Even a wildly slow current measurement stays "fast" — the baseline says this op is un-gateable.
+    const out = compareRows([{ label: "x", nsPerOp: 999, relative: 8.0 }], tiny, 1.5);
+    expect(out[0]?.status).toBe("fast");
+  });
+
+  it("still gates a normal-sized baseline row (the floor excuses only sub-30ns rows)", () => {
+    const out = compareRows([{ label: "a", nsPerOp: 250, relative: 5.0 }], baseline, 2.0); // 5.0/2.0 = 2.5 > 2.0
+    expect(out[0]?.status).toBe("regressed");
+  });
 });
 
 describe("bench gate — formatTable", () => {

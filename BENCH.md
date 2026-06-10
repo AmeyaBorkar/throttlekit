@@ -246,5 +246,8 @@ THROTTLEKIT_TEST_POSTGRES=postgres://throttlekit:throttlekit@localhost:5433/thro
 
 Each run stamps a machine-tagged manifest into [`bench/manifests/`](bench/manifests/) (the JSON behind the
 tables above). The CI **bench-regression gate** (`npm run bench:gate`) guards the in-process hot paths —
-the three sync strategies **and the Tier-2 `lease spend`** — on every push using a machine-independent
-relative metric, so a hot-path regression fails the build rather than silently shipping.
+the three sync `checkSync` strategies — on every push using a machine-independent relative metric, so a
+hot-path regression fails the build rather than silently shipping. The Tier-2 `lease spend` is measured and
+reported too, but at ~20 ns it sits below the gate's noise floor — too fast to ratio-normalise across
+machines — so its absolute cost is pinned by its own [`bench/lease.ts`](bench/lease.ts) rather than the
+relative gate.
