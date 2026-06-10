@@ -48,6 +48,48 @@ Top-K heavy hitters use the **Space-Saving / Stream-Summary** algorithm (Metwall
 heavy hitter**. The snapshot reports allowed/denied/total/deny-rate plus the top requested and top denied
 keys. Marked **experimental** (excluded from the 1.x SemVer surface).
 
+## The Monitor door (the read API)
+
+Everything above is a *producer* contract: OTel and the taps **push** decisions out to a sink you supply.
+The [gRPC server](14-grpc-server.md) adds the complementary **pull/read** side — the **Monitor door**, a
+remote, programmable read API over the same in-process telemetry hub the in-terminal dashboard renders. It
+is strictly **non-mutating** and never returns or affects a rate-limit `Decision`.
+
+The hub (`server/src/monitor/hub.ts`) is a zero-dependency in-process aggregator: register the served
+limiters / unified admitters / concurrency guards and it returns **tapped** wrappers (built on
+`tapDecisions` + `withAnalytics`, and `admissionTap` + `withAdmissionAnalytics` for the binding-axis lane),
+then maintains one rolling per-window `LensSnapshot` (allow/deny, per-axis denials, Space-Saving top-K
+keys, observed ceiling + admit-path latency, guard health) plus a bounded live denial/fence feed. The taps
+are synchronous, exception-swallowing, and O(1), so the hub can never perturb the control path — the same
+discipline the in-process tap holds itself to.
+
+Three surfaces project that one hub:
+
+- **`throttlekit.v1.Monitor`** (gRPC; [13](13-wire-protocol.md)) — `GetSnapshot` returns a typed envelope
+  (`MonitorMeta` + per-policy/guard summaries + recent denials) **plus `raw_json`**, the full `LensSnapshot`
+  as JSON; the typed fields are the stable wire contract while the evolving internal analytics ride in
+  `raw_json`, so the additive wire is never coupled to the snapshot shape. `Watch` opens a live, filtered
+  server-streamed denial feed that is **server-side rate-capped and backpressured** — a slow reader simply
+  *drops* events, so the feed never grows server memory and never blocks the control path (best-effort
+  observability, not a durable log — use [decision capture](17-replay.md) for that).
+- **Prometheus `/metrics`** (`server/src/monitor/metrics.ts`; `--metrics-port`) — a small HTTP server
+  rendering the hub as Prometheus text exposition, plus a `/healthz` liveness probe. It carries **only
+  aggregate, PII-free series** (per-policy allow/deny, per-axis denials, observed ceiling, p50/p99 latency,
+  guard health) — *no* per-key series.
+- **gRPC health** — always-on `grpc.health.v1.Health` (vendored, outside the additive `wire/` contract;
+  [13](13-wire-protocol.md), [14](14-grpc-server.md)).
+
+**Auth posture.** The `Monitor` snapshot carries traffic keys (the limited identities = **PII**), so the
+gRPC Monitor is **loopback-only** until a `--monitor-secret` is set (presented in call metadata, paired
+with TLS to expose). `/metrics`, being aggregate and PII-free, needs no auth and defaults to loopback (a
+host flag exposes it, with a warning).
+
+**ThrottleKit Lens** is the *in-terminal* renderer of this same hub: `throttlekit-server --tui` draws the
+`snapshot()` each frame across **eight tabs** (Overview, Latency, Fairness, Capacity, Guarantee, Cost Room,
+Replay, Plan). Lens (the TUI) and the Monitor door (the programmable/remote read API) are two views of the
+identical hub — distinct surfaces, one source of truth. (The legacy `throttlekit-lens` npm package is
+deprecated; "Lens" now names the built-in `--tui` dashboard.)
+
 ## Design decisions & rationale
 
 - **Frozen metric/attribute names**, pinned by a contract test — the only safe way to let dashboards depend
@@ -58,6 +100,14 @@ keys. Marked **experimental** (excluded from the 1.x SemVer surface).
 - **Taps swallow their own exceptions** — observability must never be able to break the control path.
 - **Space-Saving for heavy hitters** — bounded memory over an unbounded key universe, with the one-sided
   error (over-estimate, never miss a true hitter) that is correct for abuse detection.
+- **Producer vs read API are separate contracts.** OTel/taps are a *push* producer (you own the sink); the
+  Monitor door is a *pull* read API (a client reads remotely). Splitting them lets the read API carry
+  per-key/PII detail behind a secret while the push contract stays vendor-neutral and the metric names stay
+  frozen.
+- **Typed wire + `raw_json`** — the Monitor's typed fields are the stable wire contract; the full evolving
+  `LensSnapshot` rides in `raw_json`, so the additive wire never has to chase the internal analytics shape.
+- **`/metrics` is aggregate-only on purpose** — carrying no per-key series is what lets it default to
+  loopback with no auth, while the gRPC snapshot (which has top-keys + the denial feed) requires a secret.
 
 ## Caveats
 
@@ -77,4 +127,7 @@ keys. Marked **experimental** (excluded from the 1.x SemVer surface).
 ## Source map
 
 `src/observability/otel.ts` (the frozen contract + instrumentation) · `tap.ts` (the decision tap) ·
-`index.ts` · `src/analytics/index.ts` (`withAnalytics`) · `docs/METRICS.md`.
+`index.ts` · `src/analytics/index.ts` (`withAnalytics`) · `docs/METRICS.md`. The Monitor door lives in the
+server: `server/src/monitor/hub.ts` (the telemetry hub), `service.ts` (the `throttlekit.v1.Monitor` gRPC),
+`metrics.ts` (`/metrics`), `render.ts` (the Lens TUI frame) — contract in [13](13-wire-protocol.md),
+server in [14](14-grpc-server.md).

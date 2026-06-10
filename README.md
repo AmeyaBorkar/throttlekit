@@ -81,6 +81,7 @@ The incumbents are good at what they do — this is what ThrottleKit adds on top
 | Weighted-fair share · overload shedding · fixed-memory DDoS sketch | – | – | – | **✓** |
 | Polyglot from one **verified** core (Python today) | – | – | – | **✓** |
 | Live **binding-axis** monitoring dashboard (which axis is throttling) | – | – | – | **✓ (Lens)** |
+| **Plan** a limit change before deploy — replay traffic → allow↔deny diff | – | – | – | **✓ (Policy Plans)** |
 | Framework / transport adapters | 1 (Express) | a few | – | **13** |
 | Zero runtime dependencies | – | – | – | **✓** |
 
@@ -176,30 +177,34 @@ assertPlanAcceptable(result, { maxAllowToDeny: 0 }); // throws in CI — the cha
 
 The baseline is your *current* policy replayed cold over the recorded arrival timing — not a guess, and never a comparison against a warm production node's exact decisions (a cold replay can't reproduce those). Leaf **rate + cost** limiters diff exactly; a concurrency / escrow axis is reported `not-replayable` (observe it live), never faked. Deterministic, and built entirely on `throttlekit/testkit` — no new moving parts.
 
-## Monitoring — the live terminal dashboard (experimental)
+## Monitoring — ThrottleKit Lens + the Monitor door (experimental)
 
-`throttlekit-server --config x.yaml --tui` opens a built-in, **zero-dependency** terminal dashboard (TUI) alongside gRPC — no browser, no metrics backend. It gives *every* policy the full ops board (throughput, deny rate, top denied keys, concurrency health, a live denial feed with exact per-axis numbers) plus the one view no other rate-limiter dashboard renders: **live binding-axis attribution**. Because `unifiedAdmission` composes rate × concurrency × cost in one decision, the dashboard shows **which axis is throttling each key right now** — `rate`, `concurrency`, `cost`, or the joint-LP `policy` lane.
+**ThrottleKit Lens** is a built-in, **zero-dependency** monitoring dashboard that runs **right in your terminal** — `throttlekit-server --config x.yaml --tui`, alongside gRPC, with no browser and no metrics backend. It gives *every* policy the full ops board across **eight tabbed views** — Overview · Latency · Fairness · Capacity · Guarantee · Cost Room · Replay · Plan — plus the one view no other rate-limiter dashboard renders: **live binding-axis attribution**. Because `unifiedAdmission` composes rate × concurrency × cost in one decision, the Lens shows **which axis is throttling each key right now** — `rate`, `concurrency`, `cost`, or the joint-LP `policy` lane.
 
 ```bash
 throttlekit-server --config .throttlekit.yaml --tui
-#  → gRPC on :50051  +  a live dashboard in your terminal (q quit · ↑↓ scroll · p pause)
+#  → gRPC on :50051  +  ThrottleKit Lens in your terminal (q quit · 1-8/Tab views · p pause)
 ```
 
-It watches the *server's* decisions, so it works for Python / Go / any-language clients too. A TUI owns the terminal, so it's **opt-in** (`--tui`) and needs an interactive TTY; for **headless / production** monitoring, emit OpenTelemetry → Grafana — including `throttlekit.denies_by_axis{lane}`, the deliberate axis escape hatch added in 1.2.0. → [Monitoring](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens)
+The Lens watches the *server's* decisions, so it works for Python / Go / any-language clients too. Need that state **remotely, or from another language**? It's also a read-only gRPC service — the **Monitor door** (`throttlekit.v1.Monitor`: `GetSnapshot` + `Watch`) — with a Prometheus `/metrics` endpoint and standard gRPC health, on by default and loopback-bound until you set a secret. A TUI owns the terminal, so the Lens is **opt-in** (`--tui`) and needs an interactive TTY; for fully **headless** monitoring, emit OpenTelemetry → Grafana, including `throttlekit.denies_by_axis{lane}` (the deliberate axis escape hatch from 1.2.0). → [Monitoring](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens)
 
-## Polyglot — one core, two doors (experimental)
+> The old browser-based `throttlekit-lens` npm package is **deprecated** — monitoring now lives in the terminal (`--tui`) and over the Monitor door.
+
+## Polyglot — one core, four doors (experimental)
 
 Reach the limiter from non-Node services without re-implementing a single algorithm: the Node core stays the **only** thing that computes a decision, and every other surface is a thin pipe conformance-checked against one set of language-neutral [golden vectors](./wire).
 
-- **Service door** — [`throttlekit-server`](./server) runs the core and answers a small gRPC contract (`throttlekit.proto`); any language becomes a trivial stub, and a denial is a normal decision, never an RPC error.
+- **Service door** — [`throttlekit-server`](./server) runs the core and answers a small gRPC contract (`throttlekit.proto`); any language becomes a trivial stub, and a denial is a normal decision, never an RPC error. Configure a policy as `federated:` / `fleetBudget:` / `distributedConcurrency:` / `federatedFairEscrow:` and **every** client — Node, Python, edge — gets globally-coordinated, fleet-wide decisions over the *existing* RPCs, with **no client change**.
+- **Fleet lease (the scale ceiling)** — a very high-throughput client leases a *chunk* of a global budget from the service's additive `Fleet.Reserve` door and spends it locally with the core **`LeaseSpender`** (`throttlekit/twotier`), round-tripping only to refresh. The server stays the one oracle — it sizes the grant; the client's local spend is a verbatim port of the leased-L1 path, pinned **byte-for-byte** by golden lease vectors.
+- **Monitor door** — the server's read-only `Monitor` gRPC service (+ Prometheus `/metrics`) makes the same live operational state ThrottleKit Lens renders in the terminal readable **remotely, from any language**.
 - **Direct door** — a client runs the core's *own* vendored Lua against the same Redis your Node fleet uses (one hop, no extra service).
-- **[`throttlekit-py`](https://github.com/AmeyaBorkar/throttlekit-py)** reaches **every axis** from Python — rate (`check`), cost (`debit`), two-tier leased (`check`, transparently), and concurrency + unified admission (`admit`, with crash-safe leases) — and its `RedisBackend` replays the full golden vectors through real Redis to reproduce this core **bit-for-bit**.
+- **[`throttlekit-py`](https://github.com/AmeyaBorkar/throttlekit-py)** reaches **every axis** from Python — rate (`check`), cost (`debit`), two-tier leased (`check`, transparently), and concurrency + unified admission (`admit`, with crash-safe leases) — plus the **Fleet** lease and **Monitor** doors — and its `RedisBackend` replays the full golden vectors through real Redis to reproduce this core **bit-for-bit**.
 
 The proto is the stable polyglot contract; the raw Lua wire is behavior-locked but deliberately **not** frozen. The full walkthrough is the [**Polyglot & Python**](https://github.com/AmeyaBorkar/throttlekit/wiki/Polyglot-and-Python) wiki page; design + decision records live in [`research/polyglot/DESIGN.md`](./research/polyglot/DESIGN.md).
 
 ## Correctness
 
-Dual-path conformance (JS ≡ Lua over thousands of generated timelines) + shrinkable `fast-check` property passes, atomicity tests (N concurrent checks at limit K ⇒ exactly K allowed), the TLA⁺/TLC model re-checked by an exhaustive JS checker in CI, and federation BFS-twin coverage. All time-dependent tests use `ManualClock`, so the **1,300+ test** suite is deterministic; CI is green across Node 20/22/24, and a bench-regression gate blocks hot-path slowdowns.
+Dual-path conformance (JS ≡ Lua over thousands of generated timelines) + shrinkable `fast-check` property passes, atomicity tests (N concurrent checks at limit K ⇒ exactly K allowed), the TLA⁺/TLC model re-checked by an exhaustive JS checker in CI, and federation BFS-twin coverage. All time-dependent tests use `ManualClock`, so the **1,500+ test** suite is deterministic; CI is green across Node 20/22/24, and a bench-regression gate blocks hot-path slowdowns.
 
 ## Stability & license
 

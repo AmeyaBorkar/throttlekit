@@ -74,10 +74,19 @@ depend on their exact shape.
   is stable, but `acknowledgedHandoff`, `eagerHandoff`, `selfFence`, `recalibration`, and
   `allocation: "demand-proportional"` are still being calibrated and may change defaults.
 - **Escrow / two-tier learned layer:** `weightedFairEscrow`, `federatedWeightedFairEscrow`,
-  `regionFairPool`, `twoTier`'s `lease.adaptive`, `leaseSizer`, `predictiveLeaseSizer`,
-  `learnedReservation`, `predictiveReservation`, `tokenBudget` / `distributedTokenBudget`,
-  `fairShare` / `weightedFairShare`. (The `twoTier` *modes* — `strict` / `cached-deny` / fixed-`batch`
-  `leased` — are stable; the learned sizers are the experimental part.)
+  `regionFairPool` / `RedisRegionFairPool` / `AsyncRegionFairPool`, `twoTier`'s `lease.adaptive`,
+  `leaseSizer`, `predictiveLeaseSizer`, `learnedReservation`, `predictiveReservation`, `tokenBudget` /
+  `distributedTokenBudget`, `fairShare` / `weightedFairShare`. (The `twoTier` *modes* — `strict` /
+  `cached-deny` / fixed-`batch` `leased` — are stable; the learned sizers are the experimental part.)
+- **Tier-2 fleet leasing:** `LeaseSpender` (`throttlekit/twotier`) — the client-side spend of a
+  window-coupled lease taken from the server's `Fleet.Reserve` door. A verbatim port of the
+  `twoTier(leased, windowCoupled)` L1 spend (byte-identical, conformance-tested + golden-vector-pinned),
+  so the service stays the one oracle for the grant size; the client only spends what it is granted.
+- **`GlobalCoordinator.leaseWindowed` (`throttlekit/federation`)** — an additive **optional** method
+  (`leaseWindowed(key, tokens) → { granted, expiresAt }`, capability-detected by presence) that returns
+  the authoritative store-clock window boundary atomically with the grant, so a Tier-2 client discards
+  leftover credits exactly at the store window (eliminating node↔store clock skew). The stable `lease()`
+  is unchanged; callers feature-detect and fall back. Implemented on the Redis + Postgres coordinators.
 - **Sketches & analytics:** `sketchRateLimit`, `mergeableSketch`, `withAnalytics`, and the admission
   observability taps `admissionTap` / `withAdmissionAnalytics` (the in-process telemetry that powers the
   ThrottleKit Lens dashboard — both read only state `unifiedAdmission` already computes).
@@ -101,3 +110,10 @@ depend on their exact shape.
 - **The Lua / SQL wire format is not frozen.** It is implicit and additive-only (new script names are a
   compatible change). Whether to publish a *versioned, frozen* wire protocol — the precondition for
   third-party/polyglot clients — is a separate, deliberate decision, **deferred** past `1.0`.
+
+- **The gRPC service wire (`throttlekit.v1`) is additive-only, not frozen.** It grows by **adding** —
+  the read-only `Monitor` service (`GetSnapshot` / `Watch`) and the Tier-2 `Fleet` service (`Reserve`)
+  are new additive services; the existing decision RPCs and messages are unchanged. Compatibility is
+  **machine-gated by `buf breaking` in CI**, so a breaking change to an existing field/RPC fails the
+  build rather than shipping. (This is the `throttlekit-server` surface, versioned separately from the
+  core library.)

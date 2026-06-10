@@ -33,6 +33,34 @@ The reply is the canonical `Decision` message with five pinned `int64` fields
 (documented in its header): proto3 additive-evolvable — add fields with new tag numbers, never renumber,
 retype, or reuse a retired tag.
 
+## Additive services: Monitor and Fleet
+
+The contract is **additive-only**, machine-gated by `buf breaking` in CI (not "frozen" — additive evolution
+is allowed and verified, breaking changes are rejected). Two **new services** were added under
+`throttlekit.v1` on the *same gRPC port*, neither touching the `RateLimiter` messages above:
+
+- **`Monitor`** — the read-only observability door ([10](10-observability.md)): `GetSnapshot` and a
+  server-streamed `Watch` denial feed. Strictly non-mutating; it never returns or affects a `Decision`.
+- **`Fleet`** — the **Tier-2 client-held lease door** ([04](04-two-tier-and-leasing.md)). One unary RPC in
+  v1, `Reserve(ReserveRequest) → ReserveResponse`. The request names a `federated:` policy and carries a
+  `Caller{domain, client_id, region, priority}` (where `domain` selects *which* budget within the policy),
+  `wants`, advisory `has`/`used`, and an `Axis` (`RATE` is the v1 leasable axis; `CONCURRENCY` returns
+  `UNIMPLEMENTED`; `TOKEN_BUDGET` leases identically to `RATE`). The reply wraps a
+  **`Lease{capacity, expiry_ms, refresh_interval_ms, safe_capacity, retry_after_ms, limit}`** — `capacity`
+  is the *granted* amount (may be `< wants`; `0` is a refusal), `expiry_ms` is the store-window boundary the
+  client discards leftover credits at, `limit` is the policy's global ceiling for the client's synthesized
+  `Decision`. The **one-oracle line is in the field semantics**: the *server* sizes `capacity` via the
+  policy's coordinator; the client only spends it (the `LeaseSpender` contract — [04](04-two-tier-and-leasing.md)).
+
+**`Decision` is never extended with lease fields.** Lease data lives **only** on `Fleet`; the `Decision`
+message keeps its `reserved 6 to 15` untouched. (`ReserveResponse` itself reserves `2 to 15` /
+`"owner_redirect"` so a future additive shard map can't collide with a client shipped today.) Both new
+services inherit the proto3 additive-evolution rule and the `buf breaking` gate.
+
+**Vendored `grpc.health.v1.Health`** (always-on gRPC health) sits **outside** the additive `wire/` contract
+— it is a standard, externally-owned proto, so it is vendored separately rather than added to
+`throttlekit.proto`, keeping the contract surface exactly the services ThrottleKit itself defines.
+
 ## The Lua extraction pipeline (single-source → manifest → drift-lock)
 
 `wire/scripts/extract.ts` is the single-sourcing engine. It imports the *real* strategy constructors from
@@ -93,9 +121,13 @@ internal state persists at `%.17g` so it round-trips exactly.
   the committed copy).
 - The golden vectors themselves are replayed downstream by the server core, the server's gRPC layer, and
   both Python backends ([14](14-grpc-server.md), [15](15-python-client.md)).
+- A `lease` golden-vector suite (`wire/vectors`) pins the **Tier-2 client spend**: the core `LeaseSpender`
+  ([04](04-two-tier-and-leasing.md)) is held byte-identical to the shipped `twoTier` leased L1 path, so a
+  client serving from a `Fleet.Reserve` grant makes the same decisions as the one oracle.
 
 ## Source map
 
-`wire/throttlekit.proto` · `wire/WIRE-PROTOCOL.md` · `wire/scripts/extract.ts`, `generate-scripts.ts`,
-`manifest.json`, `*.lua` · `wire/vectors/vectors.ts`, `golden-vectors.json` · `wire/generate.ts` ·
-`wire/README.md`.
+`wire/throttlekit.proto` (the `RateLimiter` + additive `Monitor` + `Fleet` services) · `wire/WIRE-PROTOCOL.md`
+· `wire/scripts/extract.ts`, `generate-scripts.ts`, `manifest.json`, `*.lua` · `wire/vectors/vectors.ts`,
+`golden-vectors.json` (incl. the `lease` suite) · `wire/generate.ts` · `wire/README.md`. The vendored
+`grpc.health.v1.Health` proto is kept outside this contract directory.

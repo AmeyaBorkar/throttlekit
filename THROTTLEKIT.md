@@ -531,6 +531,30 @@ leases at the size it reads back, descending onto the EOQ batch `√(2·orderCos
 | `cached-deny` | 1 RTT / *allowed* request | Exact for allows, local for denies | Public APIs under abuse |
 | `leased` | ~1 RTT / `B` requests | Within `L × B` | High-throughput internal APIs |
 
+### Tier-2 — the client-held lease (the service-door scale ceiling)
+
+The leased mode above runs **inside** a Node process. The same bargain extends across the network through the
+service door: a high-throughput client of `throttlekit-server` leases a chunk of a *global* per-window budget
+and spends it locally, round-tripping only to **refresh**. This is the highest tier of the "one oracle, four
+doors, two coordination tiers" scaling design (see the [Scaling & the Fleet](https://github.com/AmeyaBorkar/throttlekit/wiki/Scaling-and-the-Fleet)
+wiki and `docs/design/04-two-tier-and-leasing.md`).
+
+- **The server is the one oracle.** `Fleet.Reserve` returns a `Lease { capacity, expiry_ms,
+  refresh_interval_ms, safe_capacity, retry_after_ms, limit }`; the server computes the grant **size** via the
+  policy's federation coordinator. `capacity` may be `< wants` — a partial grant is legitimate.
+- **The client only spends.** The core **`LeaseSpender`** (`throttlekit/twotier`) is a verbatim port of the
+  leased-L1 spend — proven **byte-identical** to the shipped `twoTier(leased, windowCoupled)` path and pinned by
+  a new `lease` golden-vector suite every polyglot port replays. At ≈10 ns/op it takes the network off the hot
+  path; the client never invents a denial (it surfaces the server's verbatim when `capacity` is 0).
+- **Clock skew is closed at the source.** The grant's `expiry_ms` is the **store** window boundary (the
+  Redis-`TIME` / Postgres-`clock_timestamp()` value), returned atomically with the grant by the coordinator's
+  optional `leaseWindowed(key, tokens) → { granted, expiresAt }`. The client treats it as authoritative and
+  **never extends** it, so a fast node-clock can neither over-admit nor strand budget.
+
+Tier-1 — configuring a policy `federated:` / `fleetBudget:` / `distributedConcurrency:` / `federatedFairEscrow:`
+so *every* client gets a fleet-coordinated decision over the **existing** RPCs with no client change — is the
+simpler default; Tier-2 is the ceiling for a client that can't afford a per-request round trip.
+
 ---
 
 ## 9. Multi-dimensional limiting in one round trip
@@ -646,6 +670,25 @@ Redis-in-Docker mode) so every number above is reproducible on your hardware rat
 - **Wire visibility.** Standards-compliant headers (see §15) make limits visible to clients and proxies
   without extra code.
 
+### ThrottleKit Lens — the terminal dashboard
+
+`throttlekit-server --tui` opens **ThrottleKit Lens**, a built-in, zero-dependency, read-only dashboard in the
+terminal — no browser, no metrics backend. Across **eight tabbed views** (Overview, Latency, Fairness,
+Capacity, Guarantee, Cost Room, Replay, Plan) it gives every policy the full ops board, and the one view no
+other rate-limiter dashboard renders: **live binding-axis attribution** — *which* of rate / concurrency / cost
+(or the joint-LP `policy` lane) bound each denial, per key, with exact numbers. It taps every limiter and
+admitter into a synchronous, exception-swallowing, O(1) in-process hub, so it can never perturb the control
+path. (It supersedes the former browser-based `throttlekit-lens` package, now deprecated.)
+
+### The Monitor door — the programmable read API
+
+The same operational state is a read-only gRPC service, `throttlekit.v1.Monitor` (`GetSnapshot` + a rate-capped,
+backpressured `Watch` stream), so any language can read it **remotely** — plus a Prometheus `/metrics` endpoint
+(`--metrics-port`, aggregate and PII-free) and the standard `grpc.health.v1.Health` service. The snapshot carries
+traffic keys (PII), so the Monitor gRPC door is loopback-only until `--monitor-secret`. OTel is the **push** path
+(you emit to a collector); the Monitor door is the **pull** path (a reader reads on demand). Both are read-only
+and never affect a decision. Full design: `docs/design/10-observability.md`.
+
 ---
 
 ## 14. Security and correctness footguns
@@ -707,6 +750,28 @@ The project is engineered to be *provably* correct, which is also what makes it 
   Redis option, so performance budgets are reproducible.
 
 All time-dependent tests use `ManualClock`, so the entire suite is deterministic and fast.
+
+### What-If Replay — deterministic record & replay
+
+`throttlekit/testkit` records a leaf limiter's synchronous decisions into a deterministic, JSON-serializable
+`ReplayTrace` (`recordLimiter`), then `replay`s it — against the recorded policy (an identity self-check proving
+bit-exact reproduction) or a single-field `candidateField` what-if — with a candidate-compare layer (`set` /
+`scale` / `swap`, `scorecard` / `rankByFlips`). It is fail-loud (a `ReplayRefusedError` carries a machine-readable
+reason; a structural trust boundary validates any parsed trace) and rests on the same Memory↔Redis-Lua
+determinism substrate the conformance vectors prove bit-exact; `buildStrategy` (`throttlekit/config`) is the
+shared rebuilder, so a replayed limiter is the *same* limiter. Full design: `docs/design/17-replay.md`.
+
+### Policy Plans — a `terraform plan` for limits
+
+`throttlekit/policy` turns "change a limit and watch the logs" into a pre-deploy diff: `plan(current, candidate,
+corpus)` cold-records the current policy over recorded arrivals to derive a baseline, replays the candidate over
+the same arrivals, and returns a directional **allow↔deny flip ledger** + top movers per policy — a pure,
+never-throws function built entirely on the testkit (no frozen-core change). It ships content-addressed `Policy` /
+`PolicySet` artifacts, corpus adapters (`corpusFromRecordings` / `corpusFromTraces`), a CI gate
+(`assertPlanAcceptable`), and `renderPlan` / `planToJSON`; `throttlekit-server policy plan` runs it over a trace
+file or the durable capture store, and the Lens **Plan** tab runs it live. Honest by construction: the baseline
+is a *cold* replay over your arrival timing (not a warm-production comparison); leaf rate + cost diff exactly,
+every other axis is reported `not-replayable`. Full design: `docs/design/16-policy-plans.md`.
 
 ---
 

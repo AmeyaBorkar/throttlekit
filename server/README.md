@@ -6,11 +6,20 @@ concurrency, and cost** — its **GALE** (provable distributed leasing) and **TA
 engines — as a network service so **polyglot clients** (Python, Go, …) get decisions **identical** to an
 embedded Node library, without re-implementing any algorithm or touching the raw Lua wire.
 
-> **Status: `0.1.0` — frozen wire, conformance-tested.** The gRPC contract is frozen and verified against
-> the golden vectors (a polyglot client's decisions are identical to the embedded library); the core
-> `throttlekit` package is 1.0. This server depends only on `throttlekit`'s **public, frozen API** — it adds
-> no surface to the core and keeps the core's zero-runtime-dependency promise intact. One opt-in surface,
-> **decision capture** (below), is `@experimental`.
+One server now carries the whole fleet story: the four **distributed** features reach any client over the
+*existing* decision RPCs with **no client change** (federation, fleet token-budget, distributed concurrency,
+cross-region fair escrow); a very high-throughput client can **lease** a slice of the global budget through
+the additive **Fleet door** and spend it locally; every policy is observable through **ThrottleKit Lens** (a
+zero-dependency terminal dashboard) and the read-only **Monitor door** (gRPC + Prometheus `/metrics`); and
+you can **plan a limit change** against recorded traffic *before* you ship it.
+
+> **Status: `0.4.0`.** The gRPC **decision** contract is stable and conformance-tested against the golden
+> vectors (a polyglot client's decisions are byte-identical to the embedded library). The wire **evolves
+> additively only** — the `Monitor` and `Fleet` services were added under `throttlekit.v1`, machine-gated by
+> `buf breaking` in CI; the decision messages never change. This server depends only on the `throttlekit`
+> core's **public** API — it adds no surface to the core and keeps its zero-runtime-dependency promise
+> intact. Monitoring, the Fleet lease, decision **capture**, and **What-If Replay** are opt-in /
+> `@experimental`.
 
 ## Why a service (not a port)
 
@@ -286,10 +295,10 @@ bound for availability). The two concurrency leases never merge: the server's pe
 the node↔coordinator heartbeat lease run independently. On shutdown the server `leave()`s the fleet so peers
 reclaim its share immediately.
 
-## Watch it live — the terminal dashboard
+## ThrottleKit Lens — watch it live in the terminal
 
-`throttlekit-server --config x.yaml --tui` opens a built-in, **zero-dependency** live dashboard right in
-your terminal, alongside gRPC — no browser, no metrics backend:
+`throttlekit-server --config x.yaml --tui` opens **ThrottleKit Lens**, a built-in, **zero-dependency** live
+dashboard right in your terminal, alongside gRPC — no browser, no metrics backend:
 
 ```bash
 throttlekit-server --config .throttlekit.yaml --tui

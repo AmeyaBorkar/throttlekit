@@ -148,6 +148,62 @@ tenant's *global* total match the flat global weighted-max-min ideal across regi
 be sharing-incentive, work-conserving, *and* strategy-proof at once. WFE takes the first two; window-
 coupling bounds a misreporter's gain to a single window.
 
+## Tier-2 — the client-held lease (service-door scale ceiling)
+
+Everything above is an *in-process* L1 fronting an *in-process-reachable* L2 (a Redis the node can `EVAL`
+against). When the distributed engine lives behind the [gRPC service](14-grpc-server.md) instead, a
+high-throughput client pays one `Check`/`Debit` round trip *per request* — re-introducing exactly the cost
+the leased mode exists to amortize, now across a network the client can't `EVAL` over. **Tier-2** lifts the
+leased-mode amortization across that service boundary: the client leases a chunk of a policy's global
+per-window budget over one RPC and serves requests locally, round-tripping only to refresh.
+
+**One oracle, two roles.** The split is the load-bearing contract:
+
+- **The server sizes the grant.** A client calls the gRPC `Fleet.Reserve` door (a `federated:` policy;
+  [13](13-wire-protocol.md), [14](14-grpc-server.md)), and the server — the *one oracle* — computes the
+  grant **size** through that policy's federation coordinator (`coordinator.lease` / `leaseWindowed`,
+  [08](08-federation.md)). It returns a `Lease{capacity, expiry_ms, refresh_interval_ms, safe_capacity,
+  retry_after_ms, limit}`.
+- **The client only spends it.** The client runs the core **`LeaseSpender`** (`throttlekit/twotier`,
+  `src/twotier/lease-spender.ts`) — a **verbatim port** of the `twoTier(mode:"leased",
+  lease:{windowCoupled:true})` L1 spend: `applyLease` (add `capacity` to local credits, couple them to
+  `expiry_ms`) → `spend` (subtract and **synthesize** an allow byte-identical to the core L1 `synthAllow`)
+  → discard the remainder when the window rolls. It **never invents a denial**: on a local shortfall it
+  signals `needsRefresh`, and the *server's* authoritative `Decision` is surfaced verbatim when a refresh
+  can't be granted.
+
+One oracle therefore holds **iff** the client's local spend is byte-identical to the core's L1 leased
+spend. That equality is not assumed: it is pinned by a new `lease` golden-vector suite (`wire/vectors`,
+[13](13-wire-protocol.md)) and proven against the shipped `twoTier` leased path by the `lease-spender`
+conformance test. `LeaseSpender.spend` is pure, synchronous (`now` injected per call, like every core
+algorithm), and portable to any polyglot client — and runs at ≈ 10 ns/op, so the local path is effectively
+free against the RPC it replaces.
+
+**The four hazards, and where each is closed:**
+
+1. **Clock skew.** `expiry_ms` is the **server/store** window boundary (the `useServerTime` window the
+   coordinator drained the grant against), not the client's clock. The client treats it as authoritative
+   and **never extends it** — so a client clock running fast or slow can't carry a credit past the instant
+   the global budget actually reset. (`leaseWindowed` returns this boundary atomically with the grant —
+   [08](08-federation.md) — closing the node↔store skew the old `lease()`'s ignored `expiresAt` left open.)
+2. **Window alignment.** When `now >= expiry_ms`, `LeaseSpender` **discards** the leftover credits rather
+   than carrying them across the boundary (`expireIfRolled`, folded into every `spend`). Cross-window
+   carryover is the sole source of leased overshoot; discarding it holds the per-window global total to
+   exactly the limit, independent of how many clients lease concurrently — the Tier-2 lift of the
+   window-coupling result above.
+3. **Refresh race.** Concurrent local misses on one key must not each fire their own `Reserve`; the client
+   coalesces them onto **one in-flight refresh** (the same "at most one outstanding lease" coalescing the
+   in-process leased path uses to bound a node to `batch` outstanding).
+4. **Partial grant.** `capacity` may be `< wants` — other clients raced the budget down — and `0` is a
+   refusal (the global budget is spent). `spendOrRefresh` treats a zero-capacity grant *without* a denial
+   as a contract violation by `reserve()` and fails loudly rather than spinning; a real refusal surfaces
+   the server's `Decision` with its `retry_after_ms`.
+
+The lease data lives **only** on the `Fleet` service — the `Decision` message is never extended with lease
+fields (`reserved 6..15`; [13](13-wire-protocol.md)). Tier-2 is the service-door analog of leased mode, not
+a new algorithm: the math is the in-process leased path, relocated across the wire with the oracle held on
+the server.
+
 ## Design decisions & rationale
 
 - **`leased` is opt-in, not the default.** It trades exactness for network amortization; `strict` (exact)
@@ -184,9 +240,14 @@ coupling bounds a misreporter's gain to a single window.
 - `test/gale/predictive-sizer.test.ts` — Hedge consistency/robustness/unconditional safety.
 - `test/gale/fair-escrow.test.ts` — water-filling correctness + four fairness theorems machine-checked on
   20,000 random instances.
+- `lease-spender` conformance + the `lease` golden-vector suite (`wire/vectors`) — pin `LeaseSpender.spend`
+  byte-identical to the shipped `twoTier` leased L1 path, so the Tier-2 client spend can't diverge from the
+  one oracle.
 
 ## Source map
 
 `src/twotier/index.ts` (the engine + three modes) · `sizing.ts` (`leaseSizer`, `predictiveLeaseSizer`) ·
 `weighted-fair-escrow.ts` · `federated-weighted-fair-escrow.ts` ([08](08-federation.md)) ·
-`spec/DistributedLeasing.tla`, `spec/GaleWindowCoupledLeasing.tla` · `docs/FORMAL-MODEL.md`.
+`lease-spender.ts` (the Tier-2 client-held lease spend; door + shape in [13](13-wire-protocol.md) /
+[14](14-grpc-server.md)) · `spec/DistributedLeasing.tla`, `spec/GaleWindowCoupledLeasing.tla` ·
+`docs/FORMAL-MODEL.md`.

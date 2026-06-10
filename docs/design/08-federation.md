@@ -14,7 +14,7 @@ regions, local credits become regional escrow, and the L2 store becomes a cross-
 
 ## The coordinator abstraction
 
-`GlobalCoordinator` (the "L3") has three methods (`src/federation/types.ts:45`):
+`GlobalCoordinator` (the "L3") has three core methods (`src/federation/types.ts:45`):
 
 - `lease(key, tokens, expiresAt) → granted ∈ [0, tokens]` — a **partial** grant is legitimate (other
   regions raced the budget down).
@@ -24,6 +24,27 @@ regions, local credits become regional escrow, and the L2 store becomes a cross-
 
 The load-bearing contract: the coordinator **must be window-coupled** — leases expire at the window
 boundary (enforced via `PEXPIRE` on the Redis path). That expiry is the entire basis of the Δ = 0 proof.
+
+### `leaseWindowed` — returning the authoritative store-clock boundary (optional)
+
+`lease(key, tokens, expiresAt)` takes the boundary the *caller* wants the grant coupled to — but the
+server-time coordinators (`RedisCoordinator`, `PostgresCoordinator`) **ignore** that argument and recompute
+the window from the *store's* clock (Redis `TIME` / Postgres `clock_timestamp()`). For a caller that must
+discard leftover credits at **exactly** the instant the budget resets — the [Tier-2 fleet
+lease](04-two-tier-and-leasing.md), whose client may run on a skewed node clock — that gap is a correctness
+hole: it can be told to discard at a different instant than the budget actually drained against.
+
+`leaseWindowed(key, tokens) → { granted, expiresAt }` (`src/federation/types.ts:80`) closes it. It returns
+the **authoritative window boundary the coordinator itself used** — derived from the same clock that caps
+the budget — *atomically* with the grant (one round trip, no two-read race). The Redis Lua now returns
+`{granted, expiresAt}` with the Redis-`TIME`-derived boundary; the Postgres path derives it from
+`clock_timestamp()`. So a Tier-2 client discards at precisely the store window, closing the node↔store skew
+the ignored-`expiresAt` `lease()` left open.
+
+It is **optional and backward-compatible**: `lease()` is preserved (and is implemented by delegating to the
+windowed path); `granted` is in `[0, tokens]` exactly as before. A coordinator that already windows on the
+*passed* `expiresAt` (the in-memory `TestCoordinator`) has no divergence and need not implement it —
+**callers feature-detect `leaseWindowed`** and fall back to a node-clock window when it's absent.
 
 ## Window-coupled federated leasing (the contribution)
 
@@ -70,6 +91,17 @@ children's weights** (the Parekh–Gallager GPS-decomposition condition). Settin
 tenants' weights is exactly that condition, collapsing the two-level hierarchy to a single global water-fill
 — exact in the fluid limit, within a two-level DRR residual under discrete granting. A plain shared counter
 *cannot reserve*, which is the root of the cross-region isolation gap a weighted-fair reservation layer fills.
+
+**The cross-region pool can be store-backed.** The cross-region reservation layer is a `RegionFairPool`; the
+shipped in-process `regionFairPool` is one arbiter, but a fleet of separate region *processes* draws from one
+global budget through **`RedisRegionFairPool`** (`src/twotier/redis-region-fair-pool.ts`) — the production
+`AsyncRegionFairPool`. It holds each region's `{weight, granted}` in a **shared Redis hash** and runs *the
+exact weighted-max-min reservation+borrow arithmetic* of the in-process pool as a single atomic Lua script
+(the same EVALSHA-with-EVAL-fallback pattern as `RedisCoordinator`/`RedisRegionalEscrow`, one layer up), so
+`Σ_r granted ≤ L` holds across the fleet regardless of region count or interleaving. The hash carries
+`PEXPIRE` to the window boundary and reads Redis `TIME` (`useServerTime`) so node-clock skew never moves the
+boundary on the shared state; a conformance test pins it **grant-for-grant** against the in-process oracle.
+It is Redis-only (the weighted-max-min ceiling math is ported to one atomic hash op).
 
 ## Outage modes
 
@@ -134,7 +166,9 @@ tenants' weights is exactly that condition, collapsing the two-level hierarchy t
 
 ## Source map
 
-`src/federation/types.ts` (the coordinator/escrow contracts) · `window-coupled.ts` (the engine) ·
-`static-partition.ts` (the baseline) · `redis-coordinator.ts`, `postgres-coordinator.ts` ·
-`redis-regional-escrow.ts`, `test-regional-escrow.ts`, `test-coordinator.ts` ·
-`src/twotier/federated-weighted-fair-escrow.ts` · `spec/GaleFederatedLeasing.tla`.
+`src/federation/types.ts` (the coordinator/escrow contracts, incl. the optional `leaseWindowed`) ·
+`window-coupled.ts` (the engine) · `static-partition.ts` (the baseline) · `redis-coordinator.ts`,
+`postgres-coordinator.ts` (both implement `leaseWindowed`) · `redis-regional-escrow.ts`,
+`test-regional-escrow.ts`, `test-coordinator.ts` · `src/twotier/federated-weighted-fair-escrow.ts`,
+`redis-region-fair-pool.ts` (the store-backed cross-region fair-budget pool) ·
+`spec/GaleFederatedLeasing.tla`.

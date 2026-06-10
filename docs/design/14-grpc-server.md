@@ -41,6 +41,37 @@ lease past its deadline via `release({ dropped: true })` — the **crash-reclaim
 the only added logic being error→status mapping. `serve` binds, applies credentials (default **insecure**),
 and starts an `unref`'d sweeper interval (cleared on close).
 
+## The four doors (how a decision is reached)
+
+A "door" is a way *in* to the one oracle — they differ only in transport, never in the decision:
+
+1. **Service door** — the gRPC `RateLimiter` RPCs (`Check`/`CheckMany`/`Peek`/`Forecast`/`Debit`/`Admit`/
+   `Release`/`Heartbeat`); the supported polyglot path, decisions conformance-tested against the golden
+   vectors ([13](13-wire-protocol.md)).
+2. **Direct door** — a client (or Python `RedisBackend`) that **vendors the raw Lua** and talks to the
+   shared store itself, no server hop. Documented + behavior-locked, not frozen ([13](13-wire-protocol.md)).
+3. **Embedded door** — the Node library in-process, no network at all.
+4. **Monitor door** — the **read-only** `throttlekit.v1.Monitor` gRPC (`GetSnapshot`/`Watch`) +
+   Prometheus `/metrics` + gRPC health ([10](10-observability.md), [13](13-wire-protocol.md)). Strictly
+   non-mutating: it reports operational state, never a decision.
+
+Sitting beside these is the **Tier-2 lease door** — `throttlekit.v1.Fleet.Reserve`
+([04](04-two-tier-and-leasing.md)). It is *not* a fourth way to ask for a decision: it hands a
+high-throughput client a **chunk of a `federated:` policy's global per-window budget** to spend locally
+(via the core `LeaseSpender`), round-tripping only to refresh. The server stays the one oracle — it
+computes the grant **size** through the policy's coordinator; the client only spends it. In v1 only the
+windowed-rate axis is leasable; the concurrency axis returns `UNIMPLEMENTED` (a fungible in-flight count
+isn't handed out for local spend — the fleet concurrency ceiling is reached over `Admit` instead,
+[06](06-concurrency.md)).
+
+**Auth posture.** The decision RPCs poison a shared budget if anyone can call them, so the default
+credentials are insecure (loopback/dev) and `--tls-ca` enables mTLS to expose them. The two
+state-/PII-bearing doors are stricter and **loopback-only by default**: `Monitor` (its snapshot carries
+traffic keys = PII) opens beyond loopback only with `--monitor-secret` in call metadata; `Fleet` (handing
+out budget is a poisoning vector) opens only with a fleet secret in call metadata. Pair either secret with
+TLS for confidentiality on an exposed port. `/metrics` and gRPC health are aggregate/PII-free and default
+to loopback with no secret.
+
 **(iii) Config + runtime wiring** (`server/src/config.ts`, `runtime.ts`, `bin.ts`). The config layer routes
 each policy by shape: a `tokenBudget` block → a meter; a `concurrency` block → an admitter (wiring
 `adaptiveConcurrency` + an optional rate `strategy` into `unifiedAdmission`); a `twoTier` block → a leased
@@ -80,6 +111,10 @@ SIGINT/SIGTERM.
   lease table lives in one process's memory; a fleet-shared budget is a future enhancement via the core's
   distributed primitives). Rate-limit decisions, by contrast, are coordinated through the configured shared
   store (`redis`/`postgres`/`dynamodb`), so they are fleet-wide.
+- A **`federated:` policy** *does* expose a fleet-shared, coordinator-backed windowed-rate budget over the
+  `Fleet.Reserve` lease door ([04](04-two-tier-and-leasing.md), [08](08-federation.md)) — distinct from the
+  per-process concurrency lease table above; there the server is the one oracle and the client holds only a
+  spend.
 - The joint-LP `hold`/`value` terms are flagged experimental.
 
 ## What proves it
@@ -95,5 +130,7 @@ SIGINT/SIGTERM.
 ## Source map
 
 `server/src/service.ts` (the core + Doors) · `grpc.ts` (the binding + `serve`) · `config.ts` (policy
-routing) · `runtime.ts` (store/credentials) · `bin.ts` (CLI). Contract: `wire/throttlekit.proto`
+routing) · `runtime.ts` (store/credentials) · `bin.ts` (CLI) · `health.ts` (gRPC health) ·
+`monitor/` (the Monitor door: `hub.ts`, `service.ts`, `metrics.ts`, `render.ts`) · the `Fleet.Reserve`
+lease handler ([04](04-two-tier-and-leasing.md)). Contract: `wire/throttlekit.proto`
 ([13](13-wire-protocol.md)).

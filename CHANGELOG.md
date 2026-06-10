@@ -17,6 +17,13 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
   never synthesizes a denial (it surfaces the server's verbatim). Proven **byte-identical** to the shipped
   `twoTier` leased path (a conformance test drives both over a random timeline) and pinned by a new `lease`
   **golden-vector suite** (`wire/vectors`) every polyglot port replays. No change to the frozen core.
+- **FLA clock-skew fix — `GlobalCoordinator.leaseWindowed`** (`throttlekit/federation`). An additive
+  **optional** coordinator method `leaseWindowed(key, tokens) → { granted, expiresAt }` that returns the
+  authoritative **store-clock** window boundary atomically with the grant, so a Tier-2 lease holder discards
+  leftover credits exactly at the store window — eliminating node↔store clock skew (a node no longer extends
+  a window past where the store rolls it). Implemented on the **Redis** and **Postgres** coordinators; the
+  existing `lease()` is unchanged, and callers feature-detect `leaseWindowed` and fall back when it is absent.
+  Purely additive (an optional member on a consumer interface — capability-by-presence); no frozen-core change.
 
 ## [1.4.0] — 2026-06-10
 

@@ -58,8 +58,10 @@ On top of that base sit the four **admission axes** — *rate*, *placement* (dis
 | 11 | [Overload & security](11-overload-and-security.md) | fixed-memory DDoS sketches, proxy-correct IP keying, PII-safe HMAC keys, HTTP headers | `src/sketch/`, `src/security/`, `src/http/` |
 | 12 | [Config & CLI](12-config-and-cli.md) | `.throttlekit.yaml` rate-limit-as-code, the `throttlekit` CLI | `src/config/`, `src/cli/` |
 | 13 | [Wire protocol](13-wire-protocol.md) | the single-sourced Lua, the manifest & drift-lock, golden vectors, the proto contract | `wire/` |
-| 14 | [gRPC server](14-grpc-server.md) | the service core, the Doors, crash-reclaim, mTLS | `server/` |
+| 14 | [gRPC server](14-grpc-server.md) | the service core, the four Doors + the Fleet lease door, crash-reclaim, mTLS | `server/` |
 | 15 | [Python client](15-python-client.md) | one oracle, two doors; the contract drift-gate | `throttlekit-py` |
+| 16 | [Policy Plans](16-policy-plans.md) | `terraform plan` for limits: candidate replay → allow↔deny flip ledger, the CI gate | `src/policy/` |
+| 17 | [Replay](17-replay.md) | deterministic decision recorder/replayer, candidate-compare, the fail-loud trust boundary | `src/testkit/replay/` |
 
 ## Conventions used throughout
 

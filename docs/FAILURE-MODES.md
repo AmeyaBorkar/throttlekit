@@ -77,6 +77,27 @@ requests.
   strands budget that window (under‑utilization), self‑correcting as it observes realised demand.
   Per‑key learner state is bounded by `l1.maxKeys` (set it on public endpoints, as for any leased mode).
 
+## Tier‑2 Fleet lease — when the `Fleet.Reserve` door is unreachable
+
+The Tier‑2 fleet path (`LeaseSpender` against the server's `Fleet.Reserve` door, for a `federated:`
+policy) is the leased two‑tier story across the wire: a high‑throughput client leases a chunk of the
+policy's global per‑window budget from the server (the one oracle that sizes the grant) and spends it
+locally, round‑tripping only to **refresh**. The lease the client holds is **window‑coupled** — the
+server hands back the authoritative store‑clock window boundary (the FLA `leaseWindowed` `expiresAt`)
+atomically with the grant, and the client discards leftover credits exactly at that boundary. So a
+`Fleet.Reserve` outage degrades like a `leased` L2 blip, with the same proven bound one tier up.
+
+| Failure shape | What happens | What's **lost** | Recovery |
+|---|---|---|---|
+| **`Fleet.Reserve` unreachable, lease still valid** | The client keeps serving from its current lease's remaining credits with **no network**, up to `expiry_ms`. It **never extends the boundary** — the `leaseWindowed` window boundary is authoritative, so credits still forfeit at the store window even while the door is down. | Nothing while credits remain; un‑refreshed budget for the next window. | Door returns → the next refresh leases a fresh chunk against the current window. |
+| **`Fleet.Reserve` unreachable, lease expired (refresh fails)** | With no fresh grant, the client falls back to its **own `fail` policy**: `fail: "open"` admits, `fail: "closed"` denies (503) — exactly as for a leased L2 outage. The client never synthesizes a grant or a denial; it serves only what the server granted. | Admissions during the outage are governed by `fail`, not by a fabricated budget. | First successful `Fleet.Reserve` → resume leasing; the global bound is re‑enforced from that point. |
+| **Partial grant** (`capacity < wants`) | **Legitimate, not a failure** — the server is the oracle and may grant fewer credits than requested (budget contention across the fleet). The client spends exactly the granted `capacity` and refreshes sooner. | Nothing — a smaller lease just means more frequent refreshes (a utilization/round‑trip cost, never an over‑admit). | Automatic on the next refresh; the per‑window global bound holds regardless of grant size. |
+
+Because the client spend is **byte‑identical** to the in‑process leased‑L1 (window‑coupled) path, the
+worst‑case global admissions across a `Fleet.Reserve` blip stay within the **proven** window‑coupled
+bound — **exactly `Limit`, independent of client count** — for the same reason the leased mode above
+does. The outage defers a refresh; it does not loosen the cap.
+
 ## Federation outages (`federate(...)` / `FederatedStore`)
 
 Federation adds a *cross-region* layer — a `GlobalCoordinator` pools the budget

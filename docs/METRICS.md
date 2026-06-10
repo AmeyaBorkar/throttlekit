@@ -86,6 +86,47 @@ Then search traces by `throttlekit.allowed = false` or facet latency by `throttl
 `{ key, cost, decision, strategy, durationMs, kind }` per check, so you can feed any backend the OTel
 layer doesn't cover. See [Operations](https://github.com/AmeyaBorkar/throttlekit/wiki/Operations).
 
+## The Monitor door — the read API on `throttlekit-server`
+
+The sections above are the **producer** side (what your in-process limiter *emits*). When you run
+`throttlekit-server` (0.3.0+), the same operational state is also exposed as a **read API** — distinct
+from the [ThrottleKit Lens](https://github.com/AmeyaBorkar/throttlekit/wiki/Monitoring-and-the-Lens)
+TUI (same state, a programmable/remote surface instead of a terminal). Two read transports, both
+aggregate and **PII-free**:
+
+### `throttlekit.v1.Monitor` (read-only gRPC)
+
+A read-only gRPC service with two RPCs — it never makes a decision, only observes:
+
+| RPC | Returns |
+|---|---|
+| `GetSnapshot` | a typed, per-policy snapshot (counts, observed ceiling, latency percentiles, concurrency-guard health) plus a `raw_json` field carrying the full state for clients that want everything without a proto bump. |
+| `Watch` | a live, server-filtered **denial stream** — rate-capped and backpressured, so a slow consumer can never push memory on the server (the stream drops to stay within its cap rather than buffering unboundedly). |
+
+**Auth posture:** the Monitor gRPC binds **loopback-only until `--monitor-secret`** is set; supplying
+the secret is what opens it to remote scrapers. gRPC **health** (`grpc.health.v1.Health`) is served
+alongside it. The Monitor service is **additive** under `throttlekit.v1` (buf-gated) and carries no
+PII — it surfaces aggregates, not request bodies or keys.
+
+### Prometheus `/metrics` (HTTP)
+
+Enabling `--metrics-port` exposes an HTTP `/metrics` endpoint with aggregate, PII-free series a
+Prometheus server scrapes directly (no OTel pipeline required):
+
+| Series | Meaning |
+|---|---|
+| `throttlekit_allowed_total` | cumulative admitted decisions. |
+| `throttlekit_denied_total` | cumulative denied decisions. |
+| `throttlekit_denied_by_axis_total` | denials split by binding axis (`rate` / `concurrency` / `cost` / `policy`). |
+| observed ceiling | the effective limit / inferred ceiling currently in force. |
+| p50 / p99 admit latency | admission-decision latency percentiles. |
+| concurrency-guard health | the adaptive-concurrency guard's current ceiling / in-flight health. |
+
+`/metrics` is **loopback by default** and PII-free (aggregate counters only — no keys, no request
+content). A `/healthz` liveness endpoint is served on the same port. This is the server-process
+equivalent of the in-process OTel counters above: reach for it when the limiter runs inside
+`throttlekit-server` rather than in your own process.
+
 ## Reference Grafana dashboard
 
 A ready-to-import dashboard lives at [`grafana/throttlekit-dashboard.json`](../grafana/throttlekit-dashboard.json):

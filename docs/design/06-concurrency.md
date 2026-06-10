@@ -96,6 +96,25 @@ node's **own** clock: once `now ≥ leaseExpiresAt − fenceSafetyMargin`, the n
 ceiling 0) and fires `onFenced` once so the app can abort non-cancellable work — stopping *strictly before*
 the coordinator's reclaim.
 
+### Reaching the fleet ceiling over the service door (Tier-1)
+
+`distributedAdaptiveConcurrency` is also the **Tier-1, server-side** path to a fleet-shared concurrency
+ceiling: a `concurrency` policy on the [gRPC server](14-grpc-server.md) wires this guard into
+`unifiedAdmission`, and a polyglot client reaches the cooperatively-inferred global ceiling over the
+existing **`Admit`** RPC ([07](07-unified-admission.md), [13](13-wire-protocol.md)) — the heartbeat cycle
+and occupancy cap run on the *server* against the shared coordinator backend, so the bound holds across the
+fleet with **no new wire surface** (`Admit`/`Release`/`Heartbeat` are unchanged). The server mints a lease
+per held slot and reclaims it on lease-TTL expiry — the same node↔coordinator TTL+heartbeat+reclaim
+contract above, lifted one layer out to the client↔server hop ([14](14-grpc-server.md)). This is distinct
+from the **Tier-2** lease ([04](04-two-tier-and-leasing.md)), which hands a client a *windowed-rate* budget
+to spend locally; concurrency slots are a fungible in-flight count and are not handed out for local spend
+(`Fleet.Reserve` returns `UNIMPLEMENTED` for the concurrency axis — [13](13-wire-protocol.md)).
+
+The store-clock discipline the coordinators use here is the same one the federation layer formalizes as
+`GlobalCoordinator.leaseWindowed` ([08](08-federation.md)): the authoritative window/lease boundary is
+derived from the **store's** clock (Redis `TIME` / Postgres `clock_timestamp()`), never a node clock, so
+node↔store skew can't move the boundary the shared state agrees on.
+
 ## Design decisions & rationale
 
 - **The occupancy cap `max(share, inflight)`** is the safety core: it holds `Σ share ≤ L_global` under
