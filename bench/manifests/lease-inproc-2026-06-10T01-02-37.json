@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "capturedAt": "2026-06-10T01:02:37.213Z",
+    "node": "v24.13.1",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M",
+    "cores": 24,
+    "totalMemGB": 33.4,
+    "gcExposed": true
+  },
+  "benchmark": "tier2-client-spend-in-process",
+  "iters": 5000000,
+  "rows": [
+    {
+      "label": "LeaseSpender.spend",
+      "note": "Tier-2 local credit + synth allow",
+      "opsPerSec": 102941448.96265902,
+      "nsPerOp": 9.71426,
+      "bytesPerOp": 0.3819088
+    },
+    {
+      "label": "gcra checkSync",
+      "note": "full GCRA decision (for scale)",
+      "opsPerSec": 5705391.82348887,
+      "nsPerOp": 175.2728,
+      "bytesPerOp": 0.64432
+    },
+    {
+      "label": "tokenBucket checkSync",
+      "note": "full tokenBucket decision (for scale)",
+      "opsPerSec": 5562636.173333523,
+      "nsPerOp": 179.77088,
+      "bytesPerOp": 0.5623552
+    }
+  ]
+}

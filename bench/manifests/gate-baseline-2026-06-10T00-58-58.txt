@@ -1,0 +1,8 @@
+bench:gate — node v24.13.1, 10 runs × 20,00,000 iters, threshold 1.50 (relative)
+reference op: 128 ns/op (this machine)
+
+Wrote C:\Users\ameya\Documents\GreenfeildProject\bench\baseline.json:
+  gcra checkSync              171 ns/op  ×1.34
+  tokenBucket checkSync       173 ns/op  ×1.36
+  fixedWindow checkSync       196 ns/op  ×1.54
+  lease spend                  22 ns/op  ×0.17

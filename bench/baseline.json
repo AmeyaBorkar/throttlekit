@@ -1,28 +1,33 @@
 {
   "schemaVersion": 2,
   "recorded": {
-    "at": "2026-05-30",
+    "at": "2026-06-10",
     "node": "v24.13.1",
     "platform": "win32"
   },
   "runs": 10,
   "iters": 2000000,
-  "referenceNsPerOp": 129.3907,
+  "referenceNsPerOp": 127.59935,
   "rows": [
     {
       "label": "gcra checkSync",
-      "nsPerOp": 173.5714,
-      "relative": 1.341451897238364
+      "nsPerOp": 171.13005,
+      "relative": 1.3411514243607041
     },
     {
       "label": "tokenBucket checkSync",
-      "nsPerOp": 191.68395,
-      "relative": 1.4814352963543747
+      "nsPerOp": 173.3977,
+      "relative": 1.3589230666143675
     },
     {
       "label": "fixedWindow checkSync",
-      "nsPerOp": 206.63465,
-      "relative": 1.5969822406092553
+      "nsPerOp": 195.87075,
+      "relative": 1.5350450452921585
+    },
+    {
+      "label": "lease spend",
+      "nsPerOp": 21.938,
+      "relative": 0.17192877549924823
     }
   ]
 }

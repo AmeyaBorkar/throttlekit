@@ -327,6 +327,8 @@
     "bench:gate": "tsx bench/gate.ts",
     "bench:baseline": "tsx bench/gate.ts --update",
     "bench:lens": "tsx bench/lens-taps.ts",
+    "bench:lease": "tsx bench/lease.ts",
+    "bench:fleet": "tsx server/bench/fleet.ts",
     "wire:vectors": "tsx wire/generate.ts",
     "wire:scripts": "tsx wire/scripts/generate-scripts.ts",
     "wire": "npm run wire:vectors && npm run wire:scripts",

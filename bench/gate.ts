@@ -49,6 +49,7 @@ import { gcra } from "../src/algorithms/gcra";
 import { tokenBucket } from "../src/algorithms/token-bucket";
 import { rateLimit } from "../src/core/limiter";
 import { MemoryStore } from "../src/stores/memory";
+import { LeaseSpender } from "../src/twotier/lease-spender";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = resolvePath(HERE, "baseline.json");
@@ -114,6 +115,18 @@ const cases: BenchCase[] = [
         strategy: fixedWindow({ limit: 1_000_000_000, windowMs: 60_000 }),
         store: new MemoryStore({ sweepIntervalMs: 0 }),
       }),
+  },
+  {
+    // The Tier-2 client local-spend hot path (the released lease hero). A pre-credited spender coupled to a
+    // far-future window so every call is the pure O(1) credit decrement + synthesized allow — never a
+    // refresh — so this guards `LeaseSpender.spend` against a future deopt or per-spend allocation, the same
+    // failure class the gate exists to catch for `checkSync`. Adapts to the BenchCase `checkSync(key)` shape.
+    label: "lease spend",
+    make: () => {
+      const s = new LeaseSpender({ limit: 1_000_000 });
+      s.applyLease({ capacity: Number.MAX_SAFE_INTEGER, expiresAt: Number.MAX_SAFE_INTEGER });
+      return { checkSync: () => s.spend(0, 1) };
+    },
   },
 ];
 

@@ -1,0 +1,9 @@
+ThrottleKit Tier-2 client-spend benchmark (in-process)
+node v24.13.1  (gc exposed — measuring allocations)
+
+Local spend vs. a full in-process decision — single hot key, ALLOW path:
+  LeaseSpender.spend              102.94M ops/s      10 ns/op             0 B/op   Tier-2 local credit + synth allow
+  gcra checkSync                    5.71M ops/s     175 ns/op             1 B/op   full GCRA decision (for scale)
+  tokenBucket checkSync             5.56M ops/s     180 ns/op             1 B/op   full tokenBucket decision (for scale)
+
+Manifest: C:\Users\ameya\Documents\GreenfeildProject\bench\manifests\lease-inproc-2026-06-10T01-02-37.json

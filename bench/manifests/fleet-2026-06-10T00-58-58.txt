@@ -1,0 +1,16 @@
+ThrottleKit Fleet-door benchmark — Tier-2 lease round-trip reduction
+node v24.13.1
+
+TestCoordinator (in-process) coordinator (reqs=20000):
+  Tier-1 Check (1 RPC / req)          2.0k ops/s   p50 390.8µs  p99 1601.1µs  1 trip/req
+  Tier-2 lease (batch   10)          20.5k ops/s   p50 0.1µs  p99 636.9µs  10 req/trip   10.0x
+  Tier-2 lease (batch  100)         232.8k ops/s   p50 0.1µs  p99 327.1µs  100 req/trip   113.8x
+  Tier-2 lease (batch 1000)          1.26M ops/s   p50 0.1µs  p99 0.2µs  1000 req/trip   614.7x
+
+RedisCoordinator (distributed) coordinator (reqs=3000):
+  Tier-1 Check (1 RPC / req)           433 ops/s   p50 2175.5µs  p99 4443.6µs  1 trip/req
+  Tier-2 lease (batch   10)           3.9k ops/s   p50 0.1µs  p99 3100.5µs  10 req/trip   9.0x
+  Tier-2 lease (batch  100)          32.9k ops/s   p50 0.1µs  p99 1913.3µs  100 req/trip   76.1x
+  Tier-2 lease (batch 1000)         350.5k ops/s   p50 0.1µs  p99 0.2µs  1000 req/trip   810.0x
+
+Manifest: C:\Users\ameya\Documents\GreenfeildProject\bench\manifests\fleet-2026-06-10T01-03-46.json

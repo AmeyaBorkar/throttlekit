@@ -1,0 +1,18 @@
+ThrottleKit benchmarks
+node v24.13.1  (gc exposed — measuring allocations)
+
+In-process (MemoryStore) — single hot key:
+  gcra checkSync                        5.87M ops/s      170 ns/op   1 B/op
+  tokenBucket checkSync                 5.71M ops/s      175 ns/op   0 B/op
+  fixedWindow checkSync                 4.61M ops/s      217 ns/op   0 B/op
+
+In-process (MemoryStore) — async check:
+  gcra check (async)                    3.61M ops/s      277 ns/op   n/a (run with --expose-gc)
+
+Concurrency — acquire + release (per request, healthy):
+  adaptiveConcurrency acq+release       3.61M ops/s      277 ns/op   1 B/op
+  distributed acq+release               7.35M ops/s      136 ns/op   0 B/op
+
+Redis (redis://localhost:6380, db 9):
+  strict gcra (1 EVALSHA / req)           735 ops/s   p50 1241.0µs  p99 2761.6µs  p999 5877.1µs
+  leased gcra (batch 100)               71.2k ops/s   100.0 reqs / round trip (100 trips for 10000 reqs)

@@ -1,0 +1,35 @@
+ThrottleKit comparative benchmarks (vs rate-limiter-flexible, express-rate-limit)
+node v24.13.1  (gc exposed — measuring allocations)
+Excluded: @upstash/ratelimit — requires the Upstash cloud REST endpoint and cannot be benchmarked locally on equal footing.
+
+== MEMORY (in-process, single hot key, ALLOW path) ==
+   High limits so every request passes; same warmup + iteration count for all rows.
+  contender              algorithm     kind      ops/s    ns/op
+  ---------------------  ------------  -----  --------  -------
+  throttlekit checkSync  GCRA          sync      6.06M      165   1 B/op
+  throttlekit check      GCRA          async     3.39M      295
+  throttlekit check      fixed-window  async     3.52M      284
+  rate-limiter-flexible  fixed-window  async     2.97M      337
+  express-rate-limit     fixed-window  async     4.91M      203
+   Note: sync vs async is not directly comparable — ThrottleKit's checkSync has no Promise/microtask
+   overhead; the incumbents expose only async APIs. The async GCRA / fixed-window rows are the fair head-to-head.
+
+== REDIS (redis://localhost:6380, db 11) — single hot key, ALLOW path ==
+   Same ioredis client settings, same server, same DB, same warmup + iteration count for both.
+  contender               algorithm        ops/s       p50       p99      p999
+  ----------------------  ------------  --------  --------  --------  --------
+  throttlekit RedisStore  GCRA               745  1251.0µs  2382.2µs  4808.4µs
+  rate-limiter-flexible   fixed-window       754  1245.7µs  2444.4µs  4696.3µs
+   Both do one atomic Lua round trip per request (EVALSHA/EVAL). Serial awaits ⇒ latency-bound, not pipelined.
+
+== POSTGRES (postgres://throttlekit:throttlekit@localhost:5433/throttlekit) — single hot key, ALLOW path ==
+   Same pg.Pool, same server/DB, same warmup + iteration count for both.
+  contender                  algorithm     round trips    ops/s       p50       p99
+  -------------------------  ------------  -----------  -------  --------  --------
+  throttlekit PostgresStore  GCRA             ~5 (txn)      118  8123.7µs  13321.3µs
+  rate-limiter-flexible      fixed-window   1 (upsert)      342  2809.6µs  4997.9µs
+   ThrottleKit runs a generic RMW transaction (advisory lock + read + write + commit) to reuse the same
+   proven transform across every strategy; rate-limiter-flexible specializes the counter into one atomic
+   UPSERT. Fewer round trips ⇒ lower per-op latency there — but the throughput lever below has no
+   rate-limiter-flexible equivalent:
+  throttlekit twoTier(leased)  GCRA          batch 100     9.4k  106.3µs/op  (100 reqs / transaction)
