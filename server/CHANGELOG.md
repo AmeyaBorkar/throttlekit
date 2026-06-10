@@ -7,6 +7,13 @@ conformance-tested against the golden vectors).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-10
+
+The Tier-2 + skew-hardening release: a high-throughput client can now **lease** a slice of a `federated:`
+policy's global per-window budget through the additive **Fleet door** and spend it locally, and the fleet's
+lease window is anchored to the **store clock**. Tracks `throttlekit@^1.5.0`; the gRPC decision RPCs are
+unchanged (Fleet is a purely additive service, buf-verified).
+
 ### Added
 
 - **Tier-2 Fleet lease door (`throttlekit.v1.Fleet` / `Reserve`).** A high-throughput client can now **lease**
@@ -19,7 +26,19 @@ conformance-tested against the golden vectors).
   default whenever a `federated:` policy is configured** — **loopback-only** until `--fleet-secret` (or
   `THROTTLEKIT_FLEET_SECRET`) is set, since handing out budget is a poisoning vector. The `Axis` enum reserves
   `concurrency` (returns `UNIMPLEMENTED` in v1) and `token_budget` for future axes. Tracks
-  `throttlekit@^1.4.0`. See the README's *Tier-2 fleet leasing* section.
+  `throttlekit@^1.5.0`. See the README's *Tier-2 fleet leasing* section.
+
+### Fixed
+
+- **Store-authoritative lease window (FLA).** The Fleet door now anchors a lease to the coordinator's
+  **`leaseWindowed`** boundary when the core exposes it (`throttlekit ≥ 1.5.0`) — the Redis-`TIME` /
+  Postgres-`clock_timestamp()` window end — so a Tier-2 lease holder discards leftover credits exactly at the
+  store window, eliminating node↔store clock skew. It transparently falls back to the node-clock window
+  against an older core.
+- **Startup drain.** A failure during `serve()` startup now disposes the partially-started service and stores
+  instead of leaking them, and the close path drains cleanly.
+- **`--monitor off` honored under `--tui`.** The Monitor door / telemetry hub is no longer built when
+  monitoring is disabled, even while the terminal dashboard is running.
 
 ## [0.3.0] — 2026-06-10
 
