@@ -62,6 +62,7 @@ On top of that base sit the four **admission axes** — *rate*, *placement* (dis
 | 15 | [Python client](15-python-client.md) | one oracle, two doors; the contract drift-gate | `throttlekit-py` |
 | 16 | [Policy Plans](16-policy-plans.md) | `terraform plan` for limits: candidate replay → allow↔deny flip ledger, the CI gate | `src/policy/` |
 | 17 | [Replay](17-replay.md) | deterministic decision recorder/replayer, candidate-compare, the fail-loud trust boundary | `src/testkit/replay/` |
+| 18 | [ThrottleKit Lens](18-lens.md) | the built-in terminal dashboard (8 tabs, the binding-axis hero) + the read-only Monitor door | `server/src/monitor/`, `src/admission/` |
 
 ## Conventions used throughout
 

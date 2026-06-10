@@ -678,7 +678,8 @@ Capacity, Guarantee, Cost Room, Replay, Plan) it gives every policy the full ops
 other rate-limiter dashboard renders: **live binding-axis attribution** — *which* of rate / concurrency / cost
 (or the joint-LP `policy` lane) bound each denial, per key, with exact numbers. It taps every limiter and
 admitter into a synchronous, exception-swallowing, O(1) in-process hub, so it can never perturb the control
-path. (It supersedes the former browser-based `throttlekit-lens` package, now deprecated.)
+path. (It supersedes the former browser-based `throttlekit-lens` package, now deprecated.) Full design:
+`docs/design/18-lens.md`.
 
 ### The Monitor door — the programmable read API
 

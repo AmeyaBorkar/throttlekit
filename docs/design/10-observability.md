@@ -88,7 +88,9 @@ host flag exposes it, with a warning).
 `snapshot()` each frame across **eight tabs** (Overview, Latency, Fairness, Capacity, Guarantee, Cost Room,
 Replay, Plan). Lens (the TUI) and the Monitor door (the programmable/remote read API) are two views of the
 identical hub — distinct surfaces, one source of truth. (The legacy `throttlekit-lens` npm package is
-deprecated; "Lens" now names the built-in `--tui` dashboard.)
+deprecated; "Lens" now names the built-in `--tui` dashboard.) **[18 · ThrottleKit Lens](18-lens.md)** is the
+full deep-dive — the hub, the core taps, the pure renderer, the TUI shell, and each tab's data source and
+honest non-claim.
 
 ## Design decisions & rationale
 
