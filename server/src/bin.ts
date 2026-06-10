@@ -564,6 +564,11 @@ async function runPolicySubcommand(argv: string[]): Promise<void> {
   }
 }
 
+// Set once the fleet/coordinator is built so the startup-error path (main().catch) can run the same
+// leave()+close drain the signal handler does — otherwise a throw after a distributedConcurrency: node
+// registers (e.g. serve() bind failure) would leave peers waiting out the lease TTL to reclaim it (SC-16).
+let startupCleanup: (() => Promise<void>) | undefined;
+
 async function main(): Promise<void> {
   if (process.argv[2] === "capture") {
     await runCaptureSubcommand(process.argv.slice(3));
@@ -709,9 +714,12 @@ async function main(): Promise<void> {
   }
 
   const monitorSecret = args.monitorSecret ?? process.env.THROTTLEKIT_MONITOR_SECRET;
-  // `hub` is set iff the Monitor door is being served (the --tui or non-capture monitor path above).
+  // The Monitor gRPC door is served when monitoring is on AND a hub exists. Under --tui the hub is ALWAYS
+  // built (the dashboard needs it), so the door must also be gated on `monitorOn` — otherwise
+  // `--tui --monitor off` would still expose the PII-bearing Monitor snapshot over gRPC. The dashboard (and
+  // /metrics, which only needs the hub) stay regardless; only the gRPC door honors `--monitor off`.
   const monitorOption =
-    hub !== undefined
+    monitorOn && hub !== undefined
       ? { monitor: { hub, ...(monitorSecret !== undefined ? { secret: monitorSecret } : {}) } }
       : {};
   // The Tier-2 Fleet lease door rides the same port whenever there are leasable (federated:) policies —
@@ -726,6 +734,14 @@ async function main(): Promise<void> {
           },
         }
       : {};
+  // The coordinator/distributed-concurrency guard is already built (and, for a distributedConcurrency:
+  // policy, registered in the fleet) by the wireMonitor/wireCapture above. Arm the startup-error drain
+  // BEFORE the first thing that can throw post-registration (serve()'s bind), so a failure leaves the fleet
+  // gracefully (SC-16) instead of waiting out the lease TTL. A no-op unless a distributed policy is configured.
+  startupCleanup = async () => {
+    await Promise.resolve(service.close?.()).catch(() => {});
+    await dispose();
+  };
   const running = await serve({
     service,
     host: args.host,
@@ -738,7 +754,7 @@ async function main(): Promise<void> {
 
   // The Monitor snapshot carries traffic keys (PII). Without a secret it is loopback-only, so warn loudly
   // when the server is bound somewhere remote can reach it — remote Monitor calls will be rejected.
-  if (hub !== undefined && monitorSecret === undefined && !LOOPBACK.has(args.host)) {
+  if (monitorOn && hub !== undefined && monitorSecret === undefined && !LOOPBACK.has(args.host)) {
     console.warn(
       `⚠ Monitor door is loopback-only (no --monitor-secret) but bound to ${args.host}; remote Monitor calls are rejected UNAUTHENTICATED. Set --monitor-secret (or THROTTLEKIT_MONITOR_SECRET) to expose it.`,
     );
@@ -839,7 +855,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error(err instanceof Error ? err.message : err);
+  // Run the leave()+coordinator-close drain on a startup failure (set once the fleet is built), so peers
+  // reclaim this node's budget/share immediately rather than waiting out the lease TTL (SC-16). Best-effort.
+  try {
+    await startupCleanup?.();
+  } catch {
+    // the process is exiting non-zero regardless
+  }
   process.exit(1);
 });

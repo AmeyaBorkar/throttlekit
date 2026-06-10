@@ -71,6 +71,15 @@ export function makeFederatedFleetSource(
     axis: "rate",
     async lease(key: string, wants: number): Promise<LeaseGrantOutcome> {
       const now = clock.now();
+      // NOTE (FLA-1): `now` is the SERVER NODE clock; the window boundary we return to the client (its
+      // leftover-discard instant) is derived from it. The production Redis/Postgres coordinators, however,
+      // window the budget on the STORE clock (they IGNORE the `expiresAt` we pass to `lease()`), so under
+      // node↔store clock skew the boundary the client discards at can differ from the window the budget was
+      // actually drained against — reintroducing skew-bounded cross-window carryover. The GLOBAL per-window
+      // safety bound still holds (the coordinator caps each window at `budgetPerWindow`); only the per-window
+      // byte-identity is skew-soft. Deploy the node and coordinator store on a shared / NTP-synced clock. The
+      // exact fix (the coordinator returning the authoritative boundary it drained against, so the client
+      // discards at that instant) is a tracked follow-up for the next core release — see fleet-skew.test.ts.
       const windowStart = Math.floor(now / windowMs) * windowMs;
       const expiresAt = Math.ceil(windowStart + windowMs);
       const want = Math.max(1, Math.floor(wants));
