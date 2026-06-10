@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-ThrottleKit is **1.0** and follows SemVer (see [STABILITY.md](./STABILITY.md)). Security fixes land on the
+ThrottleKit is **1.x** and follows SemVer (see [STABILITY.md](./STABILITY.md)). Security fixes land on the
 latest published minor; the previous minor receives patches for critical issues.
 
 | Version | Supported |
@@ -49,6 +49,15 @@ ThrottleKit is a library (plus an optional gRPC service), not a hosted service. 
   reach the core through the gRPC **service door** (`throttlekit-server`) — any party that can write to the
   shared store or call the service can consume or distort the budget. Front the service door with **TLS/mTLS**
   (its default credentials are insecure: loopback/dev only) and restrict store access to trusted instances.
+  The additive **Fleet lease door** (`Fleet.Reserve`) hands out chunks of a global budget, so it is
+  **loopback-only by default** — set `--fleet-secret` (with TLS) before exposing it, or a remote caller could
+  lease and exhaust the budget.
+- **Monitoring surfaces carry traffic metadata.** The read-only **Monitor door** (`throttlekit.v1.Monitor`,
+  `GetSnapshot` / `Watch`) exposes **traffic keys (PII)** and the live denial feed, so the gRPC door is
+  **loopback-only by default** — set `--monitor-secret` (with TLS) to expose it. The Prometheus `/metrics`
+  endpoint is aggregate and **PII-free** (loopback by default, no auth), and gRPC health reports only
+  serving status. Optional **decision capture** records the live decision stream (PII) to a **redacted,
+  AES-256-GCM-encrypted** durable store — opt-in, OFF by default, behind a fail-closed, audited CLI.
 - **SemVer scope.** Only the **stable core** is covered by the 1.0 guarantee; the **experimental frontier**
   (the joint-LP policy, distributed-concurrency tuning knobs, the learned-escrow / sketch layer, and the
   not-yet-frozen polyglot Lua wire) may change in a minor — see [STABILITY.md](./STABILITY.md).
