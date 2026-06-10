@@ -69,6 +69,30 @@ d("PostgresCoordinator (TK-1302)", () => {
       }
     });
 
+    it("leaseWindowed returns the AUTHORITATIVE window boundary + the same partial-grant semantics (FLA-1)", async () => {
+      const windowMs = 60_000;
+      const c = make({ budget: 100, prefix: "lw", windowMs });
+      try {
+        const a = await c.leaseWindowed("k", 30);
+        expect(a.granted).toBe(30);
+        // The boundary is the clock_timestamp()-derived window end — a multiple of windowMs, near now
+        // (NOT a node-supplied value; lease() ignores its expiresAt arg, leaseWindowed reports the real one).
+        expect(a.expiresAt % windowMs).toBe(0);
+        const now = Date.now();
+        expect(a.expiresAt).toBeGreaterThan(now - windowMs);
+        expect(a.expiresAt).toBeLessThan(now + 2 * windowMs);
+        // Same window ⇒ same boundary; the grant drains the shared budget (partial, then exhausted).
+        const b = await c.leaseWindowed("k", 80);
+        expect(b.granted).toBe(70); // 100 − 30
+        expect(b.expiresAt).toBe(a.expiresAt);
+        expect((await c.leaseWindowed("k", 1)).granted).toBe(0);
+        // lease() and leaseWindowed() share the same budget + the same granted scalar.
+        expect(await c.lease("k", 5, Date.now() + windowMs)).toBe(0);
+      } finally {
+        c.close();
+      }
+    });
+
     it("zero tokens returns 0 without touching the row", async () => {
       const c = make({ prefix: "lease0" });
       try {

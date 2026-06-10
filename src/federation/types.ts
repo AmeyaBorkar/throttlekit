@@ -58,6 +58,28 @@ export interface GlobalCoordinator {
   lease(key: string, tokens: number, expiresAt: number): Promise<number>;
 
   /**
+   * Lease `tokens` AND return the **authoritative window boundary** the grant
+   * was drained against — the coordinator's own `expiresAt` (epoch-ms),
+   * derived from the SAME clock that caps the budget.
+   *
+   * This is the window-coupling-correct variant of {@link lease} for a caller
+   * that must DISCARD leftover credits at exactly the boundary the budget
+   * resets at — the Tier-2 fleet lease. `lease()` takes an `expiresAt` that the
+   * server-time coordinators (`RedisCoordinator` / `PostgresCoordinator`)
+   * IGNORE (they recompute the window from store time), so a node-clock caller
+   * can be told to discard at a different instant than the budget actually
+   * drained against under node↔store clock skew. `leaseWindowed` removes that
+   * gap by returning the boundary the coordinator used, atomically with the
+   * grant — no extra round trip, no two-read race.
+   *
+   * Optional: a coordinator that windows on the PASSED `expiresAt`
+   * (`TestCoordinator`) has no divergence and need not implement it — callers
+   * feature-detect and fall back to {@link lease}. `granted` is in `[0, tokens]`
+   * (partial grants legitimate), exactly as {@link lease}.
+   */
+  leaseWindowed?(key: string, tokens: number): Promise<{ granted: number; expiresAt: number }>;
+
+  /**
    * Reconcile `leftover` un-served escrow back to the global budget at
    * the given `windowStart` (epoch-ms of the window's start). Idempotent
    * on `windowStart` — duplicate calls within one window MUST be no-ops,

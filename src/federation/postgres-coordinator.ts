@@ -165,7 +165,27 @@ export class PostgresCoordinator implements GlobalCoordinator {
       );
     }
     if (tokens === 0) return 0;
+    return (await this.#leaseImpl(key, tokens)).granted;
+  }
 
+  /**
+   * Lease + return the authoritative window boundary the budget drained against (the
+   * `clock_timestamp()`-derived `expiresAt`, NOT a node-clock value), so a Tier-2 client discards leftover
+   * credits at exactly that instant — closing the node↔store skew gap {@link lease}'s ignored `expiresAt` leaves.
+   */
+  async leaseWindowed(
+    key: string,
+    tokens: number,
+  ): Promise<{ granted: number; expiresAt: number }> {
+    if (!Number.isFinite(tokens) || tokens < 0) {
+      throw new RangeError(
+        `lease tokens must be a non-negative finite number, got ${String(tokens)}`,
+      );
+    }
+    return this.#leaseImpl(key, tokens);
+  }
+
+  async #leaseImpl(key: string, tokens: number): Promise<{ granted: number; expiresAt: number }> {
     await this.#ensureSchema();
 
     const pgKey = `${this.#prefix}:${key}`;
@@ -221,7 +241,7 @@ export class PostgresCoordinator implements GlobalCoordinator {
       }
 
       await client.query("COMMIT");
-      return granted;
+      return { granted, expiresAt };
     } catch (err) {
       await this.#safeRollback(client);
       throw new StoreUnavailableError(

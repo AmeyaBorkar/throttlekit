@@ -71,7 +71,9 @@ export interface RedisCoordinatorOptions {
  *   ARGV[3] = windowMs (for deriving the active window's expiresAt)
  *   ARGV[4] = perKeyBudget (initialize the budget if this is a fresh window)
  *
- * Returns: granted (integer, 0..tokens).
+ * Returns: {granted, expiresAt} — granted (integer, 0..tokens) and the
+ * authoritative window boundary (epoch-ms) the grant was drained against. The
+ * scalar `lease()` reads element 1; `leaseWindowed()` reads both.
  */
 const LEASE_LUA = `${LUA_NOW}
 local tokens = tonumber(ARGV[2])
@@ -101,7 +103,7 @@ local pexp = expiresAt - now
 if pexp < 1 then pexp = 1 end
 redis.call('PEXPIRE', KEYS[1], pexp)
 
-return granted`;
+return {granted, expiresAt}`;
 
 /**
  * Atomic RECONCILE script.
@@ -214,15 +216,39 @@ export class RedisCoordinator implements GlobalCoordinator {
     }
     if (tokens === 0) return 0;
 
+    return (await this.#leaseWindowed(key, tokens)).granted;
+  }
+
+  /**
+   * Lease + return the authoritative window boundary the budget drained against (the Redis-`TIME`-derived
+   * `expiresAt`, NOT a node-clock value), so a Tier-2 client can discard leftover credits at exactly that
+   * instant — closing the node↔store skew gap that {@link lease}'s ignored `expiresAt` argument leaves open.
+   */
+  async leaseWindowed(
+    key: string,
+    tokens: number,
+  ): Promise<{ granted: number; expiresAt: number }> {
+    if (!Number.isFinite(tokens) || tokens < 0) {
+      throw new RangeError(
+        `lease tokens must be a non-negative finite number, got ${String(tokens)}`,
+      );
+    }
+    return this.#leaseWindowed(key, tokens);
+  }
+
+  async #leaseWindowed(
+    key: string,
+    tokens: number,
+  ): Promise<{ granted: number; expiresAt: number }> {
     const redisKey = `${this.#prefix}:${key}`;
     const nowArg = this.#useServerTime ? 0 : Date.now();
     try {
-      const raw = await this.#eval(
+      const raw = (await this.#eval(
         LEASE_LUA,
         [redisKey],
         [nowArg, tokens, this.#windowMs, this.budgetFor(key)],
-      );
-      return Number(raw);
+      )) as [unknown, unknown];
+      return { granted: Number(raw[0]), expiresAt: Number(raw[1]) };
     } catch (err) {
       throw new StoreUnavailableError(
         `RedisCoordinator.lease failed for key "${key}": ${(err as Error).message}`,

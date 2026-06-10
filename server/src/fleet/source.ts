@@ -14,6 +14,21 @@ import { type Clock, systemClock } from "throttlekit";
 import type { GlobalCoordinator } from "throttlekit/federation";
 
 /**
+ * The optional `GlobalCoordinator.leaseWindowed` surface — leases AND returns the authoritative window
+ * boundary the budget drained against. Present on the server-time Redis/Postgres coordinators (core's
+ * additive FLA-1 fix); absent on a coordinator that windows on the passed `expiresAt` (e.g. `TestCoordinator`)
+ * and on older published cores. Declared locally so the server feature-detects it without depending on the
+ * method existing in the `throttlekit` version it is built against.
+ */
+interface WindowedCoordinator {
+  leaseWindowed(key: string, tokens: number): Promise<{ granted: number; expiresAt: number }>;
+}
+
+function hasLeaseWindowed(c: GlobalCoordinator): c is GlobalCoordinator & WindowedCoordinator {
+  return typeof (c as Partial<WindowedCoordinator>).leaseWindowed === "function";
+}
+
+/**
  * The axis a fleet lease draws from. v1 leases windowed-credit budgets (a federated rate/quota policy ⇒
  * `"rate"`); the concurrency axis is not leasable (the Reserve handler raises UNIMPLEMENTED for it).
  */
@@ -70,19 +85,34 @@ export function makeFederatedFleetSource(
   return {
     axis: "rate",
     async lease(key: string, wants: number): Promise<LeaseGrantOutcome> {
+      const want = Math.max(1, Math.floor(wants));
+      // Prefer the coordinator's AUTHORITATIVE window — the boundary it actually drained the budget against
+      // (FLA-1). The client then discards leftover credits at exactly that instant, so node↔store clock skew
+      // cannot make the discard boundary differ from the window the budget was charged to. The server-time
+      // Redis/Postgres coordinators expose `leaseWindowed`; it is computed from the SAME store-clock read as
+      // the grant, atomically (no extra round trip, no two-read race).
+      if (hasLeaseWindowed(coordinator)) {
+        const { granted, expiresAt } = await coordinator.leaseWindowed(key, want);
+        const now = clock.now();
+        const capacity = Math.max(0, granted);
+        return {
+          capacity,
+          expiresAt,
+          // `now` (node clock) only scales the refresh/retry HINTS here; the discard boundary above is the
+          // authoritative store-clock value, so correctness does not depend on node↔store alignment.
+          refreshIntervalMs: Math.max(1, expiresAt - now),
+          retryAfterMs: capacity === 0 ? Math.max(0, expiresAt - now) : 0,
+          limit,
+        };
+      }
+      // Fallback for a coordinator without `leaseWindowed`: the node-clock window. Exact when the coordinator
+      // windows on the PASSED `expiresAt` (e.g. `TestCoordinator`, where source window == coordinator window
+      // by construction). Under a server-time coordinator that ignores it, the discard boundary can diverge
+      // from the drained window by the node↔store skew — bounded and self-recovering; the GLOBAL per-window
+      // bound holds either way (the coordinator caps each window at its budget). See fleet-skew.test.ts.
       const now = clock.now();
-      // NOTE (FLA-1): `now` is the SERVER NODE clock; the window boundary we return to the client (its
-      // leftover-discard instant) is derived from it. The production Redis/Postgres coordinators, however,
-      // window the budget on the STORE clock (they IGNORE the `expiresAt` we pass to `lease()`), so under
-      // node↔store clock skew the boundary the client discards at can differ from the window the budget was
-      // actually drained against — reintroducing skew-bounded cross-window carryover. The GLOBAL per-window
-      // safety bound still holds (the coordinator caps each window at `budgetPerWindow`); only the per-window
-      // byte-identity is skew-soft. Deploy the node and coordinator store on a shared / NTP-synced clock. The
-      // exact fix (the coordinator returning the authoritative boundary it drained against, so the client
-      // discards at that instant) is a tracked follow-up for the next core release — see fleet-skew.test.ts.
       const windowStart = Math.floor(now / windowMs) * windowMs;
       const expiresAt = Math.ceil(windowStart + windowMs);
-      const want = Math.max(1, Math.floor(wants));
       const capacity = Math.max(0, await coordinator.lease(key, want, expiresAt));
       return {
         capacity,
