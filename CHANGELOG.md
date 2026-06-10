@@ -6,6 +6,8 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-06-10
+
 ### Added
 
 - **Tier-2 fleet leasing — `LeaseSpender`** (`throttlekit/twotier`, `@experimental`). The client-side spend
