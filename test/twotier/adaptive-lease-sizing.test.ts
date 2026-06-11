@@ -180,6 +180,38 @@ describe("twoTier adaptive lease sizing — wiring", () => {
     expect(w1).toBe(1);
   });
 
+  it("does not starve after a window roll — leased+adaptive serves like the fixed-batch control (regression)", async () => {
+    // Regression for the cold-start lease-sizer DoS: the first observe() at the window roll used to slam
+    // the learned size to the 1e6 clamp, so the on-demand lease (1e6) exceeded what the L2 window (limit
+    // 1000) could ever grant — every request from window 1 onward was denied forever. Fixed-batch control
+    // serves 300/300 every window; adaptive must too.
+    const W = 60_000;
+    const run = async (adaptive: boolean): Promise<number[]> => {
+      const clock = new ManualClock(0);
+      const lease: Record<string, unknown> = { batch: 50, windowCoupled: true };
+      if (adaptive) lease.adaptive = { orderCost: 20, strandPenalty: 1 };
+      const node = twoTier({
+        strategy: fixedWindow({ limit: 1000, windowMs: W }),
+        l2: new MemoryStore({ clock, sweepIntervalMs: 0 }),
+        mode: "leased",
+        lease: lease as never,
+        clock,
+      });
+      const perWindow: number[] = [];
+      for (let w = 0; w < 6; w++) {
+        clock.set(w * W);
+        let allowed = 0;
+        for (let i = 0; i < 300; i++) if ((await node.check("k")).allowed) allowed++;
+        perWindow.push(allowed);
+      }
+      return perWindow;
+    };
+    const control = await run(false);
+    const adaptive = await run(true);
+    expect(control).toEqual([300, 300, 300, 300, 300, 300]);
+    expect(adaptive).toEqual(control); // not [300, 0, 0, 0, 0, 0]
+  });
+
   it("reduces coordination over time on steady demand (the win)", async () => {
     const clock = new ManualClock(0);
     const W = 10_000;

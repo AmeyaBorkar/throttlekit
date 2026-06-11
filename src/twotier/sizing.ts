@@ -57,7 +57,10 @@ export interface LeaseSizerOptions {
   maxSize?: number;
   /** Initial lease size. Default `minSize`. */
   initialSize?: number;
-  /** AdaGrad step scale `η₀` in `η₀/√(ε + Σg²)`. Default the log-domain diameter `ln(maxSize) − ln(minSize)`. */
+  /**
+   * AdaGrad step scale `η₀` in `η₀/√(ε + Σg²)`. Default `min(1, ln(maxSize) − ln(minSize))` — capped at
+   * one e-fold so the first step (where `Σg² ≈ g²`) can't traverse the whole range and pin to a clamp.
+   */
   stepScale?: number;
   /** AdaGrad numerical floor `ε`. Default `1e-8`. */
   epsilon?: number;
@@ -111,7 +114,15 @@ export function leaseSizer(options: LeaseSizerOptions): LeaseSizer {
 
   const lnMin = Math.log(minSize);
   const lnMax = Math.log(maxSize);
-  const stepScale = options.stepScale ?? Math.max(lnMax - lnMin, 1e-6);
+  // Cap the default step scale at one e-fold of log-space. The diameter-normalized choice
+  // (ln maxSize − ln minSize) is regret-optimal in the worst case, but on the FIRST step Σg² is still
+  // ≈ g², so step·grad = stepScale·sign(grad) *independent of |grad|* — the very first observe() moves
+  // x by the entire diameter and pins to a clamp. With the default range [1, 1e6] that slams the size
+  // to 1e6 on window one and never recovers (in twoTier leased mode the oversized lease exceeds what
+  // L2 can grant, so every request is then denied — a self-inflicted DoS). Capping at 1 bounds each
+  // step to a single e-fold (≤ e× size change/window), preserves the O(√T) regret (only the additive
+  // constant grows), and stays scale-free. An explicit `stepScale` still overrides this.
+  const stepScale = options.stepScale ?? Math.min(Math.max(lnMax - lnMin, 1e-6), 1);
   const epsilon = options.epsilon ?? 1e-8;
 
   let x = Math.log(clamp(options.initialSize ?? minSize, minSize, maxSize));

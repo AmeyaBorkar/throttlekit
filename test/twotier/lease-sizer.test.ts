@@ -62,6 +62,23 @@ describe("leaseSizer — tracks the EOQ optimum", () => {
     const highDemand = sizer.continuous;
     expect(highDemand).toBeGreaterThan(lowDemand); // EOQ grows like √D, so the batch follows demand up
   });
+
+  it("does not slam the size to a clamp on the first observe() with the default full range (cold-start regression)", () => {
+    // Regression: with the *default* bounds [1, 1e6] the step scale used to default to the full
+    // log-domain diameter (ln 1e6 ≈ 13.8). On the first step Σg² ≈ g², so step·grad = stepScale·sign(grad)
+    // regardless of |grad| — the first observe() traversed the whole range and pinned size() to 1e6,
+    // which then starves twoTier leased mode permanently. The capped default keeps the first step ≤ one
+    // e-fold, so the size moves toward the optimum instead of to the ceiling.
+    const sizer = leaseSizer({ orderCost: C, strandPenalty: H, initialSize: 50 }); // default maxSize 1e6
+    sizer.observe(300);
+    expect(sizer.size()).toBeLessThanOrEqual(Math.ceil(50 * Math.E)); // ≤ ~e× the warm start, not 1e6
+    // …and from a cold start within the full default range it converges near the EOQ (the old default
+    // crawled back from the 1e6 clamp and was still an order of magnitude off after dozens of windows).
+    for (let i = 0; i < 40; i++) sizer.observe(300);
+    const eoq = eoqOptimum(C, H, 300); // ~109.5
+    expect(sizer.continuous).toBeGreaterThan(eoq * 0.7);
+    expect(sizer.continuous).toBeLessThan(eoq * 1.3);
+  });
 });
 
 describe("leaseSizer — output contract", () => {

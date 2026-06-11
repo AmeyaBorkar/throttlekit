@@ -78,7 +78,12 @@ export function createLeaseSizer(options: LeaseSizerOptions): LeaseSizer {
 
   const lnMin = Math.log(minSize);
   const lnMax = Math.log(maxSize);
-  const stepScale = options.stepScale ?? Math.max(lnMax - lnMin, 1e-6);
+  // Cap the default step scale at one e-fold of log-space: on the first step Σg² ≈ g² so
+  // step·grad = stepScale·sign(grad) regardless of |grad|, and a diameter-sized stepScale would
+  // traverse the entire [minSize, maxSize] range and pin to a clamp on the very first observe().
+  // Capping at 1 bounds each step to ≤ e× size change/window while preserving the O(√T) regret.
+  // (Kept byte-identical to the shipped leaseSizer in src/twotier/sizing.ts — see lease-sizer.test.ts.)
+  const stepScale = options.stepScale ?? Math.min(Math.max(lnMax - lnMin, 1e-6), 1);
   const epsilon = options.epsilon ?? 1e-8;
 
   let x = Math.log(clampNum(options.initialSize ?? minSize, minSize, maxSize));
