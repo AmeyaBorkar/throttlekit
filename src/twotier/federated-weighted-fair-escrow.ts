@@ -592,7 +592,11 @@ export function federatedWeightedFairEscrow(
         if (Number.isFinite(windowStart)) {
           // Return this region's grant to the pool. The async pool's release is a round-trip; fire it
           // best-effort (the window PEXPIRE reclaims the grant regardless) so `reset` stays synchronous.
-          if (isAsync) void (pool as AsyncRegionFairPool).release(region, now);
+          // The `.catch` is load-bearing: without it a store blip during reset() (the release rejects)
+          // escapes as an unhandled promise rejection that crashes the process under
+          // `--unhandled-rejections=strict`. Mirrors the convention at twotier/index.ts:354,424.
+          if (isAsync)
+            void (pool as AsyncRegionFairPool).release(region, now).catch(() => undefined);
           else (pool as RegionFairPool).release(region, now);
         }
         windowStart = Number.NEGATIVE_INFINITY;

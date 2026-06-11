@@ -166,3 +166,45 @@ describe("AsyncRegionFairPool — reset releases the region", () => {
     expect((await pool.stats()).regions.some((r) => r.region === "us")).toBe(false);
   });
 });
+
+describe("AsyncRegionFairPool — reset() is store-blip safe", () => {
+  it("swallows a rejecting async release() instead of leaking an unhandled rejection (regression)", async () => {
+    // reset() fires the async pool's release() best-effort. A store blip rejects that round-trip; the
+    // rejection must be caught, not escape as an unhandled promise rejection (which crashes the process
+    // under --unhandled-rejections=strict). See federated-weighted-fair-escrow.ts:595.
+    const clock = new ManualClock(0);
+    let released = false;
+    const pool: AsyncRegionFairPool = {
+      isAsync: true,
+      limit: 100,
+      windowMs: WINDOW,
+      clock,
+      async grant() {
+        return 50;
+      },
+      release() {
+        released = true;
+        return Promise.reject(new Error("FWFE_RESET_STORE_BLIP"));
+      },
+      async stats() {
+        return { windowStart: 0, limit: 100, totalGranted: 0, regions: [] };
+      },
+    };
+    const us = federatedWeightedFairEscrow({ region: "us", pool });
+    await us.check("a", 1); // make windowStart finite so reset() actually calls release()
+
+    const leaked: unknown[] = [];
+    const onRej = (r: unknown): void => {
+      if (r instanceof Error && r.message === "FWFE_RESET_STORE_BLIP") leaked.push(r);
+    };
+    process.on("unhandledRejection", onRej);
+    try {
+      expect(() => us.reset()).not.toThrow();
+      await new Promise((r) => setTimeout(r, 25)); // let an unhandled rejection surface if it were one
+    } finally {
+      process.off("unhandledRejection", onRej);
+    }
+    expect(released).toBe(true); // the best-effort release was attempted…
+    expect(leaked).toEqual([]); // …and its rejection was caught, not leaked
+  });
+});
