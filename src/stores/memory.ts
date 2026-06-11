@@ -51,6 +51,13 @@ export class MemoryStore implements Store {
   readonly #bounded: boolean;
   /** CLOCK ring of keys (or `undefined` tombstones); only populated when bounded. */
   readonly #ring: (string | undefined)[] = [];
+  /**
+   * Indices of ring slots freed by {@link MemoryStore.#drop} (reset/expiry). {@link MemoryStore.#insert}
+   * reuses one of these before it ever evicts a live key, so a freed slot below `maxKeys` is never left
+   * idle while a still-live key is sacrificed (the CLOCK hand alone could walk past the free slot and
+   * evict a live, unreferenced key first). Bounded by `maxKeys`.
+   */
+  readonly #freeSlots: number[] = [];
   #hand = 0;
   #sweepTimer: ReturnType<typeof setInterval> | undefined;
   /** Pre-bound sweep callback, so the per-call `applySync` hot path allocates no closure. */
@@ -89,7 +96,10 @@ export class MemoryStore implements Store {
   #drop(key: string): void {
     const entry = this.#map.get(key);
     if (entry === undefined) return;
-    if (this.#bounded && entry.slot >= 0) this.#ring[entry.slot] = undefined;
+    if (this.#bounded && entry.slot >= 0) {
+      this.#ring[entry.slot] = undefined;
+      this.#freeSlots.push(entry.slot); // reclaim the slot before any live key is evicted
+    }
     this.#map.delete(key);
   }
 
@@ -122,7 +132,12 @@ export class MemoryStore implements Store {
       return;
     }
     let slot: number;
-    if (this.#ring.length < this.#maxKeys) {
+    const reused = this.#freeSlots.pop();
+    if (reused !== undefined) {
+      // A slot freed by reset/expiry: reuse it before growing the ring or evicting a live key.
+      slot = reused;
+      this.#ring[reused] = key;
+    } else if (this.#ring.length < this.#maxKeys) {
       slot = this.#ring.length;
       this.#ring.push(key);
     } else {
@@ -180,5 +195,6 @@ export class MemoryStore implements Store {
     }
     this.#map.clear();
     this.#ring.length = 0;
+    this.#freeSlots.length = 0;
   }
 }

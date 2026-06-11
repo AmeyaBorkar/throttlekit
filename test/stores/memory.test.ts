@@ -89,6 +89,24 @@ describe("MemoryStore", () => {
     expect(store.size).toBe(2);
   });
 
+  it("does not evict a live key when a freed slot exists away from the CLOCK hand (regression)", () => {
+    // Regression: the previous test frees the slot AT the hand (slot 0), so the eviction scan reuses it
+    // by luck. Here the freed slot (1) is NOT where the hand sits (0, the live unreferenced "a"). The
+    // ring length is still maxKeys, so the next insert took the evict path; the hand walked into the live
+    // "a" and sacrificed it — a silent rate-limit reset / over-admission below maxKeys. The insert must
+    // reuse the free slot 1 instead.
+    const clock = new ManualClock(0);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0, maxKeys: 2 });
+    store.applySync("a", inc(100_000)); // slot 0
+    store.applySync("b", inc(100_000)); // slot 1
+    store.resetSync("b"); // tombstone slot 1; the hand is still at slot 0 ("a", live, ref bit clear)
+    expect(store.applySync("c", inc(100_000))).toBe(1); // fresh key C
+    expect(store.has("a")).toBe(true); // "a" must survive — a free slot was available
+    expect(store.has("c")).toBe(true);
+    expect(store.size).toBe(2);
+    expect(store.applySync("a", inc(100_000))).toBe(2); // "a"'s counter is intact (no silent reset)
+  });
+
   it("close clears state and stops the sweep timer", async () => {
     const store = new MemoryStore({ clock: new ManualClock(0), sweepIntervalMs: 0 });
     store.applySync("k", inc());
