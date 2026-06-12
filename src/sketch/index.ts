@@ -6,6 +6,14 @@ import { requireCost, requireInteger } from "../core/validate";
 const HEADER_BYTES = 16;
 
 /**
+ * Counter ceiling. Counters are a `Uint32Array`, so an unguarded `counters[i] = x` with `x > 2³²−1`
+ * wraps modulo 2³² and the stored value drops BELOW the true count — breaking the never-underestimate
+ * guarantee (a heavy hitter could then read as small and slip past threshold shedding / over-admit).
+ * Saturating at the ceiling can only ever over-estimate, the safe direction.
+ */
+const MAX_U32 = 0xffffffff;
+
+/**
  * A detached, transportable copy of a Count-Min Sketch's state — the counter table plus the total
  * mass added. Produced by {@link CountMinSketch.snapshot} (in-process) or
  * {@link sketchSnapshotFromBytes} (decoded from the wire), and folded into another sketch with
@@ -137,7 +145,7 @@ export class CountMinSketch {
         const v = counters[i * width + cols[i]!]!;
         if (v < m) m = v;
       }
-      const target = m + count;
+      const target = Math.min(m + count, MAX_U32); // saturate so the store can't wrap below the true count
       for (let i = 0; i < this.depth; i++) {
         const idx = i * width + cols[i]!;
         if (counters[idx]! < target) counters[idx] = target;
@@ -148,7 +156,7 @@ export class CountMinSketch {
     let min = Number.POSITIVE_INFINITY;
     for (let i = 0; i < this.depth; i++) {
       const idx = i * width + cols[i]!;
-      const v = counters[idx]! + count;
+      const v = Math.min(counters[idx]! + count, MAX_U32); // saturate (never wrap below true count)
       counters[idx] = v;
       if (v < min) min = v;
     }
@@ -176,7 +184,10 @@ export class CountMinSketch {
     }
     const a = this.counters;
     const b = snap.counters;
-    for (let i = 0; i < a.length; i++) a[i] = (a[i] as number) + (b[i] as number);
+    // Saturate each merged counter: a plain element-wise add of two near-ceiling Uint32 counters would
+    // wrap below the true union count and hide a heavy hitter from threshold shedding.
+    for (let i = 0; i < a.length; i++)
+      a[i] = Math.min((a[i] as number) + (b[i] as number), MAX_U32);
     this.#total += snap.total;
   }
 

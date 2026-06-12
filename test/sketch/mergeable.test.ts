@@ -107,4 +107,23 @@ describe("mergeableSketch", () => {
     const ok = mergeableSketch({ epsilon: 0.1 }).toBytes();
     expect(() => sketchSnapshotFromBytes(ok.subarray(0, ok.length - 4))).toThrow(/length mismatch/);
   });
+
+  it("saturates a counter at 2^32-1 on add instead of wrapping below the true count (regression)", () => {
+    const s = mergeableSketch();
+    s.add("k", 2_000_000_000);
+    expect(s.estimate("k")).toBe(2_000_000_000);
+    s.add("k", 3_000_000_000); // 5e9 > 2^32-1 → must saturate, not wrap to ~705M
+    expect(s.estimate("k")).toBe(0xffffffff); // never underestimates (was 1_705_032_704 when it wrapped)
+  });
+
+  it("saturates on merge instead of wrapping below the true union count (regression)", () => {
+    const n1 = mergeableSketch();
+    const n2 = mergeableSketch();
+    n1.add("attacker", 2_500_000_000);
+    n2.add("attacker", 2_500_000_000);
+    const g = mergeableSketch();
+    g.merge(n1.snapshot());
+    g.merge(n2.snapshot()); // 5e9 > 2^32-1 → saturate, so a heavy hitter stays detectable
+    expect(g.estimate("attacker")).toBe(0xffffffff); // not wrapped down to ~705M
+  });
 });
