@@ -447,7 +447,14 @@ export function mergeableSketch(options: MergeableSketchOptions = {}): Mergeable
   // Plain (non-conservative) CMS: counters are purely additive, so a merge is the exact union.
   const sketch = new CountMinSketch(epsilon, delta, false);
   return {
-    add: (key, count = 1) => sketch.add(key, count),
+    add: (key, count = 1) => {
+      // A counter is an integer Uint32: a fractional count truncates (desyncing the table from `total`)
+      // and a negative count wraps to a huge value — both corrupt the never-underestimate invariant.
+      // Require a positive integer, exactly as the sketchRateLimit cost path does.
+      requireCost(count);
+      requireInteger("mergeableSketch.count", count);
+      return sketch.add(key, count);
+    },
     estimate: (key) => sketch.estimate(key),
     get total() {
       return sketch.total;

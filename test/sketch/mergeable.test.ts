@@ -126,4 +126,13 @@ describe("mergeableSketch", () => {
     g.merge(n2.snapshot()); // 5e9 > 2^32-1 → saturate, so a heavy hitter stays detectable
     expect(g.estimate("attacker")).toBe(0xffffffff); // not wrapped down to ~705M
   });
+
+  it("rejects a fractional or negative add count instead of corrupting the sketch (regression)", () => {
+    const s = mergeableSketch();
+    // Fractional used to truncate the counter (2) while `total` carried 2.7 — table/total desync.
+    expect(() => s.add("b", 2.7)).toThrow(RangeError);
+    // Negative used to wrap the Uint32 counter to ~2^32 and drive `total` negative.
+    expect(() => s.add("c", -10)).toThrow(RangeError);
+    expect(s.total).toBe(0); // nothing was applied
+  });
 });
