@@ -60,4 +60,17 @@ limiters:    # inline
     // A stray over-indented line that no block could have opened is caught.
     expect(() => parseYaml("a: 1\n   stray: 2")).toThrow(YamlParseError);
   });
+
+  it("rejects prototype-polluting keys instead of mutating the object's prototype (regression)", () => {
+    // `__proto__:` with a nested block used to re-parent the parsed object: its fields then resolved
+    // through the prototype chain and slipped past own-property guards (loadConfigObject's missing-
+    // `limiters` check returned a phantom limiter). The parser now rejects the key outright.
+    expect(() => parseYaml("__proto__:\n  limiters:\n    ghost: 1")).toThrow(/unsafe key/);
+    expect(() => parseYaml("constructor: 1")).toThrow(/unsafe key/);
+    expect(() => parseYaml("cfg: { __proto__: 1 }")).toThrow(/unsafe key/);
+    // A normal document is unaffected and is not re-parented.
+    const out = parseYaml("version: 1\nlimiters:\n  api:\n    limit: 5");
+    expect(Object.prototype.hasOwnProperty.call(out, "limiters")).toBe(true);
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+  });
 });

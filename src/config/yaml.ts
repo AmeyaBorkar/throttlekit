@@ -28,6 +28,18 @@ interface Tokenized {
   no: number;
 }
 
+/**
+ * Keys that would mutate the prototype chain (or shadow it) when assigned to a plain-object accumulator.
+ * `out["__proto__"] = {...}` invokes the Object.prototype setter and re-parents the object, so a config
+ * could smuggle fields onto the prototype and slip past own-property guards (e.g. the `limiters` check).
+ * These are never valid `.throttlekit.yaml` keys, so we reject them outright.
+ */
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+function assertSafeKey(key: string, lineNo: number): void {
+  if (UNSAFE_KEYS.has(key))
+    throw new YamlParseError(`unsafe key ${JSON.stringify(key)} is not allowed`, lineNo);
+}
+
 function tokenize(text: string): Tokenized[] {
   const out: Tokenized[] = [];
   const lines = text.split(/\r?\n/);
@@ -86,6 +98,7 @@ function parseFlowMap(raw: string, lineNo: number): Record<string, unknown> {
     if (colon < 0) throw new YamlParseError('expected "key: value" inside { … }', lineNo);
     const k = trimmed.slice(0, colon).trim();
     if (k === "") throw new YamlParseError("empty key in flow map", lineNo);
+    assertSafeKey(k, lineNo);
     out[k] = parseScalar(trimmed.slice(colon + 1).trim(), lineNo);
   }
   return out;
@@ -108,6 +121,7 @@ export function parseYaml(text: string): Record<string, unknown> {
         );
       const key = line.content.slice(0, colon).trim();
       if (key === "") throw new YamlParseError("empty key", line.no);
+      assertSafeKey(key, line.no);
       const rest = line.content.slice(colon + 1).trim();
       i++;
       if (rest === "") {
