@@ -47,9 +47,32 @@ function tokenize(text: string): Tokenized[] {
     let s = lines[i] ?? "";
     // Whole-line comment.
     if (/^\s*#/.test(s)) continue;
-    // End-of-line comment: require a leading whitespace before `#` so a `#` inside a bare value is preserved.
-    const hash = s.indexOf(" #");
-    if (hash >= 0) s = s.slice(0, hash);
+    // End-of-line comment: a `#` preceded by whitespace begins a comment, but only OUTSIDE a quoted
+    // scalar — otherwise `prefix: "a #b"` would be truncated to `"a`. Scan left-to-right tracking quote
+    // state (with `\`-escapes inside double quotes) and cut at the first qualifying `#`.
+    let inSingle = false;
+    let inDouble = false;
+    let cut = -1;
+    for (let j = 0; j < s.length; j++) {
+      const c = s[j];
+      if (inDouble) {
+        if (c === "\\") {
+          j++; // skip the escaped character
+        } else if (c === '"') {
+          inDouble = false;
+        }
+      } else if (inSingle) {
+        if (c === "'") inSingle = false;
+      } else if (c === '"') {
+        inDouble = true;
+      } else if (c === "'") {
+        inSingle = true;
+      } else if (c === "#" && j > 0 && /\s/.test(s[j - 1] ?? "")) {
+        cut = j;
+        break;
+      }
+    }
+    if (cut >= 0) s = s.slice(0, cut);
     if (/^\s*$/.test(s)) continue;
     const m = /^(\s*)(.*?)\s*$/.exec(s);
     const indent = (m?.[1] ?? "").length;

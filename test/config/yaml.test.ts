@@ -52,6 +52,18 @@ limiters:    # inline
     expect(out).toEqual({ limiters: { api: { limit: 5 } } });
   });
 
+  it("preserves `#` inside quoted scalars and still strips real trailing comments (regression)", () => {
+    // Comment stripping used to run a blind indexOf(" #") before scalar parsing, truncating
+    // `prefix: "a #b"` to `"a`. It is now quote-aware.
+    expect(parseYaml('prefix: "a #b"')).toEqual({ prefix: "a #b" });
+    expect(parseYaml("prefix: 'a #b'")).toEqual({ prefix: "a #b" });
+    expect(parseYaml('cfg: { prefix: "a #b" }')).toEqual({ cfg: { prefix: "a #b" } });
+    // A real comment after a closing quote is still stripped…
+    expect(parseYaml('prefix: "ok" # note')).toEqual({ prefix: "ok" });
+    // …and a bare-value trailing comment still works.
+    expect(parseYaml("prefix: bare # note")).toEqual({ prefix: "bare" });
+  });
+
   it("rejects unsupported constructs with a line number", () => {
     expect(() => parseYaml("  not-at-root: 1")).toThrow(YamlParseError);
     expect(() => parseYaml("missing-colon")).toThrow(YamlParseError);
