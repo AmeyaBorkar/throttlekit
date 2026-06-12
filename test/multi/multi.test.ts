@@ -166,3 +166,40 @@ dRedis("multiRateLimit dual-path conformance (memory vs Redis fused Lua)", () =>
     });
   }
 });
+
+describe("multiRateLimit — input validation (regression)", () => {
+  it("all({}) and any({}) throw at construction instead of a TypeError at check time", () => {
+    expect(() => all({})).toThrow(/at least one dimension/);
+    expect(() => any({})).toThrow(/at least one dimension/);
+  });
+
+  it("rejects a non-positive effective per-dimension cost instead of silently disabling the axis", () => {
+    const clock = new ManualClock(0);
+    // cost: () => 0 made the dimension consume nothing → always allowed, never decremented (fail-open).
+    const zero = multiRateLimit<Ctx>({
+      clock,
+      store: new MemoryStore({ clock }),
+      strategy: all({
+        ip: {
+          key: (c) => c.ip,
+          strategy: fixedWindow({ limit: 3, windowMs: 1000 }),
+          cost: () => 0,
+        },
+      }),
+    });
+    expect(() => zero.checkSync({ ip: "A", user: "u" })).toThrow(RangeError);
+    // a negative weight (which would refund / invert the axis) is rejected too
+    const neg = multiRateLimit<Ctx>({
+      clock,
+      store: new MemoryStore({ clock }),
+      strategy: all({
+        ip: {
+          key: (c) => c.ip,
+          strategy: fixedWindow({ limit: 3, windowMs: 1000 }),
+          cost: () => -5,
+        },
+      }),
+    });
+    expect(() => neg.checkSync({ ip: "A", user: "u" })).toThrow(RangeError);
+  });
+});

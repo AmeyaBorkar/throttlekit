@@ -32,13 +32,20 @@ export interface MultiStrategy<Ctx> {
   readonly dimensions: Dimensions<Ctx>;
 }
 
+function requireNonEmpty<Ctx>(mode: "all" | "any", dimensions: Dimensions<Ctx>): void {
+  if (Object.keys(dimensions).length === 0)
+    throw new ThrottleKitError(`multi: ${mode}() requires at least one dimension`);
+}
+
 /** Allow only if **every** dimension allows; consume nothing unless all allow (no partial consume). */
 export function all<Ctx>(dimensions: Dimensions<Ctx>): MultiStrategy<Ctx> {
+  requireNonEmpty("all", dimensions);
   return { mode: "all", dimensions };
 }
 
 /** Allow if **any** dimension allows; consume only the dimensions that individually allow. */
 export function any<Ctx>(dimensions: Dimensions<Ctx>): MultiStrategy<Ctx> {
+  requireNonEmpty("any", dimensions);
   return { mode: "any", dimensions };
 }
 
@@ -291,8 +298,14 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
   const keyOf = (name: string, raw: string): string =>
     prefix !== undefined && prefix.length > 0 ? `${prefix}:${name}:${raw}` : `${name}:${raw}`;
 
-  const dimCost = (dim: Dimension<Ctx>, ctx: Ctx, globalCost: number): number =>
-    (dim.cost ? dim.cost(ctx) : 1) * globalCost;
+  const dimCost = (dim: Dimension<Ctx>, ctx: Ctx, globalCost: number): number => {
+    // Validate the EFFECTIVE per-dimension cost, not just the global cost: a weight of 0 (or negative)
+    // would make a dimension consume nothing — or refund — so that enforcement axis silently disables
+    // (or inverts), a fail-open. requireCost matches every other limiter (positive, finite).
+    const c = (dim.cost ? dim.cost(ctx) : 1) * globalCost;
+    requireCost(c);
+    return c;
+  };
 
   // Synchronous, atomic-by-single-thread path for sync stores (read all, decide, commit none/all).
   const runSync = (ctx: Ctx, globalCost: number): Decision => {
