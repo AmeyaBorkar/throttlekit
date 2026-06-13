@@ -119,6 +119,23 @@ describe("LeaseSpender.spendOrRefresh — the client loop", () => {
     const reserve = async (): Promise<ReserveResult> => ({ capacity: 0, expiresAt: 1000 });
     await expect(s.spendOrRefresh(0, 1, reserve)).rejects.toThrow(/zero-capacity grant/);
   });
+
+  it("serves a grant whose window boundary is <= now instead of spinning to maxRounds (regression)", async () => {
+    // The grant's expiresAt equals `now` (a server/store window boundary coincident with the client
+    // clock, or clock skew). The old per-round re-discard dropped the fresh grant every iteration and
+    // threw at maxRounds; the core twoTier leased path serves the request. Mirror the core.
+    const s = new LeaseSpender({ limit: 100, ttlMs: 1000, windowCoupled: true });
+    let reserves = 0;
+    const reserve = async (): Promise<ReserveResult> => {
+      reserves++;
+      return { capacity: 10, expiresAt: 1000 };
+    };
+    const d = await s.spendOrRefresh(1000, 1, reserve, 8);
+    expect(d.allowed).toBe(true);
+    expect(d.remaining).toBe(9);
+    expect(d.resetAt).toBe(1000);
+    expect(reserves).toBe(1); // exactly one refresh, not 8 spun rounds
+  });
 });
 
 describe("LeaseSpender — one-oracle equivalence with twoTier(leased, windowCoupled)", () => {

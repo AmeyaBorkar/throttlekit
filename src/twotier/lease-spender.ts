@@ -151,6 +151,16 @@ export class LeaseSpender {
   spend(now: number, cost = 1): LeaseSpend {
     requireCost(cost);
     this.expireIfRolled(now);
+    return this.#spendLocal(now, cost);
+  }
+
+  /**
+   * Decrement local credits for one request WITHOUT the window-coupled discard. The discard is the
+   * caller's responsibility (it runs once per turn against the pre-existing window — see
+   * {@link spend} for the single-shot path and {@link spendOrRefresh} for the loop), so a credit
+   * freshly leased this turn is spendable even when the grant's window boundary is `<= now`.
+   */
+  #spendLocal(now: number, cost: number): LeaseSpend {
     if (this._credits >= cost) {
       this._credits -= cost;
       return {
@@ -181,8 +191,15 @@ export class LeaseSpender {
     reserve: ReserveFn,
     maxRounds = 1024,
   ): Promise<Decision> {
+    requireCost(cost);
+    // Mirror the core leased path: discard stale carry-over ONCE, against the pre-existing window,
+    // BEFORE leasing. Inside the loop we spend WITHOUT re-discarding, so a freshly leased credit is
+    // spendable this turn even when the grant's `expiresAt <= now` (a degenerate / server-skewed
+    // window boundary the core still serves). Re-discarding per round (the old `this.spend(...)`)
+    // dropped each fresh grant immediately and spun the loop until it threw at `maxRounds`.
+    this.expireIfRolled(now);
     for (let round = 0; round < maxRounds; round++) {
-      const r = this.spend(now, cost);
+      const r = this.#spendLocal(now, cost);
       if (!r.needsRefresh) return r.decision;
       const res = await reserve(cost);
       if (isDenied(res)) return res.denied;
