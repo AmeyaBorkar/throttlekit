@@ -408,21 +408,21 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
   const concShim: LeaseAdmitter | undefined =
     concurrency !== undefined ? leaseAsAdmission(concurrency, { clock }) : undefined;
 
-  /** Mutable state for {@link UnifiedAdmitter.lastDecisions}. Each admit overwrites it. */
-  let lastRate: Decision | undefined;
-  let lastConc: Decision | undefined;
-  let lastCost: Decision | undefined;
-
   /**
-   * Reset per-axis state at the start of each admit so a short-circuit denial
-   * leaves the *downstream* axes' last decision as `undefined` (so the caller
-   * can identify the binding axis from `lastDecisions()`).
+   * Per-axis decisions for ONE admit call. A fresh object is created per call and threaded through
+   * the step helpers, so two concurrent async admits over the same admitter can't clobber each
+   * other's decision across an `await`. (The previous shared closure state flipped a passing
+   * request's verdict whenever another admit's deny landed mid-flight, between the await and the
+   * combine.) An unconfigured / short-circuited axis stays `undefined`, so the binding axis is still
+   * identifiable. {@link UnifiedAdmitter.lastDecisions} reports {@link lastSnap}, the snapshot of the
+   * most recently *completed* admit (each snapshot is internally consistent).
    */
-  function resetLast(): void {
-    lastRate = undefined;
-    lastConc = undefined;
-    lastCost = undefined;
+  interface AxisSnap {
+    rate?: Decision;
+    conc?: Decision;
+    cost?: Decision;
   }
+  let lastSnap: AxisSnap = {};
 
   /**
    * The synchronous "step machine" shared between admit and admitSync. Returns
@@ -430,7 +430,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
    *
    * Step 1 (concurrency, in-process) — runs synchronously.
    */
-  function startWithConcurrency(): {
+  function startWithConcurrency(snap: AxisSnap): {
     decision: Decision | undefined; // present iff concurrency was checked and denied
     leaseRelease: ((opts?: { dropped?: boolean }) => void) | undefined;
   } {
@@ -438,7 +438,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       return { decision: undefined, leaseRelease: undefined };
     }
     const admission = concShim.acquire();
-    lastConc = admission.decision;
+    snap.conc = admission.decision;
     if (!admission.decision.allowed) {
       // Denied at concurrency — short-circuit; no slot held.
       return { decision: admission.decision, leaseRelease: undefined };
@@ -452,10 +452,11 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
    */
   function finalize(
     leaseRelease: ((opts?: { dropped?: boolean }) => void) | undefined,
+    snap: AxisSnap,
   ): UnifiedAdmission {
     const combined = combineDecisions(
-      combineDecisions(lastConc ?? ALLOW_FULL, lastRate ?? ALLOW_FULL),
-      lastCost ?? ALLOW_FULL,
+      combineDecisions(snap.conc ?? ALLOW_FULL, snap.rate ?? ALLOW_FULL),
+      snap.cost ?? ALLOW_FULL,
     );
     return { decision: combined, release: leaseRelease ?? NOOP_RELEASE };
   }
@@ -466,10 +467,10 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
    * (identity), so the result equals the first denying axis's Decision plus
    * any earlier-allow Decision's `limit` / `remaining` clamps.
    */
-  function combineSnapshot(): Decision {
+  function combineSnapshot(snap: AxisSnap): Decision {
     return combineDecisions(
-      combineDecisions(lastConc ?? ALLOW_FULL, lastRate ?? ALLOW_FULL),
-      lastCost ?? ALLOW_FULL,
+      combineDecisions(snap.conc ?? ALLOW_FULL, snap.rate ?? ALLOW_FULL),
+      snap.cost ?? ALLOW_FULL,
     );
   }
 
@@ -479,18 +480,18 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
    * joint-LP policy filter bound (no axis denied). Read synchronously at each deny return so it agrees
    * with the `combineSnapshot()` decision built from the same per-axis state.
    */
-  const deriveBindingAxis = (): UnifiedAxis | undefined =>
-    lastConc?.allowed === false
+  const deriveBindingAxis = (snap: AxisSnap): UnifiedAxis | undefined =>
+    snap.conc?.allowed === false
       ? "concurrency"
-      : lastRate?.allowed === false
+      : snap.rate?.allowed === false
         ? "rate"
-        : lastCost?.allowed === false
+        : snap.cost?.allowed === false
           ? "cost"
           : undefined;
 
   /** Build a denied admission, attaching the binding axis (omitted when undefined — e.g. a policy deny). */
-  const denyResult = (decision: Decision): UnifiedAdmission => {
-    const axis = deriveBindingAxis();
+  const denyResult = (decision: Decision, snap: AxisSnap): UnifiedAdmission => {
+    const axis = deriveBindingAxis(snap);
     return axis === undefined
       ? { decision, release: NOOP_RELEASE }
       : { decision, release: NOOP_RELEASE, bindingAxis: axis };
@@ -573,6 +574,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
     requestCost: number,
     hold: number,
     leaseRelease: ((opts?: { dropped?: boolean }) => void) | undefined,
+    snap: AxisSnap,
   ): UnifiedAdmission | undefined {
     if (duals === undefined) return undefined;
     let active = duals;
@@ -591,25 +593,33 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
     }
     if (value >= bid) return undefined;
     leaseRelease?.({ dropped: false });
-    return { decision: denyByPolicy(combineSnapshot()), release: NOOP_RELEASE, policyDenied: true };
+    return {
+      decision: denyByPolicy(combineSnapshot(snap)),
+      release: NOOP_RELEASE,
+      policyDenied: true,
+    };
   }
 
   return {
     async admit(opts?: UnifiedAdmitOptions): Promise<UnifiedAdmission> {
       const { key = "", cost: requestCost = 1, value = 1, hold = 0 } = opts ?? {};
-      resetLast();
+      const snap: AxisSnap = {}; // per-call, never shared across awaits
 
       // Step 1 — concurrency (synchronous, both backends).
-      const concStep = startWithConcurrency();
+      const concStep = startWithConcurrency(snap);
       if (concStep.decision !== undefined) {
-        return denyResult(concStep.decision);
+        lastSnap = snap;
+        return denyResult(concStep.decision, snap);
       }
       const leaseRelease = concStep.leaseRelease;
 
       // Step 2 — joint-LP bid-price filter, BEFORE any rate/cost debit (inert under
       // the default policy). A filtered request must not consume budget.
-      const policyDeny = applyPolicyGate(value, requestCost, hold, leaseRelease);
-      if (policyDeny !== undefined) return policyDeny;
+      const policyDeny = applyPolicyGate(value, requestCost, hold, leaseRelease, snap);
+      if (policyDeny !== undefined) {
+        lastSnap = snap;
+        return policyDeny;
+      }
 
       // Step 3 — rate + cost. The outer try/catch releases the held concurrency
       // slot if a limiter throws (e.g. a store outage), so the slot never leaks.
@@ -617,38 +627,43 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
         if (fusedDispatcher !== undefined) {
           // Lua-fused path: one Redis EVALSHA covers both axes atomically.
           const result = await fusedDispatcher.dispatch(key, requestCost);
-          lastRate = result.rate;
-          lastCost = result.cost;
+          snap.rate = result.rate;
+          snap.cost = result.cost;
           if (!result.combined.allowed) {
             leaseRelease?.({ dropped: false });
             // Combined Decision still folds in concurrency (which allowed; ALLOW_FULL-ish).
-            return denyResult(combineSnapshot());
+            lastSnap = snap;
+            return denyResult(combineSnapshot(snap), snap);
           }
-          return finalize(leaseRelease);
+          lastSnap = snap;
+          return finalize(leaseRelease, snap);
         }
 
         // Sequential path — rate (async).
         if (rate !== undefined) {
           const d = await rate.check(key, 1);
-          lastRate = d;
+          snap.rate = d;
           if (!d.allowed) {
             // Release the held concurrency slot (deny is upstream, not an overload).
             leaseRelease?.({ dropped: false });
-            return denyResult(combineSnapshot());
+            lastSnap = snap;
+            return denyResult(combineSnapshot(snap), snap);
           }
         }
 
         // Sequential path — cost (async).
         if (cost !== undefined) {
           const d = await cost.check(key, requestCost);
-          lastCost = d;
+          snap.cost = d;
           if (!d.allowed) {
             leaseRelease?.({ dropped: false });
-            return denyResult(combineSnapshot());
+            lastSnap = snap;
+            return denyResult(combineSnapshot(snap), snap);
           }
         }
 
-        return finalize(leaseRelease);
+        lastSnap = snap;
+        return finalize(leaseRelease, snap);
       } catch (err) {
         // A rate/cost limiter threw (store outage, async-only store, …) after the
         // slot was acquired — release it before propagating (idempotent).
@@ -659,7 +674,7 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
 
     admitSync(opts?: UnifiedAdmitOptions): UnifiedAdmission {
       const { key = "", cost: requestCost = 1, value = 1, hold = 0 } = opts ?? {};
-      resetLast();
+      const snap: AxisSnap = {};
 
       // The lua-fused path is inherently async (Redis EVALSHA round-trip), so
       // admitSync isn't a valid mode there — fail loud rather than silently
@@ -671,16 +686,20 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
       }
 
       // Step 1 — concurrency.
-      const concStep = startWithConcurrency();
+      const concStep = startWithConcurrency(snap);
       if (concStep.decision !== undefined) {
-        return denyResult(concStep.decision);
+        lastSnap = snap;
+        return denyResult(concStep.decision, snap);
       }
       const leaseRelease = concStep.leaseRelease;
 
       // Step 2 — joint-LP bid-price filter, BEFORE any rate/cost debit (inert under
       // the default policy). A filtered request must not consume budget.
-      const policyDeny = applyPolicyGate(value, requestCost, hold, leaseRelease);
-      if (policyDeny !== undefined) return policyDeny;
+      const policyDeny = applyPolicyGate(value, requestCost, hold, leaseRelease, snap);
+      if (policyDeny !== undefined) {
+        lastSnap = snap;
+        return policyDeny;
+      }
 
       // Step 3 — rate + cost. The try/catch releases the held slot if a limiter
       // throws (e.g. an async-only store under admitSync), so the slot never leaks.
@@ -688,24 +707,27 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
         // Rate. Will throw if the underlying store is async-only.
         if (rate !== undefined) {
           const d = rate.checkSync(key, 1);
-          lastRate = d;
+          snap.rate = d;
           if (!d.allowed) {
             leaseRelease?.({ dropped: false });
-            return denyResult(combineSnapshot());
+            lastSnap = snap;
+            return denyResult(combineSnapshot(snap), snap);
           }
         }
 
         // Cost.
         if (cost !== undefined) {
           const d = cost.checkSync(key, requestCost);
-          lastCost = d;
+          snap.cost = d;
           if (!d.allowed) {
             leaseRelease?.({ dropped: false });
-            return denyResult(combineSnapshot());
+            lastSnap = snap;
+            return denyResult(combineSnapshot(snap), snap);
           }
         }
 
-        return finalize(leaseRelease);
+        lastSnap = snap;
+        return finalize(leaseRelease, snap);
       } catch (err) {
         leaseRelease?.({ dropped: false });
         throw err;
@@ -714,9 +736,9 @@ export function unifiedAdmission(options: UnifiedAdmissionOptions): UnifiedAdmit
 
     lastDecisions(): Readonly<Partial<Record<UnifiedAxis, Decision | undefined>>> {
       return Object.freeze({
-        rate: lastRate,
-        concurrency: lastConc,
-        cost: lastCost,
+        rate: lastSnap.rate,
+        concurrency: lastSnap.conc,
+        cost: lastSnap.cost,
       });
     },
   };

@@ -577,3 +577,71 @@ function trackedLimiter(inner: Limiter): { limiter: Limiter; calls: number } {
   tracker.limiter = wrapped;
   return tracker;
 }
+
+// ── Concurrency: per-call decision isolation (regression) ────────────────────────────────────────
+
+describe("unifiedAdmission — concurrent async admits do not cross-contaminate", () => {
+  const ALLOW: Decision = {
+    allowed: true,
+    limit: 10,
+    remaining: 5,
+    resetAt: 1000,
+    retryAfterMs: 0,
+  };
+  const DENY: Decision = {
+    allowed: false,
+    limit: 10,
+    remaining: 0,
+    resetAt: 1000,
+    retryAfterMs: 500,
+  };
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  /** A Limiter whose async check() parks until resolveNext() settles it (FIFO) — for precise interleaving. */
+  function controllable(): {
+    limiter: Limiter;
+    resolveNext: (d: Decision) => void;
+    pending: () => number;
+  } {
+    const q: Array<(d: Decision) => void> = [];
+    const limiter = {
+      strategy: {} as Strategy,
+      check: () => new Promise<Decision>((res) => q.push(res)),
+      checkSync: () => {
+        throw new Error("sync not supported in this mock");
+      },
+    } as unknown as Limiter;
+    return {
+      limiter,
+      resolveNext: (d) => (q.shift() as (d: Decision) => void)(d),
+      pending: () => q.length,
+    };
+  }
+
+  it("a passing admit is not flipped to denied by another in-flight admit's deny (regression)", async () => {
+    // Two admits race over ONE admitter. A passes its own rate+cost; B's rate denies. The per-axis
+    // state used to be shared closure state, so B's deny (landing while A was parked on cost.check)
+    // overwrote A's lastRate — and A's finalize then read B's DENY and wrongly denied a passing request.
+    const rate = controllable();
+    const cost = controllable();
+    const admitter = unifiedAdmission({ rate: rate.limiter, cost: cost.limiter });
+
+    const pA = admitter.admit({ key: "A", cost: 1 });
+    const pB = admitter.admit({ key: "B", cost: 1 });
+    await tick();
+    expect(rate.pending()).toBe(2); // both parked at rate.check()
+
+    rate.resolveNext(ALLOW); // A's rate -> ALLOW; A advances and parks at cost.check()
+    await tick();
+    rate.resolveNext(DENY); // B's rate -> DENY; B short-circuits and returns
+    await tick();
+    cost.resolveNext(ALLOW); // A's cost -> ALLOW; A finalizes from its OWN snapshot
+
+    const a = await pA;
+    const b = await pB;
+    expect(b.decision.allowed).toBe(false); // B correctly denied by its own rate axis
+    expect(b.bindingAxis).toBe("rate");
+    expect(a.decision.allowed).toBe(true); // A passed BOTH its axes — must not inherit B's deny
+    expect(a.bindingAxis).toBeUndefined();
+  });
+});
