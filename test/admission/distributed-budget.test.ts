@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import Redis from "ioredis";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { distributedTokenBudget } from "../../src/admission";
 import { ManualClock } from "../../src/core/clock";
 import { ThrottleKitError } from "../../src/core/errors";
 import type { Store } from "../../src/core/types";
+import { RedisStore } from "../../src/redis/store";
 import { MemoryStore } from "../../src/stores/memory";
 
 function meter(opts: { budget: number; windowMs?: number; clock: ManualClock; store?: Store }) {
@@ -136,5 +138,38 @@ describe("distributedTokenBudget", () => {
     };
     const m = distributedTokenBudget({ budget: 10, windowMs: 60_000, clock, store: asyncOnly });
     expect(() => m.debitSync(1)).toThrow(ThrottleKitError);
+  });
+});
+
+const REDIS_URL = process.env.THROTTLEKIT_TEST_REDIS;
+const dRedis = REDIS_URL ? describe : describe.skip;
+
+dRedis("distributedTokenBudget over RedisStore", () => {
+  let client: Redis;
+  beforeAll(() => {
+    // DB 7 is the sanctioned flush-free co-tenancy (see test/redis/db-allocation.test.ts): this file
+    // never FLUSHDBs and uses a unique per-run `tpm:` key, so it shares DB 7 without collision.
+    client = new Redis(REDIS_URL as string, { db: 7, maxRetriesPerRequest: 2 });
+  });
+  afterAll(async () => {
+    await client?.quit();
+  });
+
+  it("remaining() peeks after a debit without throwing WRONGTYPE (regression)", async () => {
+    // The debit Lua stores state in a HASH; remaining()'s peek had no Lua form, so on Redis it routed
+    // to the OCC GET fallback and a GET on the hash key threw WRONGTYPE. The peek now reads via HMGET.
+    const key = `tpm:${Date.now().toString(36)}.${Math.floor(Math.random() * 1e6).toString(36)}`;
+    await client.del(key);
+    const meter = distributedTokenBudget({
+      budget: 100,
+      windowMs: 60_000,
+      store: new RedisStore({ client }),
+      key,
+    });
+    expect(await meter.remaining()).toBe(100);
+    const d = await meter.debit(5); // writes a HASH at `key`
+    expect(d.allowed).toBe(true);
+    expect(await meter.remaining()).toBe(95); // no WRONGTYPE; matches the decision's remaining
+    await client.del(key);
   });
 });

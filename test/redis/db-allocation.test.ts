@@ -36,6 +36,9 @@ const SANCTIONED_SHARE = new Map<number, ReadonlySet<string>>([
       "weighted-fair-escrow-properties.test.ts",
       "cross-store-equivalence.test.ts",
       "redis-region-fair-pool.test.ts",
+      // distributedTokenBudget's remaining()-peek regression: flush-free (a unique per-run `tpm:` key,
+      // del'd before/after; never FLUSHDBs), so it co-tenants DB 7 safely (all 16 DBs are allocated).
+      "distributed-budget.test.ts",
     ]),
   ],
 ]);
@@ -96,6 +99,7 @@ describe("Redis logical-DB allocation (static guard, no Redis required)", () => 
     const owners = [...(byDb.get(7) ?? new Set<string>())].sort();
     expect(owners).toEqual([
       "cross-store-equivalence.test.ts",
+      "distributed-budget.test.ts",
       "node-redis.test.ts",
       "redis-region-fair-pool.test.ts",
       "weighted-fair-escrow-properties.test.ts",

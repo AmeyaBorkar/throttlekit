@@ -96,6 +96,25 @@ if remaining < 0 then remaining = 0 end
 return {1, L, remaining, resetAt, 0}`;
 
 /**
+ * Read-only Redis form of the peek. ARGV: now, windowMs, L. The state lives in a HASH (the debit Lua
+ * writes `s`/`w`), so the read MUST go through Lua too — a no-Lua transform would route to the store's
+ * OCC `GET` path and throw `WRONGTYPE` on the hash key. Mirrors `rolled()` + `max(0, L - served)` and
+ * never writes (no HSET/PEXPIRE), so a peek can't mutate the window or its TTL.
+ */
+const DISTRIBUTED_TOKEN_BUDGET_PEEK_LUA = `${LUA_NOW}
+local windowMs = tonumber(ARGV[2])
+local L = tonumber(ARGV[3])
+local h = redis.call('HMGET', KEYS[1], 's', 'w')
+local served = tonumber(h[1])
+local windowStart = tonumber(h[2])
+if served == nil or windowStart == nil or now >= windowStart + windowMs then
+  served = 0
+end
+local remaining = L - served
+if remaining < 0 then remaining = 0 end
+return remaining`;
+
+/**
  * **Distributed streaming token-budget meter** — enforce a budget of `L` tokens per window across a
  * *fleet* of gateways, when each request's cost is revealed only as it streams (the LLM-gateway
  * problem; see {@link tokenBudget} for the single-process version and the cost model).
@@ -155,6 +174,12 @@ export function distributedTokenBudget(
     buildArgv: (nowArg, tokens) => [nowArg, windowMs, L, tokens],
   };
 
+  const peekLua: LuaProgram = {
+    script: DISTRIBUTED_TOKEN_BUDGET_PEEK_LUA,
+    buildKeys: (k) => [k],
+    buildArgv: (nowArg) => [nowArg, windowMs, L],
+  };
+
   /** Resolve the live window's (served, windowStart) from stored state at `now`, rolling if stale. */
   function rolled(
     state: BudgetState | undefined,
@@ -212,10 +237,20 @@ export function distributedTokenBudget(
 
   /** Read-only peek: report remaining for the (rolled) window without debiting or persisting. */
   function peekTransform(now: number): Transform<BudgetState, number> {
-    return ((state: BudgetState | undefined): ApplyOutcome<BudgetState, number> => {
+    const fn = (state: BudgetState | undefined): ApplyOutcome<BudgetState, number> => {
       const { served } = rolled(state, now);
       return { state, result: Math.max(0, L - served), ttlMs: windowMs, persist: false };
-    }) as Transform<BudgetState, number>;
+    };
+    // Attach the read-only Lua so a Lua-capable store (Redis) reads the HASH via HMGET instead of
+    // routing to its OCC GET fallback — a plain GET on the hash-typed key throws WRONGTYPE.
+    const invocation: LuaInvocation<number> = {
+      program: peekLua,
+      now,
+      cost: 0,
+      decode: (raw) => Number(raw),
+    };
+    (fn as { lua?: LuaInvocation<number> }).lua = invocation;
+    return fn as Transform<BudgetState, number>;
   }
 
   function validateTokens(tokens: number): void {
