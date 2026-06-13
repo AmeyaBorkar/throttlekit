@@ -50,6 +50,14 @@ describe("policySet()", () => {
     expect(() => policySet([policy("api", FW3), policy("api", FW5)])).toThrow(ThrottleKitError);
   });
 
+  it("refuses a name shared by policies[] and unreplayable[] (ambiguous; regression)", () => {
+    // Such a name would yield two plan() diff rows and double-count the PlanSummary (and falsely trip
+    // the fail-closed all-replayable gate).
+    expect(() =>
+      policySet([policy("api", FW3)], { unreplayable: [{ name: "api", reason: "concurrency axis" }] }),
+    ).toThrow(/both policies and unreplayable/);
+  });
+
   it("includes the unreplayable list in the hash", () => {
     const plain = policySet([policy("api", FW3)]);
     const withU = policySet([policy("api", FW3)], {

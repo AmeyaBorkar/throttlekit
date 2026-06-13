@@ -85,6 +85,16 @@ export function policySet(policies: readonly Policy[], options: PolicySetOptions
       });
     seen.add(p.name);
   }
+  // A name in BOTH policies[] and unreplayable[] is ambiguous: plan() would emit two diff rows for it
+  // and double-count it in the PlanSummary (and falsely trip the fail-closed all-replayable gate).
+  for (const u of options.unreplayable ?? []) {
+    if (seen.has(u.name))
+      throw new ThrottleKitError(
+        `policySet: name ${JSON.stringify(u.name)} is in both policies and unreplayable (ambiguous)`,
+        { code: "config_invalid" },
+      );
+    seen.add(u.name);
+  }
   const contentHash = hashPolicySet(policies, options.unreplayable);
   return {
     ...(options.label !== undefined ? { label: options.label } : {}),
