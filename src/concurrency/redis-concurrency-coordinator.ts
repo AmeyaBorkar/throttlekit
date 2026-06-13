@@ -180,7 +180,11 @@ local maxExpiresAt = 0
 for i = 1, #flat, 2 do
   local id = flat[i]
   local fLl, fInf, fExp, fSh, fGen, fMs, fUh = parseVal(flat[i + 1])
-  if fExp < now then
+  -- Self ALWAYS survives: it just heartbeated, so it is alive regardless of the lease instant it
+  -- reported. Without the id-vs-nodeId guard a node that reports an already-past expiresAt (clock
+  -- skew / degenerate) self-evicts here, corrupting the aggregate (over-grant) or crashing on solo.
+  -- Mirrors the in-process reference (heartbeat-core.ts step 2).
+  if id ~= nodeId and fExp < now then
     redis.call('HDEL', KEYS[1], id)
   else
     limits[#limits + 1] = fLl

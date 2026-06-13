@@ -399,4 +399,39 @@ d("coordinator dual-path conformance (TK-1316)", () => {
       });
     });
   }
+
+  it("does not self-evict a node that heartbeats with an already-past expiresAt (regression)", async () => {
+    // The conformance loop keeps every expiresAt in the future, so eviction never fires and this case
+    // is invisible to it. Here a node heartbeats with expiresAt in the PAST of both clocks. The Redis
+    // Lua used to HDEL the node that JUST heartbeated (no self-skip), diverging from the in-process
+    // reference (self always survives) — a self-eviction that drops a live node from the aggregate
+    // (over-grant) or crashes on solo. Self must survive on both paths.
+    const key = "self-evict-regression";
+    const testCoord = new TestConcurrencyCoordinator({
+      aggregate: "min",
+      clock: new ManualClock(0),
+    });
+    const redisCoord = new RedisConcurrencyCoordinator({
+      client: fromNodeRedis(client),
+      aggregate: "min",
+      prefix: key,
+    });
+    const future = Date.now() + 60_000; // future for both the Test clock (now=0) and the server wall clock
+    const past = -100_000; // past for both (Test now=0; Redis now=Date.now())
+
+    const n2: ConcurrencyReport = { key, nodeId: "n2", lLocal: 20, inflight: 0, expiresAt: future };
+    await testCoord.heartbeat(n2);
+    await redisCoord.heartbeat(n2);
+
+    const n1: ConcurrencyReport = { key, nodeId: "n1", lLocal: 4, inflight: 0, expiresAt: past };
+    const testGrant = await testCoord.heartbeat(n1);
+    const redisGrant = await redisCoord.heartbeat(n1);
+
+    expect(redisGrant.nodes).toBe(2); // self not evicted (was 1 on the buggy path)
+    expect({
+      share: redisGrant.share,
+      lGlobal: redisGrant.lGlobal,
+      nodes: redisGrant.nodes,
+    }).toEqual({ share: testGrant.share, lGlobal: testGrant.lGlobal, nodes: testGrant.nodes });
+  });
 });
