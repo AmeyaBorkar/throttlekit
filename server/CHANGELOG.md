@@ -7,6 +7,28 @@ conformance-tested against the golden vectors).
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-06-13
+
+An audit patch for the server surfaces (Monitor / capture / Admit lifecycle). Each fix was reproduced on
+real code, traced, and pinned by a regression proven to fail on the prior commit.
+
+### Fixed
+
+- **Monitor `GetSnapshot` crash on a non-serializable custom stat.** `raw_json` was built with a bare
+  `JSON.stringify(snap)`, but custom stats carry a `value: unknown` from operator `read()` callbacks — a
+  BigInt (a plausible counter) or a circular object threw and took the whole read-only Monitor door down.
+  The projection now uses a `safeStringify` that renders BigInts as decimal strings, circular references as
+  `"[Circular]"`, and degrades anything still unserializable to an error envelope. The typed summary is
+  unaffected.
+- **Lease-id hijacking (security).** `Admit` minted lease ids as a process-global sequential counter
+  (`String(++n)`), and `Release` / `Heartbeat` key only on the id with no ownership check — so any client
+  could enumerate ids to free another client's concurrency slot or renew its deadline. Lease ids are now
+  128-bit random capability tokens.
+- **Capture audit hole.** An authorized `export` audited only *after* the segment read succeeded, so an
+  authorized export of a missing/tampered segment returned an error having written nothing — a gap exactly
+  where an operator most wants a record. An authorized action that fails mid-flight is now recorded with its
+  failure reason (new optional `AuditRecord.error`).
+
 ## [0.4.1] — 2026-06-13
 
 ### Fixed
