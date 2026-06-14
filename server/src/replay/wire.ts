@@ -5,19 +5,26 @@
  * that routes a live decision to its shadow, and a `runConfiguredWhatIf` the TUI trigger calls.
  *
  * A policy is leaf-rate iff it names a `strategy` and declares none of the server-only kind blocks
- * (`twoTier` / `tokenBudget` / `concurrency` / `fairEscrow`) — exactly the policies the testkit can rebuild.
+ * (the canonical `NON_REPLAYABLE_BLOCK_KEYS`) — exactly the policies the testkit can rebuild.
  * A leaf-rate spec the testkit can't rebuild (e.g. `leakyBucket`, a `Shaper`) is **skipped**, not fatal.
  */
 
 import { parseYaml } from "throttlekit/config";
 import type { LimiterSpec } from "throttlekit/config";
 import { createRedactor } from "../capture/redact.js";
+import { NON_REPLAYABLE_BLOCK_KEYS } from "../policy/policy-set.js";
 import { type ReplayConfig, resolveReplayConfig } from "./config.js";
 import { type Shadow, createShadow } from "./shadow.js";
 import { type ReplayDivergenceSnapshot, runWhatIf } from "./whatif.js";
 
-/** The server-only kind blocks that make a policy NOT a plain leaf-rate limiter. */
-const KIND_BLOCKS = ["twoTier", "tokenBudget", "concurrency", "fairEscrow"] as const;
+/**
+ * The server-only / non-rate blocks that make a policy NOT a plain leaf-rate limiter. Imported from the
+ * canonical {@link NON_REPLAYABLE_BLOCK_KEYS} (policy-set.ts) so it can't drift to a stale subset — the
+ * old hand-maintained 4-element list omitted `fleetBudget` / `distributedConcurrency` /
+ * `federatedFairEscrow` / `federated`, so those distributed policies were shadowed as plain rate
+ * limiters and produced a silently-wrong what-if baseline.
+ */
+const KIND_BLOCKS = NON_REPLAYABLE_BLOCK_KEYS;
 
 interface ParsedConfig {
   limiters?: Record<string, unknown>;

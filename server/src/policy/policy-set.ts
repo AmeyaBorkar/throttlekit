@@ -63,6 +63,15 @@ const NON_REPLAYABLE_BLOCKS: ReadonlyArray<readonly [keyof ServerLimiterSpec, st
   ],
 ];
 
+/**
+ * The non-rate / server-only block keys — the single source of truth for "this policy is NOT a
+ * cold-replayable leaf rate". Anything that consumes a `LimiterSpec` and must distinguish a plain
+ * rate limiter from a distributed/stateful axis (e.g. the replay shadow in ../replay/wire.ts) should
+ * use THIS list, not a hand-maintained subset, so the two can never drift.
+ */
+export const NON_REPLAYABLE_BLOCK_KEYS: ReadonlyArray<keyof ServerLimiterSpec> =
+  NON_REPLAYABLE_BLOCKS.map(([k]) => k);
+
 /** Parse a config text (YAML or JSON, auto-detected) to its top-level object. */
 function parseConfig(text: string, format: "yaml" | "json" | undefined): Record<string, unknown> {
   const trimmed = text.trim();

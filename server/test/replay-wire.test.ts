@@ -37,6 +37,41 @@ describe("wireReplay", () => {
     expect(w.skipped).toEqual([]);
   });
 
+  it("does not shadow distributed policies (federated / fleetBudget / distributedConcurrency) as plain rate (regression)", () => {
+    // The leaf-rate classifier used a stale 4-block subset, so these distributed policies were
+    // misclassified as plain rate, shadowed, and produced a silently-wrong what-if baseline.
+    const config = [
+      "limiters:",
+      "  fed:",
+      "    strategy: gcra",
+      "    limit: 100",
+      "    period: 1m",
+      "    federated:",
+      "      region: us",
+      "  fleetb:",
+      "    strategy: gcra",
+      "    limit: 100",
+      "    period: 1m",
+      "    fleetBudget:",
+      "      budget: 1000",
+      "      windowMs: 60000",
+      "  dconc:",
+      "    strategy: gcra",
+      "    limit: 100",
+      "    period: 1m",
+      "    distributedConcurrency:",
+      "      limit: 10",
+      "  plain: { strategy: gcra, limit: 100, period: 1m }",
+      "replay:",
+      "  enabled: true",
+    ].join("\n");
+    const w = wireReplay(config, { now: () => 1000 });
+    expect([...w.shadows.keys()]).toEqual(["plain"]); // only the leaf-rate gcra is shadowed
+    expect(w.shadows.has("fed")).toBe(false);
+    expect(w.shadows.has("fleetb")).toBe(false);
+    expect(w.shadows.has("dconc")).toBe(false);
+  });
+
   it("skips a leaf-rate strategy the testkit can't rebuild (leakyBucket), without crashing", () => {
     const w = wireReplay(
       "limiters:\n  shaped: { strategy: leakyBucket, capacity: 10, refillPerSec: 5 }\nreplay:\n  enabled: true\n",
