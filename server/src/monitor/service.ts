@@ -171,8 +171,32 @@ export function snapshotToProto(snap: LensSnapshot): Record<string, unknown> {
     policies: snap.policies.map(policySummary),
     guards: snap.guards.map(guardSummary),
     recentDenials: snap.recentDenials.map(denialEvent),
-    rawJson: JSON.stringify(snap),
+    rawJson: safeStringify(snap),
   };
+}
+
+/**
+ * JSON-stringify a snapshot for `raw_json` WITHOUT ever throwing. Custom stats carry a `value: unknown`
+ * from operator-supplied `read()` callbacks, so a BigInt (a plausible counter) or a circular object would
+ * otherwise crash the entire `GetSnapshot` door. BigInts render as their decimal string; a circular
+ * reference renders as `"[Circular]"`; any value still unserializable degrades to a one-key error envelope.
+ */
+export function safeStringify(snap: LensSnapshot): string {
+  const seen = new WeakSet<object>();
+  const replacer = (_key: string, value: unknown): unknown => {
+    if (typeof value === "bigint") return value.toString();
+    if (typeof value === "object" && value !== null) {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+    }
+    return value;
+  };
+  try {
+    return JSON.stringify(snap, replacer);
+  } catch {
+    // A value even the replacer can't tame (e.g. a throwing toJSON). Never take the door down.
+    return JSON.stringify({ error: "snapshot not serializable" });
+  }
 }
 
 /**

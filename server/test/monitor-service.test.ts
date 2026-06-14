@@ -121,6 +121,22 @@ describe("Monitor: snapshotToProto projection", () => {
     expect(raw.policies.length).toBe(1);
     expect(raw.meta.lensVersion).toBe(snap.meta.lensVersion);
   });
+
+  it("never crashes on a non-JSON-serializable custom stat (BigInt / circular)", async () => {
+    // Regression: custom stats carry a `value: unknown` from operator-supplied `read()` callbacks. A
+    // BigInt (a plausible counter) or a circular object made `JSON.stringify(snap)` throw and took the
+    // whole GetSnapshot door down. The projection must degrade the offending value, never crash.
+    const { hub } = await populatedHub("node-x");
+    hub.trackStats("bigcount", "gauge", () => BigInt(42)); // throws on JSON.stringify pre-fix
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    hub.trackStats("loopy", "gauge", () => circular);
+    const snap = snapshotToProto(hub.snapshot()) as any; // pre-fix: throws here
+    const raw = JSON.parse(snap.rawJson); // still valid JSON
+    expect(raw.meta.nodeId).toBe("node-x");
+    const big = raw.stats.find((s: any) => s.name === "bigcount");
+    expect(big.value).toBe("42"); // BigInt rendered as its decimal string, not a crash
+  });
 });
 
 describe("Monitor door over gRPC (loopback, no secret)", () => {
