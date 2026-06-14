@@ -195,7 +195,14 @@ export class DynamoStore implements Store {
       let version: number | undefined;
       if (item !== undefined) {
         version = Number(item.version);
-        const liveUntilMs = Number(item.expires_at) * 1000;
+        // Lazy expiry uses the TRUE logical ms deadline (`expires_at_ms`), NOT the epoch-SECONDS
+        // `expires_at` (which exists only for DynamoDB's native, second-granular, best-effort TTL
+        // reclaim). Reading `expires_at * 1000` would honor a sub-second window up to ~1s too long and
+        // diverge from the ms-precise memory/Redis stores. Fall back for items written before this field.
+        const liveUntilMs =
+          item.expires_at_ms !== undefined
+            ? Number(item.expires_at_ms)
+            : Number(item.expires_at) * 1000;
         state = liveUntilMs > now ? (JSON.parse(item.state as string) as S) : undefined;
       }
 
@@ -203,8 +210,10 @@ export class DynamoStore implements Store {
       if (!out.persist) return out.result;
 
       const ttl = Math.max(1, Math.ceil(out.ttlMs));
-      // Stored in epoch SECONDS so DynamoDB TTL can reclaim the item; lazy expiry handles correctness.
-      const expiresAtSec = Math.ceil((now + ttl) / 1000);
+      // `expires_at` is epoch SECONDS so DynamoDB's native (best-effort, second-granular) TTL can reclaim
+      // the item; `expires_at_ms` is the true logical ms deadline the lazy read enforces for correctness.
+      const liveUntilMs = now + ttl;
+      const expiresAtSec = Math.ceil(liveUntilMs / 1000);
       const encoded = JSON.stringify(out.state);
 
       try {
@@ -215,6 +224,7 @@ export class DynamoStore implements Store {
               [this.#hashKey]: fullKey,
               state: encoded,
               expires_at: expiresAtSec,
+              expires_at_ms: liveUntilMs,
               version: version + 1,
             },
             ConditionExpression: "version = :v",
@@ -227,6 +237,7 @@ export class DynamoStore implements Store {
               [this.#hashKey]: fullKey,
               state: encoded,
               expires_at: expiresAtSec,
+              expires_at_ms: liveUntilMs,
               version: 0,
             },
             ConditionExpression: "attribute_not_exists(#pk)",

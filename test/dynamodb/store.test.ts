@@ -120,6 +120,20 @@ describe("DynamoStore — specifics", () => {
     expect(client.dump().get("k")?.expires_at).toBe(1_700_000_060);
   });
 
+  it("expires a sub-second window at ms precision, not rounded up to the native-TTL second", async () => {
+    // Regression: `expires_at` is epoch SECONDS so DynamoDB's native TTL can reclaim the item, but the
+    // lazy correctness check must use the TRUE logical ms deadline — else a sub-second window is honored
+    // up to ~1s too long, diverging from the ms-precise memory/Redis stores. A 500ms entry written at
+    // t=1000ms has a logical deadline of 1500ms; at t=1600ms it MUST read as expired, even though the
+    // rounded-up native-TTL second (ceil(1500/1000)·1000 = 2000ms) is still in the future.
+    const clock = new ManualClock(1000);
+    const client = fakeDynamo();
+    const store = new DynamoStore({ client, tableName: "t", clock });
+    expect(await store.apply("k", counter(500))).toBe(1); // logical deadline 1500ms
+    clock.advance(600); // now 1600ms — past 1500ms, before the 2000ms native-TTL second
+    expect(await store.apply("k", counter(500))).toBe(1); // MUST restart; pre-fix returned 2 (still "live")
+  });
+
   it("uses a custom hashKey attribute name", async () => {
     const clock = new ManualClock(0);
     const client = fakeDynamo("id");
