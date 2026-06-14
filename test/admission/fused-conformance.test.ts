@@ -136,16 +136,14 @@ d("fused ≡ sequential (TK-1006 byte-identity)", () => {
   });
 
   for (const cfg of configs) {
-    // `retry` + a generous timeout absorb a benign real-Redis timing artifact. The two paths are
-    // byte-identical on logical (ManualClock) inputs — verified across thousands of steps — but each
-    // Lua write sets a PEXPIRE in REAL wall-clock ms, and the sequential vs fused keys for a step are
-    // written ~2ms apart. Under a slow/stalling Redis a key can expire on one path between steps while
-    // the other's has not (a warm read turns cold), diverging the Decision despite identical logical
-    // inputs (the race the config comment above describes). This never reproduces on fast logical
-    // inputs; it only surfaces under heavy real-time load, where a re-run with a fresh seed passes.
+    // Both paths set `ttlFloorMs` (below), which decouples Redis's real-time PEXPIRE from the logical
+    // window: a logically-live key is never reclaimed by real-time GC between two writes, so a slow box
+    // can no longer turn a warm read cold on one path but not the other. Decisions stay driven purely by
+    // the ManualClock inputs — byte-identical across the two paths — so no `retry` is needed. (A generous
+    // timeout remains because this is a 100-timeline real-Redis property test, not because it's flaky.)
     it(
       `${cfg.label}: byte-identical Decision streams across 100 timelines`,
-      { retry: 3, timeout: 120_000 },
+      { timeout: 120_000 },
       async () => {
         await fc.assert(
           fc.asyncProperty(timelineArb, async (timeline) => {
@@ -160,6 +158,7 @@ d("fused ≡ sequential (TK-1006 byte-identity)", () => {
             const seqStore = new RedisStore({
               client: fromNodeRedis(client),
               useServerTime: false,
+              ttlFloorMs: 300_000, // keep logically-live keys from real-time GC (see the it() comment)
               prefix: "seq",
             });
             const seqRate: Limiter = rateLimit({
@@ -181,6 +180,7 @@ d("fused ≡ sequential (TK-1006 byte-identity)", () => {
             const fusedDispatcher = new FusedDispatcher({
               client: fromNodeRedis(client),
               useServerTime: false,
+              ttlFloorMs: 300_000, // same floor as seqStore, so the two paths stay byte-identical
               rate: {
                 strategy: "gcra",
                 limit: cfg.rate.limit,
@@ -248,6 +248,7 @@ d("fused ≡ sequential (TK-1006 byte-identity)", () => {
     const seqStore = new RedisStore({
       client: fromNodeRedis(client),
       useServerTime: false,
+      ttlFloorMs: 300_000,
       prefix: "h-seq",
     });
     const seqRate = rateLimit({
@@ -265,6 +266,7 @@ d("fused ≡ sequential (TK-1006 byte-identity)", () => {
     const fused = new FusedDispatcher({
       client: fromNodeRedis(client),
       useServerTime: false,
+      ttlFloorMs: 300_000,
       rate: { strategy: "gcra", limit: 5, periodMs: 60_000, prefix: "h-fused:rate" },
       cost: { strategy: "tokenBucket", capacity: 100, refillPerSec: 10, prefix: "h-fused:cost" },
     });

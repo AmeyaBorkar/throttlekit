@@ -68,6 +68,9 @@ import type { RedisClientLike } from "../redis/store";
  * intentionally mirrors that (D-U9 in DESIGN.md §14).
  */
 export const FUSED_GCRA_TOKEN_BUCKET_LUA = `${LUA_NOW}
+-- Physical-TTL floor (ms): only ever EXTENDS a key's PEXPIRE, never shortens it, so it can't change a
+-- decision. Decouples Redis real-time GC from the logical window (see RedisStore.ttlFloorMs). 0 = no-op.
+local ttl_floor = tonumber(ARGV[9]) or 0
 -- ── Rate axis: GCRA on KEYS[1] ──────────────────────────────────────────
 local rate_cost = tonumber(ARGV[2])
 local rate_period = tonumber(ARGV[3])
@@ -102,6 +105,7 @@ else
   rate_retryAfterMs = 0
   local rate_px = math.ceil(rate_new_tat - now)
   if rate_px < 1 then rate_px = 1 end
+  if rate_px < ttl_floor then rate_px = ttl_floor end
   redis.call('SET', KEYS[1], string.format('%.17g', rate_new_tat), 'PX', rate_px)
 end
 
@@ -122,6 +126,7 @@ cost_tokens = cost_tokens + cost_elapsed * cost_refill_per_ms
 if cost_tokens > cost_capacity then cost_tokens = cost_capacity end
 local cost_ttl = math.ceil(cost_capacity / cost_refill_per_ms)
 if cost_ttl < 1 then cost_ttl = 1 end
+if cost_ttl < ttl_floor then cost_ttl = ttl_floor end
 
 local cost_allowed
 local cost_remaining
@@ -206,6 +211,14 @@ export interface FusedAdmissionOptions {
    * {@link FusedDispatcher.dispatchAt} for that path).
    */
   useServerTime?: boolean;
+  /**
+   * Floor (ms) on the physical key TTL — the fused analog of {@link RedisStoreOptions.ttlFloorMs}.
+   * Default 0 (each axis's logical TTL is used verbatim). Set well above the window with
+   * `useServerTime: false` so a logically-live key isn't reclaimed by Redis real-time GC between writes
+   * (it only EXTENDS the PEXPIRE, so decisions are unchanged — it keeps the fused path byte-identical to
+   * a sequential `RedisStore` configured with the same floor).
+   */
+  ttlFloorMs?: number;
 }
 
 /**
@@ -236,6 +249,7 @@ export class FusedDispatcher {
   readonly #rateKeyOf: (key: string) => string;
   readonly #costKeyOf: (key: string) => string;
   readonly #useServerTime: boolean;
+  readonly #ttlFloorMs: number;
   readonly #sha: string;
 
   constructor(options: FusedAdmissionOptions) {
@@ -282,6 +296,7 @@ export class FusedDispatcher {
     this.#costCapacity = options.cost.capacity;
     this.#costRefillPerSec = options.cost.refillPerSec;
     this.#useServerTime = options.useServerTime ?? true;
+    this.#ttlFloorMs = Math.max(0, Math.floor(options.ttlFloorMs ?? 0));
     this.#rateKeyOf = makePrefixer(options.rate.prefix);
     this.#costKeyOf = makePrefixer(options.cost.prefix);
     this.#sha = createHash("sha1").update(FUSED_GCRA_TOKEN_BUCKET_LUA).digest("hex");
@@ -328,6 +343,7 @@ export class FusedDispatcher {
       costTokens,
       this.#costCapacity,
       this.#costRefillPerSec,
+      this.#ttlFloorMs, // ARGV[9]: physical-TTL floor (0 = no-op)
     ];
 
     let raw: unknown;

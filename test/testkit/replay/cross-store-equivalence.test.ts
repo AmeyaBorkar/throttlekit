@@ -96,9 +96,10 @@ interface Config {
   expectDenials: boolean;
 }
 
-// Short episodes (12 steps) keep each accumulating key's real-time lifetime to ~a dozen Redis round
-// trips — well under every strategy's smallest PEXPIRE (≥ ~200ms below; the wider fixedWindow/quota
-// windows avoid the near-boundary `reset - now` TTL clamp), so a slow box can't flip the gate.
+// Physical Redis GC is decoupled from the logical window via the store's `ttlFloorMs` (5 min, set above),
+// so a slow box can no longer let a key's real-time PEXPIRE elapse between two same-window writes while the
+// injected logical clock stands still. Episodes stay short (12 steps) only to keep the run quick; the gate's
+// correctness no longer depends on real-time staying under any strategy's window.
 const CONFIGS: Config[] = [
   {
     name: "gcra",
@@ -241,7 +242,12 @@ async function compare(
     const red = rateLimit({
       strategy: cfg.make(),
       clock,
-      store: new RedisStore({ client, useServerTime: false }),
+      // ttlFloorMs decouples Redis's real-time GC from the logical window: with useServerTime:false the
+      // logical clock is the injected ManualClock, so a slow real interval between two same-window writes
+      // could otherwise let the physical key expire while the logical clock stood still (Redis reads a cold
+      // window → divergence). A 5-min floor means real-time GC never fires during the run; lazy logical
+      // expiry (the strategy's stale-window reset) still drives every decision — identically to MemoryStore.
+      store: new RedisStore({ client, useServerTime: false, ttlFloorMs: 300_000 }),
       prefix,
     });
 
