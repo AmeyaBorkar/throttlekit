@@ -6,6 +6,27 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+## [1.5.2] — 2026-06-13
+
+A second audit patch (same discipline: every fix reproduced on real code, traced, and pinned by a
+regression proven to fail on the prior commit). No public API change.
+
+### Fixed
+
+- **Federation over-admit (correctness).** `GlobalCoordinator.reconcile()` credited leftover from an
+  already-rolled window into the current window's budget. The `perKeyBudget` cap bounds the budget *stock*,
+  not cumulative admissions — so if the new window drains before the lazy post-roll reconcile fires, the
+  refill lets it grant again, admitting up to `Limit + leftover` in one window. That is exactly the
+  K-dependent `L + K·(B−1)` overshoot the federated window-coupling exists to eliminate (`admitted ≤ Limit`,
+  Δ=0). `reconcile()` is now **window-coupled** in `RedisCoordinator` / `PostgresCoordinator` (and
+  `TestCoordinator` when `windowMs` is set): leftover is credited back only into the still-active window (a
+  boundary/skew race); leftover from a rolled window is forfeit, matching the formal model's `Roll`.
+- **DynamoDB sub-second expiry.** The lazy expiry check read `expires_at × 1000`, but `expires_at` is stored
+  in epoch *seconds* (rounded up) only so DynamoDB's native, second-granular TTL can reclaim the item. A
+  sub-second window was therefore honored up to ~1s too long, diverging from the ms-precise memory/Redis
+  stores. The true ms deadline is now persisted as `expires_at_ms` and used for the lazy check; `expires_at`
+  is kept solely for native reclaim.
+
 ## [1.5.1] — 2026-06-13
 
 A correctness-and-hardening patch from a full part-by-part audit (security / math / logic / concurrency).
