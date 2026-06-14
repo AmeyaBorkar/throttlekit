@@ -7,6 +7,17 @@ conformance-tested against the golden vectors).
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-06-13
+
+### Fixed
+
+- **Replay what-if shadow misclassified distributed policies as plain leaf-rate.** The leaf-rate
+  classifier in `replay/wire.ts` used a hand-maintained 4-block subset that had drifted from the canonical
+  8-block list, so a `federated` / `fleetBudget` / `distributedConcurrency` / `federatedFairEscrow` policy
+  was shadowed and replayed as a plain rate limiter — a silently-wrong what-if baseline for exactly the
+  distributed policies whose coordinator/window-coupled state a cold replay cannot reconstruct. The
+  classifier now imports the single-source-of-truth `NON_REPLAYABLE_BLOCK_KEYS`, so it can't drift again.
+
 ## [0.4.0] — 2026-06-10
 
 The Tier-2 + skew-hardening release: a high-throughput client can now **lease** a slice of a `federated:`
