@@ -54,7 +54,9 @@ describe("policySet()", () => {
     // Such a name would yield two plan() diff rows and double-count the PlanSummary (and falsely trip
     // the fail-closed all-replayable gate).
     expect(() =>
-      policySet([policy("api", FW3)], { unreplayable: [{ name: "api", reason: "concurrency axis" }] }),
+      policySet([policy("api", FW3)], {
+        unreplayable: [{ name: "api", reason: "concurrency axis" }],
+      }),
     ).toThrow(/both policies and unreplayable/);
   });
 
