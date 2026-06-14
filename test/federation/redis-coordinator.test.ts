@@ -121,7 +121,9 @@ d("RedisCoordinator + federate (TK-906)", () => {
       expect(await c.lease("default", 50, expiresAt)).toBe(50);
     });
 
-    it("reconcile is idempotent on windowStart", async () => {
+    it("forfeits leftover from a rolled window (window-coupling, no over-admit)", async () => {
+      // The federation bound (admitted <= Limit per window) holds only if a rolled window's leftover does
+      // NOT refill a later window. A reconcile for a window that has already passed must be forfeit.
       const c = new RedisCoordinator({
         client: fromNodeRedis(client),
         windowMs: 60_000,
@@ -129,28 +131,36 @@ d("RedisCoordinator + federate (TK-906)", () => {
         prefix: "test3",
       });
       const expiresAt = Date.now() + 60_000;
-      await c.lease("k", 50, expiresAt); // budget=50
-      const windowStart = Date.now() - 60_000;
-      await c.reconcile("k", 20, windowStart); // budget=70
-      // Re-reconcile same windowStart MUST be a no-op (the partition-recovery contract).
-      await c.reconcile("k", 20, windowStart);
-      // Verify by checking how much we can lease.
-      expect(await c.lease("k", 100, expiresAt)).toBe(70); // 70 remaining, not 90
+      await c.lease("k", 70, expiresAt); // budget=30
+      // A window ~10 minutes ago — unambiguously rolled. Pre-fix this credited 1000 (capped to 100),
+      // letting the current window grant 100; the guard forfeits it, so only 30 remains.
+      await c.reconcile("k", 1000, Date.now() - 600_000);
+      await c.reconcile("k", 1000, Date.now() - 600_000); // idempotent no-op either way
+      expect(await c.lease("k", 200, expiresAt)).toBe(30);
     });
 
-    it("reconcile caps at the per-key budget (no inflation)", async () => {
-      const c = new RedisCoordinator({
-        client: fromNodeRedis(client),
-        windowMs: 60_000,
-        budgetPerWindow: 100,
-        prefix: "test4",
-      });
-      const expiresAt = Date.now() + 60_000;
-      await c.lease("k", 30, expiresAt); // budget=70
-      await c.reconcile("k", 1000, Date.now() - 60_000);
-      // Capped at perKeyBudget=100. Can lease 100, not 1070.
-      expect(await c.lease("k", 200, expiresAt)).toBe(100);
-    });
+    it(
+      "restores in-window leftover (boundary-race) and caps at the per-key budget",
+      { retry: 2 },
+      async () => {
+        // The one case reconcile still credits: leftover for the STILL-ACTIVE window (a reconcile that races
+        // just inside the boundary). useServerTime:false aligns the coordinator's clock with the test's.
+        // {retry:2} covers the ~1e-4 chance the two Date.now() reads straddle a 60s boundary.
+        const c = new RedisCoordinator({
+          client: fromNodeRedis(client),
+          windowMs: 60_000,
+          budgetPerWindow: 100,
+          prefix: "test4",
+          useServerTime: false,
+        });
+        const expiresAt = Date.now() + 60_000;
+        await c.lease("k", 30, expiresAt); // budget=70
+        const currentWindowStart = Math.floor(Date.now() / 60_000) * 60_000;
+        await c.reconcile("k", 1000, currentWindowStart); // in-window restore, capped at 100
+        await c.reconcile("k", 1000, currentWindowStart); // idempotent
+        expect(await c.lease("k", 200, expiresAt)).toBe(100); // restored+capped, not 1070
+      },
+    );
 
     it("isHealthy returns true against a live Redis", async () => {
       const c = new RedisCoordinator({

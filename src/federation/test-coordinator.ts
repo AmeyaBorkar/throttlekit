@@ -33,6 +33,15 @@ export interface TestCoordinatorOptions {
    * Defaults to `true`.
    */
   healthy?: boolean;
+  /**
+   * Window length in ms. When set, {@link TestCoordinator.reconcile} models the production
+   * **window-coupling** guard (`RedisCoordinator`/`PostgresCoordinator`): leftover is credited back ONLY
+   * if it belongs to the still-active window (`windowStart === activeExpiresAt − windowMs`); leftover from
+   * an already-rolled window is FORFEIT, exactly as the formal `Roll` expires escrow — so a rolled window's
+   * leftover can never inflate a later window past `budgetPerWindow` cumulative admissions. When omitted,
+   * reconcile keeps the legacy unconditional credit (for unit tests that don't model window boundaries).
+   */
+  windowMs?: number;
 }
 
 /** One window's mutable state per key, keyed on the window's `expiresAt`. */
@@ -48,6 +57,7 @@ const DEFAULT_BUDGET = 1000;
 export class TestCoordinator implements GlobalCoordinator {
   #healthy: boolean;
   #defaultBudget: number;
+  readonly #windowMs: number | undefined;
   /** Per-key budget overrides; falls back to `#defaultBudget` when absent. */
   readonly #perKeyBudget = new Map<string, number>();
   /** key -> current-window state. Replaced wholesale when expiresAt advances. */
@@ -56,6 +66,7 @@ export class TestCoordinator implements GlobalCoordinator {
   constructor(options: TestCoordinatorOptions = {}) {
     this.#defaultBudget = options.budgetPerWindow ?? DEFAULT_BUDGET;
     this.#healthy = options.healthy ?? true;
+    this.#windowMs = options.windowMs;
   }
 
   /** Override the per-window budget for a specific key. */
@@ -113,6 +124,13 @@ export class TestCoordinator implements GlobalCoordinator {
     if (state === undefined) {
       // No active window — nothing to reconcile against. Idempotent no-op.
       return;
+    }
+    // Window-coupling: leftover may be credited back ONLY into the window it was leased from, and only
+    // while that window is still the active one. Leftover from an already-rolled window is FORFEIT (the
+    // formal `Roll` expires escrow) — otherwise refilling a later, already-draining window lets cumulative
+    // admissions exceed the budget. Modeled only when windowMs is configured (else legacy unconditional).
+    if (this.#windowMs !== undefined && windowStart !== state.expiresAt - this.#windowMs) {
+      return; // leftover belongs to a rolled window — forfeit, don't credit a later window
     }
     if (state.reconciledWindowStarts.has(windowStart)) {
       // Already reconciled this windowStart — strict idempotence (required for

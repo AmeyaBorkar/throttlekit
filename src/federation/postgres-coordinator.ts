@@ -271,6 +271,15 @@ export class PostgresCoordinator implements GlobalCoordinator {
       const currentWindowStart = Math.floor(nowMs / this.#windowMs) * this.#windowMs;
       const currentExpiresAt = currentWindowStart + this.#windowMs;
 
+      // Window-coupling guard: forfeit leftover whose window has already rolled — crediting it into a
+      // later, already-draining window would let cumulative admissions exceed the budget (breaking the
+      // federation's admitted <= Limit bound). Only an in-window reconcile (windowStart === current, a
+      // boundary/skew race) restores budget. Matches the formal Roll expiring escrow. A pure no-op.
+      if (windowStart !== currentWindowStart) {
+        await client.query("COMMIT");
+        return;
+      }
+
       // Upsert: initialize OR roll the window — same shape as lease().
       await client.query(
         `INSERT INTO ${this.#tableName} (key, budget, expires_at, reconciled_markers, updated_at)

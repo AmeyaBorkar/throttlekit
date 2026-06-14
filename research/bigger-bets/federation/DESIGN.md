@@ -328,10 +328,18 @@ delivers both Δ = 0 *and* free pooling — the contribution.
 - **Coordinator failure mid-window.** Modeled as a no-op `Lease(r)`
   (region keeps serving regional escrow until it runs out). The
   fail-closed semantics are covered in §5 and tested in TK-907.
-- **Reconciliation.** The model assumes leftover escrow is forfeit at
-  `Roll`. In practice `reconcile()` returns it to the global budget for
-  the next window — this only *adds* capacity, so the safety bound holds
-  for the model's strictly more pessimistic Roll.
+- **Reconciliation.** The model forfeits leftover escrow at `Roll`, and the
+  implementation now matches it exactly: `reconcile()` is **window-coupled** —
+  it credits leftover back ONLY into the still-active window (a boundary/skew
+  race where `windowStart == currentWindowStart`), and FORFEITS leftover whose
+  window has already rolled. An earlier implementation credited a rolled
+  window's leftover into the *next* window; that does **not** preserve the
+  bound. Crediting a later, already-draining window *adds* capacity to it, so
+  cumulative admissions in that window can reach `Limit + leftover` — exactly
+  the K-dependent `L + K·(B−1)` overshoot federation exists to eliminate (§4.2).
+  The forfeit is the price of `Δ = 0`; the lost utilization is bounded and
+  analyzed in §6. (Coordinators: `RedisCoordinator`/`PostgresCoordinator`
+  guard on the server clock; `TestCoordinator` models it when `windowMs` is set.)
 
 ### 4.4 RedisCoordinator (TK-906) — the production-ready impl
 

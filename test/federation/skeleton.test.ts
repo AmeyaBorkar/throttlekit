@@ -202,6 +202,30 @@ describe("federation/skeleton (TK-902 surface, TK-904 wiring)", () => {
       expect(c.remainingFor("k", T_EXPIRES - 1)).toBe(100);
     });
 
+    // --- window-coupling guard (windowMs configured): leftover from a ROLLED window is forfeit ---
+
+    it("credits leftover into the still-active window (windowStart === activeStart)", async () => {
+      const c = new TestCoordinator({ budgetPerWindow: 100, windowMs: 60_000 });
+      await c.lease("k", 50, T_EXPIRES); // active window [T_EXPIRES−60k, T_EXPIRES)
+      await c.reconcile("k", 20, T_EXPIRES - 60_000); // its OWN start ⇒ legitimate restore
+      expect(c.remainingFor("k", T_EXPIRES - 1)).toBe(70);
+      await c.reconcile("k", 20, T_EXPIRES - 60_000); // idempotent on windowStart
+      expect(c.remainingFor("k", T_EXPIRES - 1)).toBe(70);
+    });
+
+    it("FORFEITS leftover from a rolled window — it cannot exceed one window's budget", async () => {
+      // Reproduces the over-admit the federation bound forbids. Window 1 [0,60k): lease the whole budget
+      // but only serve part — 40 is left un-served. Window 2 [60k,120k): a fresh budget, drained to 0.
+      // A reconcile of window 1's leftover must NOT refill window 2 (that would admit 140 in a 100 window).
+      const c = new TestCoordinator({ budgetPerWindow: 100, windowMs: 60_000 });
+      expect(await c.lease("k", 100, 60_000)).toBe(100); // window 1 fully leased (40 of it goes un-served)
+      expect(await c.lease("k", 100, 120_000)).toBe(100); // window 2 fresh budget, fully drained
+      await c.reconcile("k", 40, 0); // window 1's leftover — its window has ROLLED
+      // Pre-fix: window 2 budget refilled to 40 ⇒ 40 extra admissions ⇒ 140 total (over-admit).
+      expect(c.remainingFor("k", 60_001)).toBe(0); // forfeit: window 2 stays capped at its 100
+      expect(await c.lease("k", 1000, 120_000)).toBe(0); // no carried-over budget to grant
+    });
+
     it("per-key budget overrides the default", async () => {
       const c = new TestCoordinator({ budgetPerWindow: 100 });
       c.setBudget("vip", 1000);

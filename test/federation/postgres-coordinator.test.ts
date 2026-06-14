@@ -44,7 +44,9 @@ d("PostgresCoordinator (TK-1302)", () => {
     });
   });
 
-  const make = (opts?: Partial<{ budget: number; prefix: string; windowMs: number }>) =>
+  const make = (
+    opts?: Partial<{ budget: number; prefix: string; windowMs: number; useServerTime: boolean }>,
+  ) =>
     new PostgresCoordinator({
       pool,
       windowMs: opts?.windowMs ?? 60_000,
@@ -52,6 +54,7 @@ d("PostgresCoordinator (TK-1302)", () => {
       tableName: TABLE,
       prefix: opts?.prefix ?? "test",
       gcIntervalMs: 0, // disable GC noise in tests
+      ...(opts?.useServerTime !== undefined ? { useServerTime: opts.useServerTime } : {}),
     });
 
   describe("lease() / reconcile() — atomic single-row transaction semantics", () => {
@@ -117,34 +120,42 @@ d("PostgresCoordinator (TK-1302)", () => {
       }
     });
 
-    it("reconcile is idempotent on windowStart", async () => {
-      const c = make({ budget: 100, prefix: "recidem" });
+    it("forfeits leftover from a rolled window (window-coupling, no over-admit)", async () => {
+      // admitted <= Limit per window holds only if a rolled window's leftover does NOT refill a later
+      // window. A reconcile for a window that has already passed must be forfeit.
+      const c = make({ budget: 100, prefix: "recroll" });
       try {
         const expiresAt = Date.now() + 60_000;
-        await c.lease("k", 50, expiresAt); // budget = 50
-        const windowStart = Date.now() - 60_000;
-        await c.reconcile("k", 20, windowStart); // budget = 70
-        // Re-reconcile same windowStart MUST be a no-op (the partition-recovery contract).
-        await c.reconcile("k", 20, windowStart);
-        // Verify by checking how much we can lease.
-        expect(await c.lease("k", 100, expiresAt)).toBe(70); // 70 remaining, not 90
+        await c.lease("k", 70, expiresAt); // budget = 30
+        // ~10 minutes ago — unambiguously rolled. Pre-fix credited 1000 (capped to 100); the guard
+        // forfeits it. Idempotent either way on a repeated call.
+        await c.reconcile("k", 1000, Date.now() - 600_000);
+        await c.reconcile("k", 1000, Date.now() - 600_000);
+        expect(await c.lease("k", 200, expiresAt)).toBe(30); // forfeit: still 30, not 100
       } finally {
         c.close();
       }
     });
 
-    it("reconcile caps at the per-key budget (no inflation)", async () => {
-      const c = make({ budget: 100, prefix: "reccap" });
-      try {
-        const expiresAt = Date.now() + 60_000;
-        await c.lease("k", 30, expiresAt); // budget = 70
-        await c.reconcile("k", 1000, Date.now() - 60_000);
-        // Capped at perKeyBudget=100. Can lease 100, not 1070.
-        expect(await c.lease("k", 200, expiresAt)).toBe(100);
-      } finally {
-        c.close();
-      }
-    });
+    it(
+      "restores in-window leftover (boundary-race) and caps at the per-key budget",
+      { retry: 2 },
+      async () => {
+        // The one case reconcile still credits: leftover for the STILL-ACTIVE window. useServerTime:false
+        // aligns the coordinator clock with the test's; {retry:2} covers a 60s-boundary straddle.
+        const c = make({ budget: 100, prefix: "recin", useServerTime: false });
+        try {
+          const expiresAt = Date.now() + 60_000;
+          await c.lease("k", 30, expiresAt); // budget = 70
+          const currentWindowStart = Math.floor(Date.now() / 60_000) * 60_000;
+          await c.reconcile("k", 1000, currentWindowStart); // in-window restore, capped
+          await c.reconcile("k", 1000, currentWindowStart); // idempotent
+          expect(await c.lease("k", 200, expiresAt)).toBe(100); // restored+capped, not 1070
+        } finally {
+          c.close();
+        }
+      },
+    );
 
     it("reconcile zero leftover is a no-op", async () => {
       const c = make({ budget: 100, prefix: "rec0" });

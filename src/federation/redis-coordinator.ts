@@ -115,15 +115,15 @@ return {granted, expiresAt}`;
  *   ARGV[4] = windowMs (derives the CURRENT window's expiresAt)
  *   ARGV[5] = perKeyBudget (cap)
  *
- * Returns: 1 if credited, 0 if no-op (already reconciled this windowStart).
+ * Returns: 1 if credited, 0 if no-op (forfeit, or already reconciled this windowStart).
  *
- * Semantics: credits leftover into the CURRENT window's budget (the
- * intuition: "leftover from window N can be used in window N+1"). The
- * `rec_<windowStart>` HASH field marks idempotency, dropped via PEXPIRE
- * when the next window rolls — fine, because by then a re-reconcile of
- * that windowStart is for stale data anyway. Initializes a fresh window
- * if needed (covers the engine-side race where reconcile races the
- * post-roll lease for the new window).
+ * Semantics: **window-coupled** — leftover is credited back ONLY if it belongs to the still-active
+ * window (`windowStart == currentWindowStart`); leftover from an already-rolled window is FORFEIT, exactly
+ * as the formal `Roll` expires regional escrow (spec/GaleFederatedLeasing.tla). This is what makes the
+ * federation actually achieve `admitted <= Limit` per window: crediting a rolled window's leftover into a
+ * later, already-draining window would let cumulative admissions exceed the budget (the K-dependent
+ * `L + K·(B−1)` overshoot the federation is designed to eliminate). The credit caps at perKeyBudget; the
+ * `rec_<windowStart>` field marks idempotency for the in-window-skew case (reconcile racing the boundary).
  */
 const RECONCILE_LUA = `${LUA_NOW}
 local leftover = tonumber(ARGV[2])
@@ -133,6 +133,12 @@ local perKeyBudget = tonumber(ARGV[5])
 
 local currentWindowStart = math.floor(now / windowMs) * windowMs
 local currentExpiresAt = currentWindowStart + windowMs
+
+-- Window-coupling guard: forfeit leftover whose window has already rolled (it must not refill a later
+-- window). Only an in-window reconcile (skew/boundary race, windowStart == current) restores budget.
+if windowStart ~= currentWindowStart then
+  return 0  -- rolled window — forfeit, exactly as the formal Roll expires escrow
+end
 
 local recField = 'rec_' .. windowStart
 if redis.call('HEXISTS', KEYS[1], recField) == 1 then
