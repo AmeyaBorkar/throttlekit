@@ -208,4 +208,7 @@ export interface AuditRecord {
   readonly tenant?: string;
   readonly window?: string;
   readonly redactionMode?: RedactionMode;
+  /** Present when an authorized action FAILED mid-flight (e.g. an unreadable/missing segment) — the
+   * attempt is still recorded so the trail has no holes. Absent on a successful action. */
+  readonly error?: string;
 }

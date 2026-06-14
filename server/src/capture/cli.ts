@@ -98,10 +98,19 @@ export async function runCaptureCli(
   const principal =
     req.principal !== undefined && req.principal !== "" ? req.principal : "operator";
 
+  // The contract is "every authorized action appends one". A successful action audits inline (and sets
+  // this flag); if the action instead throws mid-flight — e.g. an unreadable segment on export — the
+  // catch records the attempt + its failure, so an authorized action never vanishes from the trail.
+  let audited = false;
+  const audit = async (record: Parameters<AuditLog["append"]>[0]): Promise<void> => {
+    await deps.audit.append(record);
+    audited = true;
+  };
+
   try {
     if (req.action === "sweep") {
       const purged = await deps.store.sweep();
-      await deps.audit.append({ ts: now, principal, action: "sweep" });
+      await audit({ ts: now, principal, action: "sweep" });
       return { ok: true, output: { purged } };
     }
 
@@ -124,7 +133,7 @@ export async function runCaptureCli(
           rows.push({ id: ref.id, createdAt: ref.createdAt, unreadable: true });
         }
       }
-      await deps.audit.append({ ts: now, principal, action: "list" });
+      await audit({ ts: now, principal, action: "list" });
       return { ok: true, output: rows };
     }
 
@@ -132,7 +141,7 @@ export async function runCaptureCli(
     if (req.id === undefined || req.id === "")
       return { ok: false, error: "export requires a segment id" };
     const seg = await deps.store.read(req.id);
-    await deps.audit.append({
+    await audit({
       ts: now,
       principal,
       action: "export",
@@ -146,6 +155,16 @@ export async function runCaptureCli(
       output: trace !== null ? { kind: "replay-trace", trace } : { kind: "forensic", segment: seg },
     };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    const error = e instanceof Error ? e.message : String(e);
+    // An authorized action that failed after it began (a store/decrypt error) must still be audited.
+    // Best-effort: if the audit sink itself is what's down, there is nothing left to write to.
+    if (!audited) {
+      try {
+        await deps.audit.append({ ts: now, principal, action: req.action, error });
+      } catch {
+        // audit sink unavailable — nothing more we can do
+      }
+    }
+    return { ok: false, error };
   }
 }

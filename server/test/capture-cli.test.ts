@@ -185,6 +185,24 @@ describe("#289 P3.4 — fail-closed audited CLI", () => {
     });
   });
 
+  it("audits an authorized export that fails mid-flight (the trail must have no holes)", async () => {
+    const d = deps(enabled);
+    const id = await d.store.write(leafSegment("acme"));
+    const segPath = join(dir, "seg", id);
+    const buf = await readFile(segPath);
+    buf[buf.length - 1] = buf[buf.length - 1]! ^ 0xff; // corrupt → store.read() throws on decrypt
+    await writeFile(segPath, buf);
+    const res = await runCaptureCli(
+      { action: "export", id, credential: "s3cret-op", principal: "alice" },
+      d,
+    );
+    expect(res.ok).toBe(false);
+    const audit = await d.audit.read();
+    expect(audit).toHaveLength(1); // pre-fix: 0 — the authorized attempt vanished from the trail
+    expect(audit[0]).toMatchObject({ principal: "alice", action: "export" });
+    expect(audit[0]?.error).toBeDefined();
+  });
+
   it("exports a non-leaf segment as forensic-only (not a replayable trace)", async () => {
     const d = deps(enabled);
     const id = await d.store.write(nonLeafSegment());
