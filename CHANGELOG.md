@@ -6,6 +6,44 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+## [1.5.1] — 2026-06-13
+
+A correctness-and-hardening patch from a full part-by-part audit (security / math / logic / concurrency).
+Every fix was reproduced on the real code, traced to root cause, and pinned by a regression test proven to
+fail on the prior commit. No public API change.
+
+### Fixed
+
+- **`twoTier` adaptive lease-sizer cold-start (critical).** The AdaGrad sizer defaulted its step scale to
+  the full log-domain diameter, so the first `observe()` slammed the lease size to the `1e6` clamp; in
+  `leased` mode the oversized lease exceeded what L2 could grant and **every request was denied from window
+  1 onward** (a self-inflicted DoS). The default step scale is now capped at one e-fold, restoring
+  convergence to the EOQ optimum.
+- **`twoTier` async fair-escrow `reset()`** voided the store-backed `release()` without a `.catch`, so a
+  store blip during reset escaped as an unhandled rejection (fatal under `--unhandled-rejections=strict`).
+- **`twoTier` `LeaseSpender`** re-discarded a freshly granted lease when `expiresAt <= now`, spinning the
+  refresh loop until it threw; it now mirrors the core leased path (discard once pre-loop) and serves it.
+- **`MemoryStore` (bounded)** evicted a live key while a freed tombstone slot sat unused — a silent
+  rate-limit reset / over-admission below `maxKeys`. Freed slots are now reused before any eviction.
+- **`distributedTokenBudget.remaining()`** threw `WRONGTYPE` on a Redis-backed budget after any debit
+  (the peek read the HASH via `GET`); it now reads through a read-only Lua.
+- **`unifiedAdmission`** shared per-axis decision state across `await`, so two concurrent async admits could
+  corrupt each other's decision / `bindingAxis` (a passing request returned denied). Each call now threads
+  its own snapshot.
+- **`RedisConcurrencyCoordinator`** self-evicted a node that heartbeated with an already-past `expiresAt`
+  (clock skew), diverging from the Test/Postgres reference and over-granting; it now skips self like the
+  reference.
+- **`multiRateLimit`** never validated the effective per-dimension cost (a `cost() <= 0` silently disabled
+  that axis — fail-open) and threw an opaque `TypeError` on empty dimensions; both are now validated.
+- **`CountMinSketch`** counters wrapped at 2³² (estimate dropped below the true count, breaking
+  never-over-admit); writes now saturate. `mergeableSketch.add` now rejects fractional/negative counts.
+- **Config YAML** rejected prototype-polluting keys (`__proto__`/`constructor`/`prototype`) and made
+  end-of-line comment stripping quote-aware (a `#` inside `"a #b"` is no longer truncated).
+- **`policySet()`** rejects a name shared by `policies[]` and `unreplayable[]` (it double-counted the plan
+  and falsely tripped the fail-closed gate).
+- **Replay `resolveCandidate`** refuses a `windowMs` delta on a gcra spec that uses `periodMs`
+  (`periodMs ?? windowMs` shadowed it → a silent zero-divergence no-op).
+
 ## [1.5.0] — 2026-06-10
 
 ### Added
