@@ -12,6 +12,7 @@
  * the load-bearing invariant of the polyglot design.
  */
 
+import { randomBytes } from "node:crypto";
 import { type Enforcer, ThrottleKitError, createEnforcer } from "throttlekit";
 import type {
   Clock,
@@ -253,7 +254,6 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
     string,
     { release(opts?: { dropped?: boolean }): void; expiresAt: number }
   >();
-  let nextLeaseId = 0;
   // Guards that may need shutdown (distributed ones have a `close()`; in-process ones don't). The same
   // instances the admitters drive — closing them stops the heartbeat timers + leaves the fleet (SC-16).
   const closeableGuards = Object.values(options.guards ?? {});
@@ -370,8 +370,11 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
       const policyDenied = a.policyDenied ?? false;
       if (a.decision.allowed) {
         // A granted admission holds the concurrency slot: mint a lease and keep its release closure so
-        // a later Release (or the reclaim sweep) can free it. lease id is a server-local opaque counter.
-        const leaseId = String(++nextLeaseId);
+        // a later Release (or the reclaim sweep) can free it. The id IS the capability — Release/Heartbeat
+        // key only on it and do no per-caller ownership check — so it must be UNGUESSABLE (128-bit random),
+        // never a sequential counter a peer could enumerate to free/renew another client's slot.
+        let leaseId = randomBytes(16).toString("hex");
+        while (leases.has(leaseId)) leaseId = randomBytes(16).toString("hex");
         const leaseExpiresAt = clock.now() + leaseTtlMs;
         leases.set(leaseId, { release: a.release, expiresAt: leaseExpiresAt });
         return { decision: a.decision, leaseId, leaseExpiresAt, bindingAxis, policyDenied };

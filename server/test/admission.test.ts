@@ -57,6 +57,21 @@ describe("admission lifecycle — in-process service core", () => {
     expect(a3.bindingAxis).toBe("concurrency");
   });
 
+  it("mints unguessable lease ids (capability tokens, not an enumerable counter)", async () => {
+    // Release/Heartbeat key only on the lease id and do no per-caller ownership check, so the id IS the
+    // capability. The old `String(++nextLeaseId)` made it trivially guessable — a peer holding "5" could
+    // release/renew "4"/"6". Ids must be high-entropy and underivable from one another.
+    const a1 = await service.admit("cc", "k");
+    const a2 = await service.admit("cc", "k");
+    expect(a1.leaseId).toMatch(/^[0-9a-f]{32}$/); // 128-bit random hex, not "1"
+    expect(a2.leaseId).toMatch(/^[0-9a-f]{32}$/);
+    expect(a1.leaseId).not.toBe(a2.leaseId);
+    expect(a2.leaseId).not.toBe(String(Number(a1.leaseId) + 1)); // not the next counter value
+    // The mint must not break the lifecycle: the random id still releases its slot.
+    service.release(a1.leaseId);
+    expect((await service.admit("cc", "k")).decision.allowed).toBe(true);
+  });
+
   it("release frees a slot for the next admit; release of an unknown id is a no-op", async () => {
     const a1 = await service.admit("cc", "k");
     await service.admit("cc", "k"); // fill the second slot
