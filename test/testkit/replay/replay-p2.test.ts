@@ -149,6 +149,33 @@ describe("replay P2 — candidate DSL (delta algebra)", () => {
       resolveCandidate(recordFixed(3, 1), candidate("ok", set("windowMs", 500))),
     ).not.toThrow();
   });
+
+  it("refuses a windowMs delta on a gcra spec that uses `periodMs` (it would silently not apply)", () => {
+    // gcra resolves its window as `periodMs ?? windowMs`, so a windowMs delta while periodMs is set is
+    // shadowed — the candidate would look unchanged and replay to a false zero-divergence (regression).
+    const rec = recordLimiter(
+      { strategy: "gcra", limit: 2, periodMs: 1000 },
+      { clock: new ManualClock(1000) },
+    );
+    rec.limiter.checkSync("u");
+    try {
+      resolveCandidate(rec.trace(), candidate("set-window", set("windowMs", 100_000)));
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ReplayRefusedError);
+      expect((e as ReplayRefusedError).reason).toBe("candidate-invalid");
+      expect((e as Error).message).toMatch(/periodMs.*takes precedence/i);
+    }
+    // A gcra spec written with windowMs (no periodMs) accepts a windowMs delta.
+    const recW = recordLimiter(
+      { strategy: "gcra", limit: 2, windowMs: 1000 },
+      { clock: new ManualClock(1000) },
+    );
+    recW.limiter.checkSync("u");
+    expect(() =>
+      resolveCandidate(recW.trace(), candidate("ok", set("windowMs", 100_000))),
+    ).not.toThrow();
+  });
 });
 
 describe("replay P2 — score reducers", () => {

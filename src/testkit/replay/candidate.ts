@@ -208,6 +208,19 @@ export function resolveCandidate(trace: ReplayTrace, cand: Candidate): ResolvedC
       "targets windowMs/periodMs but the spec sets `period`, which takes precedence — the delta would not apply; target `period` instead",
     );
   }
+  // gcra resolves its window as `periodMs ?? windowMs`, so a `windowMs` delta while the gcra spec still
+  // carries `periodMs` is shadowed and would silently NOT apply (the candidate would look unchanged and
+  // replay to a false zero-divergence). Refuse it loudly: target `periodMs` instead.
+  if (
+    written.has("windowMs") &&
+    working.strategy === "gcra" &&
+    (working as { periodMs?: unknown }).periodMs !== undefined
+  ) {
+    throw invalid(
+      cand.name,
+      "targets windowMs but the gcra spec sets `periodMs`, which takes precedence (periodMs ?? windowMs) — the delta would not apply; target `periodMs` instead",
+    );
+  }
 
   const spec = working as unknown as LimiterSpec;
   const klass: ComparabilityClass =
