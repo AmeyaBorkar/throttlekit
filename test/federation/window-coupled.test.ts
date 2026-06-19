@@ -194,6 +194,81 @@ describe("federation/window-coupled (TK-904)", () => {
     });
   });
 
+  describe("in-flight lease that resolves after a window roll must not credit the old window into the new", () => {
+    /**
+     * A per-window-budget coordinator (budget keyed by `expiresAt`) that commits each lease's draw
+     * synchronously but HOLDS the resolving promise until released by `expiresAt` — modelling a real
+     * (Redis/Postgres) coordinator where `lease()` awaits a network round trip and so can be in flight
+     * while a concurrent same-key check rolls the window. Releasing by `expiresAt` lets us settle the
+     * fresh-window lease BEFORE the stale one, isolating the window-roll path from the separate
+     * coalescing double-credit.
+     */
+    function gatedPerWindow(budgetPerWindow: number) {
+      const budgets = new Map<number, number>();
+      const gates: { exp: number; resolve: () => void }[] = [];
+      const reconciles: { leftover: number; windowStart: number }[] = [];
+      const coordinator: GlobalCoordinator = {
+        async lease(_key, tokens, expiresAt) {
+          const rem = budgets.get(expiresAt) ?? budgetPerWindow;
+          const granted = Math.min(tokens, rem);
+          budgets.set(expiresAt, rem - granted); // commit the draw at fire time (resetAt baked here)
+          await new Promise<void>((resolve) => gates.push({ exp: expiresAt, resolve }));
+          return granted;
+        },
+        async reconcile(_key, leftover, windowStart) {
+          reconciles.push({ leftover, windowStart });
+        },
+      };
+      const releaseExp = async (exp: number): Promise<void> => {
+        const i = gates.findIndex((g) => g.exp === exp);
+        if (i >= 0) gates.splice(i, 1)[0]!.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      };
+      return { coordinator, releaseExp, reconciles };
+    }
+
+    it("forfeits a grant leased against a rolled window and reconciles it to the old window", async () => {
+      const clock = new ManualClock(0);
+      const g = gatedPerWindow(100);
+      const limiter = federate({
+        strategy: fedStrategy(100),
+        coordinator: g.coordinator,
+        region: "us-east",
+        batch: 100,
+        clock,
+      });
+
+      // A leases against window [0,1000) and blocks in flight.
+      clock.set(10);
+      const pA = limiter.check("k");
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Roll into window [1000,2000); B issues its OWN lease (the roll nulled A's pending) and blocks.
+      clock.set(1500);
+      const pB = limiter.check("k");
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Settle the fresh window-1 lease first (so A re-loops into existing credits, not a coalesce),
+      // then the stale window-0 lease.
+      await g.releaseExp(2000);
+      await g.releaseExp(1000);
+
+      const decA = await pA;
+      const decB = await pB;
+
+      // Both served against the fresh window; total admitted is bounded by ONE fresh batch (100),
+      // not the smuggled two (the stale window-0 grant + the fresh window-1 grant = 200 pre-fix).
+      expect(decA.resetAt).toBe(2000);
+      expect(decB.resetAt).toBe(2000);
+      expect(Math.max(decA.remaining, decB.remaining)).toBeLessThanOrEqual(99);
+      // The stale grant is forfeited from L1 and reconciled back to its OWN (window-0) start.
+      expect(g.reconciles).toContainEqual({ leftover: 100, windowStart: 0 });
+    });
+  });
+
   describe("lease coalescing: at most one in-flight lease per key per region", () => {
     it("concurrent shortages on the same key issue ONE lease", async () => {
       const clock = new ManualClock(0);

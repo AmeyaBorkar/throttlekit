@@ -136,6 +136,13 @@ interface Entry {
    */
   pending: Promise<number> | undefined;
   /**
+   * The `windowStart` the in-flight {@link Entry.pending} lease was issued
+   * against. If the window rolls before the lease resolves, its grant belongs
+   * to that (now-expired) window and must NOT be credited into the new one
+   * (window-coupling). Meaningful only while `pending` is defined.
+   */
+  pendingWindowStart: number;
+  /**
    * The windowStart of the most recent successful reconcile, so we don't
    * double-reconcile the same boundary (idempotence on `windowStart`).
    */
@@ -269,6 +276,7 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
         windowStart: start,
         windowExpiresAt: expiresAt,
         pending: undefined,
+        pendingWindowStart: start,
         lastReconciledWindowStart: -1,
       };
       entries.set(key, e);
@@ -284,6 +292,7 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
       e.windowExpiresAt = expiresAt;
       // Drop any pending lease from the prior window — it would credit the wrong window.
       e.pending = undefined;
+      e.pendingWindowStart = start;
 
       if (e.lastReconciledWindowStart !== oldStart) {
         e.lastReconciledWindowStart = oldStart;
@@ -369,9 +378,13 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
       // L2 empty or unavailable: lease from coordinator (L3). Refill L2 from the grant
       // so other processes share it; then immediately lease our share back from L2.
       let lease = e.pending;
+      // The window this round's grant is leased against — captured BEFORE the await so a roll
+      // mid-flight can't rewrite it. A coalescing rider inherits the in-flight lease's window.
+      let leaseWindowStart = e.pendingWindowStart;
       if (lease === undefined) {
         const windowStart = e.windowStart;
         const expiresAt = e.windowExpiresAt;
+        leaseWindowStart = windowStart;
         const tokens = Math.max(batch, cost);
         lease = (async (): Promise<number> => {
           let granted: number;
@@ -415,6 +428,7 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
           return granted;
         })();
         e.pending = lease;
+        e.pendingWindowStart = windowStart;
       }
 
       const grant = await lease;
@@ -430,6 +444,14 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
       if (e.pending === lease) e.pending = undefined;
 
       if (grant > 0) {
+        // Window-coupling: if the window rolled while this lease was in flight, its grant was drawn
+        // against the now-expired window and must NOT inflate the new one — forfeit it from L1 and
+        // reconcile back to the OLD window (best-effort; a failure only loses that capacity). Then
+        // re-loop to lease fresh against the current window if still short.
+        if (e.windowStart !== leaseWindowStart) {
+          void coordinator.reconcile(key, grant, leaseWindowStart).catch(() => undefined);
+          continue;
+        }
         e.balance += grant;
         continue;
       }
