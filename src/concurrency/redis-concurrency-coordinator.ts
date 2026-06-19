@@ -70,6 +70,17 @@ export interface RedisConcurrencyCoordinatorOptions {
    */
   acknowledgedHandoff?: boolean;
   /**
+   * Use the Redis server clock (`TIME`) for eviction's `now`. Default `true` (node clock skew is
+   * then irrelevant — every node's heartbeat evicts peers against ONE clock). With `false` the
+   * calling node's `Date.now()` is used, so a node whose clock runs ahead can prematurely evict a
+   * healthy peer (whose `expiresAt` was stamped on its own slower clock) and reclaim its budget,
+   * breaking `Σ inflight ≤ L_global`. Matches `PostgresConcurrencyCoordinator.useServerTime` and
+   * `RedisStore.useServerTime`. Every node fronting a key MUST agree (it changes the eviction
+   * anchor), like {@link aggregate}. Set `false` in deterministic tests that pin `expiresAt` far in
+   * the future. (NOTE: `expiresAt` is still stamped on each node's local clock, like Postgres.)
+   */
+  useServerTime?: boolean;
+  /**
    * Capacity ALLOCATION rule (D-DAC-9 / TK-1403) — the Lua twin of
    * {@link TestConcurrencyCoordinatorOptions.allocation}. `"equal-split"` (**default**,
    * behavior-preserving) splits `L_global` ≈`L/N`; `"demand-proportional"` lets satisfied
@@ -114,7 +125,14 @@ const HEARTBEAT_LUA = `local nodeId = ARGV[1]
 local lLocal = tonumber(ARGV[2])
 local inflight = tonumber(ARGV[3])
 local expiresAt = tonumber(ARGV[4])
+-- now: the sentinel 0 means "use the Redis server clock", so every node's heartbeat evicts peers
+-- against ONE clock — a node whose own clock runs ahead can't prematurely evict a healthy peer and
+-- over-grant (mirrors src/core/lua.ts LUA_NOW and the Postgres clock_timestamp() anchor).
 local now = tonumber(ARGV[5])
+if now == 0 then
+  local t = redis.call('TIME')
+  now = t[1] * 1000 + math.floor(t[2] / 1000)
+end
 local aggregate = ARGV[6]
 local seq = tonumber(ARGV[7])
 local appliedGen = tonumber(ARGV[8])
@@ -317,6 +335,7 @@ export class RedisConcurrencyCoordinator implements ConcurrencyCoordinator {
   readonly #prefix: string;
   readonly #acknowledgedHandoff: boolean;
   readonly #allocation: "equal-split" | "demand-proportional";
+  readonly #useServerTime: boolean;
   readonly #shaCache = new Map<string, string>();
 
   constructor(options: RedisConcurrencyCoordinatorOptions) {
@@ -325,6 +344,7 @@ export class RedisConcurrencyCoordinator implements ConcurrencyCoordinator {
     this.#prefix = options.prefix ?? DEFAULT_PREFIX;
     this.#acknowledgedHandoff = options.acknowledgedHandoff ?? false;
     this.#allocation = options.allocation ?? "equal-split";
+    this.#useServerTime = options.useServerTime ?? true;
   }
 
   async heartbeat(report: ConcurrencyReport): Promise<ConcurrencyGrant> {
@@ -338,7 +358,9 @@ export class RedisConcurrencyCoordinator implements ConcurrencyCoordinator {
           report.lLocal,
           report.inflight,
           report.expiresAt,
-          Date.now(),
+          // 0 ⇒ resolve `now` from the Redis server clock inside the script (default), so every
+          // node's heartbeat evicts peers against one clock; only a deterministic test opts out.
+          this.#useServerTime ? 0 : Date.now(),
           this.#aggregate,
           // Acknowledged handoff (D-DAC-19). -1 sentinels for an old guard that
           // doesn't echo seq/appliedGen ⇒ the script treats it as always-fresh and

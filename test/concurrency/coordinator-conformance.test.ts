@@ -12,13 +12,14 @@
  * + §7 aggregation); the only way they could diverge is an arithmetic bug in
  * one transcription.
  *
- * Eviction `now`-skew is eliminated by construction: the Lua path compares
- * `expiresAt` against the server's `Date.now()` while the Test path compares
- * against its injected clock, so we keep every report's `expiresAt` far in the
- * future for both clocks. No node is ever evicted in either path, so the two
- * live-sets — and therefore the aggregate and the split — match step for step.
+ * Eviction `now`-skew is eliminated by construction: the Lua path resolves `now`
+ * from the Redis server clock (the default `useServerTime`) while the Test path
+ * compares against its injected clock, so we keep every report's `expiresAt` far
+ * in the future for both clocks. No node is ever evicted in either path, so the
+ * two live-sets — and therefore the aggregate and the split — match step for step.
  * (Per-node TTL eviction is covered deterministically by the unit suite
- * `test/concurrency/distributed.test.ts`, which drives a single injected clock.)
+ * `test/concurrency/distributed.test.ts`, which drives a single injected clock; the
+ * server-clock anchor that makes a skewed peer clock harmless is exercised below.)
  *
  * Gated on `THROTTLEKIT_TEST_REDIS` (set to e.g. `redis://localhost:6380`);
  * uses Redis DB 13 — non-colliding with DB 7-12 used by the other gated
@@ -433,5 +434,48 @@ d("coordinator dual-path conformance (TK-1316)", () => {
       lGlobal: redisGrant.lGlobal,
       nodes: redisGrant.nodes,
     }).toEqual({ share: testGrant.share, lGlobal: testGrant.lGlobal, nodes: testGrant.nodes });
+  });
+
+  it("a node whose clock runs ahead does not evict a healthy peer (server-clock anchor)", async () => {
+    // The eviction-skew the conformance loop carves out: A heartbeats with expiresAt = A.now + ttl;
+    // then C (clock far ahead) heartbeats. Before the fix the Lua compared A.expiresAt against C's
+    // Date.now(), so C evicted the healthy A and was granted A's whole budget (Σ inflight > L_global).
+    // With the default server-clock anchor both beats evict against ONE clock, so A survives and C's
+    // share leaves room for it. We monkey-patch Date.now() per beat to inject the skew deterministically.
+    const key = "eviction-skew-regression";
+    const coord = new RedisConcurrencyCoordinator({
+      client: fromNodeRedis(client),
+      aggregate: "min",
+      prefix: key,
+    }); // useServerTime defaults to true
+    const ttl = 2000;
+    const skew = 60_000; // C's clock is far ahead — well beyond the lease slack
+    const realDateNow = Date.now.bind(Date);
+
+    const beatWithClock = async (
+      nodeId: string,
+      clockOffsetMs: number,
+    ): Promise<ConcurrencyGrant> => {
+      const wall = realDateNow() + clockOffsetMs;
+      Date.now = () => wall; // the guard would stamp expiresAt on THIS node's clock
+      try {
+        return await coord.heartbeat({
+          key,
+          nodeId,
+          lLocal: 10,
+          inflight: 10,
+          expiresAt: wall + ttl,
+        });
+      } finally {
+        Date.now = realDateNow;
+      }
+    };
+
+    await beatWithClock("A", 0); // accurate clock
+    const cGrant = await beatWithClock("C", skew); // clock far ahead
+
+    // A must still be live: C only sees room for L_global − A's hold, not the whole budget.
+    expect(cGrant.nodes).toBe(2);
+    expect(cGrant.share + 10).toBeLessThanOrEqual(cGrant.lGlobal); // Σ reserved ≤ L_global (A holds 10)
   });
 });
