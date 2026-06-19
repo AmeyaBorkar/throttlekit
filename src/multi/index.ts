@@ -313,19 +313,33 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
     if (store.applySync === undefined) {
       throw new ThrottleKitError("multi-dimensional checkSync requires a synchronous store");
     }
-    const captured: { fk: string; out: StrategyOutcome<unknown> }[] = [];
+    const captured: {
+      fk: string;
+      dim: Dimension<Ctx>;
+      cost: number;
+      out: StrategyOutcome<unknown>;
+    }[] = [];
     const results: Decision[] = [];
     for (const [name, dim] of entries) {
       const fk = keyOf(name, dim.key(ctx));
       const cost = dimCost(dim, ctx, globalCost);
       let out: StrategyOutcome<unknown> | undefined;
       const peek = ((state: unknown) => {
-        out = dim.strategy.check(state, now, cost);
+        // Read phase only — must NOT mutate the live state. A strategy may mutate the object it is
+        // handed in place (slidingWindow bumps its ring on the allow branch), so peek a structural
+        // copy: if the composite denies, returning persist:false alone would still leave that in-place
+        // bump on the shared object, partial-consuming a co-keyed dimension (the all() no-partial-consume
+        // contract). The persisted state is re-derived from the live object in the commit phase below.
+        out = dim.strategy.check(
+          state === undefined ? undefined : structuredClone(state),
+          now,
+          cost,
+        );
         return { state, result: out.result, ttlMs: out.ttlMs, persist: false };
       }) as Transform<unknown, Decision>;
       store.applySync(fk, peek, now);
       const o = out as StrategyOutcome<unknown>;
-      captured.push({ fk, out: o });
+      captured.push({ fk, dim, cost, out: o });
       results.push(o.result);
     }
     const decision = combine(mode, results);
@@ -333,16 +347,21 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
     const commitAny = mode === "any" && decision.allowed;
     if (commitAll || commitAny) {
       for (let i = 0; i < captured.length; i++) {
-        const c = captured[i] as { fk: string; out: StrategyOutcome<unknown> };
+        const c = captured[i] as {
+          fk: string;
+          dim: Dimension<Ctx>;
+          cost: number;
+          out: StrategyOutcome<unknown>;
+        };
         const res = results[i] as Decision;
         const write = commitAll || res.allowed;
         if (write && c.out.persist) {
-          const commit = (() => ({
-            state: c.out.state,
-            result: c.out.result,
-            ttlMs: c.out.ttlMs,
-            persist: true,
-          })) as Transform<unknown, Decision>;
+          // Re-run check on the freshly read LIVE state so the persisted state is computed from the
+          // real object (an in-place mutation now lands where it belongs). The read phase peeked a
+          // clone, so this is the first and only mutation of the stored state — deterministic and
+          // identical to the captured outcome (same state, now, cost).
+          const commit = ((state: unknown) =>
+            c.dim.strategy.check(state, now, c.cost)) as Transform<unknown, Decision>;
           store.applySync(c.fk, commit, now);
         }
       }

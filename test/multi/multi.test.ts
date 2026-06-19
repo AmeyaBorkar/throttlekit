@@ -2,6 +2,8 @@ import Redis from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixedWindow } from "../../src/algorithms/fixed-window";
 import { gcra } from "../../src/algorithms/gcra";
+import { slidingWindow } from "../../src/algorithms/sliding-window";
+import { slidingWindowLog } from "../../src/algorithms/sliding-window-log";
 import { tokenBucket } from "../../src/algorithms/token-bucket";
 import { ManualClock } from "../../src/core/clock";
 import type { MultiStrategy } from "../../src/multi";
@@ -98,6 +100,48 @@ describe("multiRateLimit", () => {
     });
     expect(limiter.checkSync({ ip: "A", user: "u" }).allowed).toBe(true);
     expect(limiter.checkSync({ ip: "A", user: "u" }).allowed).toBe(false);
+  });
+
+  it("all() sync: a denied composite consumes NOTHING from a mutating dimension (no partial consume)", () => {
+    // gcra (binding, burst 1) exhausts after one allow; the slidingWindow dimension shares the key but
+    // has ample room. On checks #2/#3 the composite denies on gcra — yet slidingWindow.check mutates
+    // its ring in place during the read phase, so before the fix its count crept 1→2→3 even though
+    // nothing was committed. Controls (slidingWindowLog non-mutating, fixedWindow non-mutating) stayed
+    // at 1 either way, isolating the partial-consume to the in-place mutator.
+    const clock = new ManualClock(1000);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
+    const sw = slidingWindow({ limit: 100, windowMs: 10_000, buckets: 10 });
+    const limiter = multiRateLimit<Record<string, never>>({
+      clock,
+      store,
+      strategy: all({
+        a: { key: () => "shared", strategy: gcra({ limit: 1, periodMs: 10_000, burst: 1 }) },
+        b: { key: () => "shared", strategy: sw },
+        log: { key: () => "shared", strategy: slidingWindowLog({ limit: 100, windowMs: 10_000 }) },
+        fw: { key: () => "shared", strategy: fixedWindow({ limit: 100, windowMs: 10_000 }) },
+      }),
+    });
+
+    // Read dimension b's CURRENT (non-consuming) remaining straight off the persisted state.
+    const swRemaining = (): number => {
+      let dec = sw.peek?.(undefined, clock.now()) as { remaining: number };
+      store.applySync<unknown, void>(
+        "b:shared",
+        (state) => {
+          dec = sw.peek?.(state as never, clock.now()) as { remaining: number };
+          return { state, result: undefined, ttlMs: 0, persist: false };
+        },
+        clock.now(),
+      );
+      return dec.remaining;
+    };
+
+    expect(limiter.checkSync({}).allowed).toBe(true); // both allow → b consumes 1, remaining 99
+    expect(swRemaining()).toBe(99);
+    expect(limiter.checkSync({}).allowed).toBe(false); // gcra denies → b must NOT consume
+    expect(swRemaining()).toBe(99);
+    expect(limiter.checkSync({}).allowed).toBe(false); // still denied → still no consume
+    expect(swRemaining()).toBe(99);
   });
 });
 
