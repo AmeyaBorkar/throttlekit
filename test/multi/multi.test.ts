@@ -6,7 +6,7 @@ import { tokenBucket } from "../../src/algorithms/token-bucket";
 import { ManualClock } from "../../src/core/clock";
 import type { MultiStrategy } from "../../src/multi";
 import { all, any, multiRateLimit } from "../../src/multi";
-import { RedisStore } from "../../src/redis/store";
+import { type RedisClientLike, RedisStore } from "../../src/redis/store";
 import { MemoryStore } from "../../src/stores/memory";
 
 interface Ctx {
@@ -201,5 +201,88 @@ describe("multiRateLimit — input validation (regression)", () => {
       }),
     });
     expect(() => neg.checkSync({ ip: "A", user: "u" })).toThrow(RangeError);
+  });
+});
+
+// A fake Lua-capable client that records the KEYS each EVAL touched and the keys each DEL removed,
+// so we can assert the EVAL write path and the reset DEL path agree on the same (prefixed) namespace
+// without a live Redis (keeps this in the store-less CI gate).
+function recordingClient(): {
+  client: RedisClientLike;
+  store: Map<string, string>;
+  evalKeys: string[][];
+  delKeys: string[];
+} {
+  const store = new Map<string, string>();
+  const evalKeys: string[][] = [];
+  const delKeys: string[] = [];
+  const client: RedisClientLike = {
+    // Force the EVAL (not EVALSHA) path so we observe the script's KEYS directly.
+    async evalsha() {
+      throw new Error("NOSCRIPT no matching script");
+    },
+    async eval(_script: string, numkeys: number, ...args: Array<string | number>) {
+      const keys = args.slice(0, numkeys).map(String);
+      evalKeys.push(keys);
+      for (const k of keys) store.set(k, "x"); // an allow always writes the dimension key(s)
+      return [1, 5, 4, 1000, 0]; // {allowed, limit, remaining, resetAt, retryAfterMs}
+    },
+    async get(k: string) {
+      return store.get(k) ?? null;
+    },
+    async del(...keys: string[]) {
+      for (const k of keys) {
+        delKeys.push(k);
+        store.delete(k);
+      }
+      return keys.length;
+    },
+    async watch() {
+      return "OK";
+    },
+    async unwatch() {
+      return "OK";
+    },
+    multi() {
+      throw new Error("OCC path not exercised");
+    },
+  };
+  return { client, store, evalKeys, delKeys };
+}
+
+describe("multiRateLimit — store-prefix round-trip (regression)", () => {
+  it("reset() clears the same key check() wrote when the RedisStore has a prefix", async () => {
+    const { client, store, evalKeys, delKeys } = recordingClient();
+    const redis = new RedisStore({ client, prefix: "myapp", useServerTime: false });
+    const limiter = multiRateLimit<{ ip: string }>({
+      store: redis,
+      strategy: all({ ip: { key: (c) => c.ip, strategy: gcra({ limit: 5, periodMs: 1000 }) } }),
+    });
+    await limiter.check({ ip: "1.2.3.4" });
+    // check() must write through the store prefix (was the un-prefixed "ip:1.2.3.4" before the fix).
+    expect(evalKeys[0]).toEqual(["myapp:ip:1.2.3.4"]);
+    expect([...store.keys()]).toEqual(["myapp:ip:1.2.3.4"]);
+
+    await limiter.reset({ ip: "1.2.3.4" });
+    // reset() deletes exactly the key check() wrote — no longer a silent no-op.
+    expect(delKeys).toEqual(["myapp:ip:1.2.3.4"]);
+    expect(store.size).toBe(0);
+  });
+
+  it("two RedisStores with different prefixes on one client keep separate multi keyspaces", async () => {
+    // Per-prefix isolation (the reason the prefix option exists) was broken: both wrote the same
+    // un-prefixed multi key and collided. Each store must now write into its own namespace.
+    const { client, store } = recordingClient();
+    const a = multiRateLimit<{ ip: string }>({
+      store: new RedisStore({ client, prefix: "appA", useServerTime: false }),
+      strategy: all({ ip: { key: (c) => c.ip, strategy: gcra({ limit: 5, periodMs: 1000 }) } }),
+    });
+    const b = multiRateLimit<{ ip: string }>({
+      store: new RedisStore({ client, prefix: "appB", useServerTime: false }),
+      strategy: all({ ip: { key: (c) => c.ip, strategy: gcra({ limit: 5, periodMs: 1000 }) } }),
+    });
+    await a.check({ ip: "1.2.3.4" });
+    await b.check({ ip: "1.2.3.4" });
+    expect([...store.keys()].sort()).toEqual(["appA:ip:1.2.3.4", "appB:ip:1.2.3.4"]);
   });
 });

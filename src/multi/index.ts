@@ -361,7 +361,16 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
     }
     const program: LuaProgram = {
       script: MULTI_LUA,
-      buildKeys: () => keys,
+      // Honor the LuaProgram contract: derive every KEYS from the store's prefixed `baseKey`, not
+      // from the raw closed-over keys. The store calls buildKeys(prefixKey(keys[0])); recover whatever
+      // prefix it prepended to keys[0] and apply it to every dimension key, so the EVAL writes the same
+      // namespace reset() deletes (reset → store.reset → prefixKey) and per-prefix isolation holds.
+      buildKeys: (baseKey) => {
+        const head = keys[0] ?? "tk:multi";
+        if (baseKey === head) return keys; // no store prefix
+        const sp = baseKey.slice(0, baseKey.length - head.length);
+        return keys.map((k) => sp + k);
+      },
       buildArgv: (nowArg) => [nowArg, mode === "all" ? 1 : 0, entries.length, ...perDim],
     };
     const transform = (() => {
