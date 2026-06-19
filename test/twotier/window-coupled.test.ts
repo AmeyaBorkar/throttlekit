@@ -29,6 +29,32 @@ function counting(inner: Store): { store: Store; calls: () => number } {
   return { store, calls: () => n };
 }
 
+/**
+ * Wrap a store so each `apply` commits to the inner store synchronously (the grant's `resetAt` is
+ * baked at fire time, reflecting the window the clock was in) but its reply is HELD until `release()`
+ * is called — modelling an L2 grant leased in window N whose network reply lands in window N+1.
+ */
+function gated(inner: Store): { store: Store; release: () => Promise<void> } {
+  const gates: Array<() => void> = [];
+  const store: Store = {
+    async apply<S, R>(key: string, transform: Transform<S, R>): Promise<R> {
+      const result = await inner.apply(key, transform); // commit now
+      await new Promise<void>((resolve) => gates.push(resolve)); // hold the reply
+      return result;
+    },
+    async reset(key: string): Promise<void> {
+      await inner.reset(key);
+    },
+  };
+  const release = async (): Promise<void> => {
+    const g = gates.shift();
+    if (g) g();
+    await Promise.resolve(); // let the released .then run
+    await Promise.resolve();
+  };
+  return { store, release };
+}
+
 describe("twoTier leased — window-coupled credits", () => {
   it("re-leases after a window boundary instead of serving stale carried-over credits", async () => {
     async function callsAfterBoundary(windowCoupled: boolean | undefined): Promise<number> {
@@ -93,5 +119,45 @@ describe("twoTier leased — window-coupled credits", () => {
     // Window-coupled discards them: the new window admits at most its budget. Zero overshoot.
     expect(coupled).toBe(K); // 100
     expect(coupled).toBeLessThan(legacy);
+  });
+
+  it("a late proactive (lowWater) refill leased in the prior window is not smuggled across the boundary", async () => {
+    // The proactive refill path had no window re-check (unlike the discard at check() entry): a refill
+    // leased just before a boundary whose reply lands after the window rolled would credit a stale
+    // batch AND clobber lastDecision, blinding the discard. With windowCoupled the new window must
+    // serve only its OWN fresh batch — remaining === batch-1, not batch+staleBatch-1.
+    const B = 4;
+    const clock = new ManualClock(0);
+    const { store, release } = gated(new MemoryStore({ clock, sweepIntervalMs: 0 }));
+    const node = twoTier({
+      strategy: fixedWindow({ limit: 1000, windowMs: 1000 }),
+      l2: store,
+      mode: "leased",
+      lease: { batch: B, lowWater: 2, windowCoupled: true },
+      clock,
+    });
+
+    // step1 @ t=0: on-demand lease(4) for window 0 fires and is held; release it → credits 4, serve 1.
+    const p1 = node.check("k");
+    await Promise.resolve();
+    await release();
+    expect((await p1).remaining).toBe(B - 1); // 3
+
+    // step2 @ t=0: serves locally to credits=2 (== lowWater) → a proactive window-0 refill fires, HELD.
+    expect((await node.check("k")).remaining).toBe(2);
+
+    // Roll into window 1.
+    clock.set(1000);
+
+    // step3 @ t=1000: discard zeros the 2 stale credits; an on-demand lease(4) for window 1 fires, HELD.
+    const p3 = node.check("k");
+    await Promise.resolve();
+    // Land the window-0 proactive refill FIRST (must be dropped), then the window-1 on-demand lease.
+    await release(); // stale window-0 refill .then — forfeited under windowCoupled
+    await release(); // fresh window-1 on-demand .then — credits += 4
+    const d3 = await p3;
+
+    expect(d3.resetAt).toBe(2000); // served against the fresh window
+    expect(d3.remaining).toBe(B - 1); // exactly the fresh batch (3), NOT 4 stale + 4 fresh − 1 = 7
   });
 });

@@ -344,6 +344,11 @@ export function twoTier<S = unknown>(options: TwoTierOptions<S>): Limiter {
       .then((d) => {
         const t = entries.get(fk);
         if (t !== undefined) {
+          // Under windowCoupled, a proactive refill leased just before a boundary can land after the
+          // window has rolled. Crediting it would smuggle a past window's budget across the boundary,
+          // and clobbering lastDecision with this stale (rolled) decision would blind the discard at
+          // check() entry to it — so drop the late grant (mirrors the `now >= resetAt` discard above).
+          if (windowCoupled && clock.now() >= d.resetAt) return;
           t.lastDecision = d;
           if (d.allowed) {
             t.credits += amt;
