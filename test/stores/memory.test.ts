@@ -107,6 +107,24 @@ describe("MemoryStore", () => {
     expect(store.applySync("a", inc(100_000))).toBe(2); // "a"'s counter is intact (no silent reset)
   });
 
+  it("does not evict a live key when an expired-but-unswept key sits at the CLOCK hand (regression)", () => {
+    // Regression: a short-TTL key whose real expiry has already passed within the current wheel tick
+    // is NOT swept (the wheel clamps sub-tick TTLs to a future tick and advance() is a no-op until it
+    // elapses), so its map entry is still present. The eviction scan saw a present entry with its ref
+    // bit set and granted it a "second chance", diverting the hand onto the genuinely-live key next to
+    // it and destroying that key's counter — a silent rate-limit reset / over-admission. An expired
+    // entry must be reclaimed like a stale slot, never consume a second chance.
+    const clock = new ManualClock(0);
+    const store = new MemoryStore({ clock, sweepIntervalMs: 0, maxKeys: 2 });
+    store.applySync("E", inc(500)); // slot 0, short TTL (expires at 500)
+    store.applySync("E", inc(500)); // touch E so its ref bit is set
+    store.applySync("L", inc(100_000)); // slot 1, long-TTL LIVE key
+    clock.advance(600); // now=600: E expired (exp=500), but tickMs=1000 so the wheel doesn't sweep it
+    expect(store.applySync("N", inc(100_000))).toBe(1); // ring full ⇒ evict; E (expired) must go, not L
+    expect(store.has("L")).toBe(true); // the live key must survive
+    expect(store.applySync("L", inc(100_000))).toBe(2); // L's counter is intact (no silent reset)
+  });
+
   it("close clears state and stops the sweep timer", async () => {
     const store = new MemoryStore({ clock: new ManualClock(0), sweepIntervalMs: 0 });
     store.applySync("k", inc());

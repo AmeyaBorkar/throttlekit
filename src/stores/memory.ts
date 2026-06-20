@@ -104,7 +104,7 @@ export class MemoryStore implements Store {
   }
 
   /** Find a free ring slot, evicting one unreferenced live key if the ring is full (CLOCK). */
-  #evictSlot(): number {
+  #evictSlot(now: number): number {
     const n = this.#ring.length;
     // At most one full sweep to clear bits + one to find a victim ⇒ bounded work.
     for (let i = 0; i <= n * 2; i++) {
@@ -114,6 +114,14 @@ export class MemoryStore implements Store {
       if (k === undefined) return slot; // tombstone: free
       const entry = this.#map.get(k);
       if (entry === undefined) return slot; // stale: free
+      if (entry.exp <= now) {
+        // Expired squatter: the wheel can't sweep a sub-tick TTL until its tick elapses, so its map
+        // entry is still present here. Reclaim it like a stale slot — never let it consume a second
+        // chance and divert the hand onto a live key.
+        this.#map.delete(k);
+        this.#wheel.delete(k);
+        return slot;
+      }
       if (entry.ref) {
         entry.ref = false; // second chance
         continue;
@@ -126,7 +134,7 @@ export class MemoryStore implements Store {
     return this.#hand; // unreachable in practice
   }
 
-  #insert(key: string, state: unknown, exp: number): void {
+  #insert(key: string, state: unknown, exp: number, now: number): void {
     if (!this.#bounded) {
       this.#map.set(key, { state, ref: false, slot: -1, exp });
       return;
@@ -141,7 +149,7 @@ export class MemoryStore implements Store {
       slot = this.#ring.length;
       this.#ring.push(key);
     } else {
-      slot = this.#evictSlot();
+      slot = this.#evictSlot(now);
       this.#ring[slot] = key;
     }
     this.#map.set(key, { state, ref: false, slot, exp });
@@ -168,7 +176,7 @@ export class MemoryStore implements Store {
         entry.state = out.state;
         entry.exp = exp;
       } else {
-        this.#insert(key, out.state, exp);
+        this.#insert(key, out.state, exp, now);
       }
       this.#wheel.set(key, exp);
     }
