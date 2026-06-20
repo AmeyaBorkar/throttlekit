@@ -69,6 +69,37 @@ describe("clientIp — trust policy (adversarial)", () => {
     expect(ip).toBe("2001:db8::");
   });
 
+  it("CIDR allowlist honors an IPv4-mapped IPv6 CIDR's v6-space prefix (regression)", () => {
+    // `::ffff:10.0.0.0/104` is the canonical mapped way to write the v4 /8 (96 + 8). normalize()
+    // collapses the address to the v4 quad, so the /104 prefix (written in 128-bit v6 space) must be
+    // shifted by -96 to mean the v4 /8 the operator intended. The bug range-checked 104 against 0..32
+    // and rejected the entry, so the proxy was treated as untrusted and XFF was dropped.
+    const trusted = clientIp(
+      { remoteAddr: "10.0.0.5", xForwardedFor: "1.2.3.4" },
+      { trustProxy: ["::ffff:10.0.0.0/104"] },
+    );
+    expect(trusted).toBe("1.2.3.4"); // proxy in the mapped /8 is trusted, so the XFF client wins
+
+    // A peer OUTSIDE the mapped /8 stays untrusted (the chain stops at it).
+    const outside = clientIp(
+      { remoteAddr: "11.0.0.5", xForwardedFor: "1.2.3.4" },
+      { trustProxy: ["::ffff:10.0.0.0/104"] },
+    );
+    expect(outside).toBe("11.0.0.5");
+
+    // A smaller mapped prefix maps consistently: `/120` == v4 /24.
+    const in24 = clientIp(
+      { remoteAddr: "10.0.0.5", xForwardedFor: "1.2.3.4" },
+      { trustProxy: ["::ffff:10.0.0.0/120"] },
+    );
+    expect(in24).toBe("1.2.3.4");
+    const out24 = clientIp(
+      { remoteAddr: "10.0.1.5", xForwardedFor: "1.2.3.4" }, // outside 10.0.0.0/24
+      { trustProxy: ["::ffff:10.0.0.0/120"] },
+    );
+    expect(out24).toBe("10.0.1.5");
+  });
+
   it("CIDR allowlist supports a single bare IP (no prefix)", () => {
     const ip = clientIp(
       { remoteAddr: "192.168.1.1", xForwardedFor: "77.0.0.1, 192.168.1.1" },

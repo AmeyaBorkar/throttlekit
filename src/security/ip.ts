@@ -252,8 +252,13 @@ function addrMatchesEntry(addr: string, entry: string): boolean {
   if (target.v4 !== undefined && trusted.v4 !== undefined) {
     let prefix = 32;
     if (entryPrefixStr !== undefined) {
-      const p = Number(entryPrefixStr);
-      if (!Number.isInteger(p) || p < 0 || p > 32) return false;
+      let p = Number(entryPrefixStr);
+      if (!Number.isInteger(p) || p < 0) return false;
+      // A mapped-v6 entry like `::ffff:10.0.0.0/104` writes its prefix in 128-bit v6 space, but
+      // normalize() has collapsed the address to its v4 quad. Recover the v4 prefix by dropping the
+      // 96-bit `::ffff:` mapping prefix, so `/104` means the v4 `/8` the operator intended.
+      if (entryAddr.includes(":")) p -= 96;
+      if (p < 0 || p > 32) return false;
       prefix = p;
     }
     return ipv4InCidr(target.v4, trusted.v4, prefix);
