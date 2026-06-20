@@ -152,6 +152,12 @@ export interface LuaInvocation<R> {
   readonly cost: number;
   /** Decode the raw Redis reply into the caller's result type. */
   decode(raw: unknown): R;
+  /**
+   * Whether this invocation is a non-consuming read (a strategy's {@link ReadState} for
+   * `peek`/`forecast`), so a store must not apply any write side effect — e.g. the optional physical
+   * TTL floor — on its behalf. Absent/false for a consuming `check`.
+   */
+  readonly readOnly?: boolean;
 }
 
 /**

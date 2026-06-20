@@ -52,6 +52,8 @@ export function readOnlyTransform<S, R>(
       now,
       cost: 0,
       decode: (raw) => project(rs.decode(raw), now),
+      // A non-consuming read: the store must not apply any write side effect (e.g. the TTL floor).
+      readOnly: true,
     };
     (fn as { lua?: LuaInvocation<R> }).lua = invocation;
   }

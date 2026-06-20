@@ -133,7 +133,11 @@ export class RedisStore implements Store {
       const raw = await this.#eval(lua.program.script, keys, argv);
       // Optional: keep a logically-live key from real-time GC (see ttlFloorMs). Only extends the TTL,
       // so it never alters a decision; one extra round trip, taken only when the floor is configured.
-      if (this.#ttlFloorMs > 0) await this.#eval(TTL_FLOOR_LUA, keys, [this.#ttlFloorMs]);
+      // Never on a non-consuming read (peek/forecast) — a pure read must not write (the next check
+      // re-applies the floor), and skipping it also drops the extra round trip on that hot path.
+      if (this.#ttlFloorMs > 0 && lua.readOnly !== true) {
+        await this.#eval(TTL_FLOOR_LUA, keys, [this.#ttlFloorMs]);
+      }
       return lua.decode(raw);
     }
     return this.#applyOcc(baseKey, transform);
