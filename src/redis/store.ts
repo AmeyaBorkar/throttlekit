@@ -15,6 +15,17 @@ export interface RedisClientLike {
   watch(...keys: string[]): Promise<unknown>;
   unwatch(): Promise<unknown>;
   multi(): RedisMultiLike;
+  /**
+   * Open a dedicated, isolated connection for one optimistic-concurrency transaction. `WATCH` is
+   * *connection-global* and `EXEC`/`UNWATCH` clear the whole watch set, so concurrent OCC applies that
+   * share one connection cross-contaminate (a lost update, or a spurious abort). The fix runs each
+   * `WATCH`/`MULTI`/`EXEC` on its own connection, released via {@link RedisClientLike.disconnect}.
+   * Optional: when absent, OCC falls back to the shared connection (correct for serialized use, not
+   * for concurrent applies on the same store — e.g. `checkMany`).
+   */
+  duplicate?(): RedisClientLike;
+  /** Release a connection opened by {@link RedisClientLike.duplicate}. Optional. */
+  disconnect?(): void | Promise<void>;
 }
 
 /** The subset of a Redis transaction (`MULTI`) used by the optimistic-concurrency fallback. */
@@ -130,25 +141,35 @@ export class RedisStore implements Store {
 
   /** Optimistic-concurrency fallback for strategies without a Lua form. State is JSON-encoded. */
   async #applyOcc<S, R>(key: string, transform: Transform<S, R>): Promise<R> {
-    for (let attempt = 0; attempt <= this.#maxRetries; attempt++) {
-      await this.#client.watch(key);
-      const raw = await this.#client.get(key);
-      const state = raw !== null ? (JSON.parse(raw) as S) : undefined;
-      const out = transform(state);
+    // WATCH is connection-global and EXEC/UNWATCH clear the whole watch set, so this whole sequence
+    // must own its connection — otherwise a concurrent apply on the same store (checkMany) tears down
+    // this transaction's watch (lost update) or is falsely aborted by it. Use a dedicated connection
+    // when the client supports duplicate(); fall back to the shared one (legacy, serialized-only) when
+    // it doesn't.
+    const conn = this.#client.duplicate?.() ?? this.#client;
+    try {
+      for (let attempt = 0; attempt <= this.#maxRetries; attempt++) {
+        await conn.watch(key);
+        const raw = await conn.get(key);
+        const state = raw !== null ? (JSON.parse(raw) as S) : undefined;
+        const out = transform(state);
 
-      if (!out.persist) {
-        await this.#client.unwatch();
-        return out.result;
+        if (!out.persist) {
+          await conn.unwatch();
+          return out.result;
+        }
+
+        const ttl = Math.max(1, Math.ceil(out.ttlMs), this.#ttlFloorMs);
+        const res = await conn.multi().set(key, JSON.stringify(out.state), "PX", ttl).exec();
+        // `exec` returns null when a watched key changed under us — retry.
+        if (res !== null) return out.result;
       }
-
-      const ttl = Math.max(1, Math.ceil(out.ttlMs), this.#ttlFloorMs);
-      const res = await this.#client.multi().set(key, JSON.stringify(out.state), "PX", ttl).exec();
-      // `exec` returns null when a watched key changed under us — retry.
-      if (res !== null) return out.result;
+      throw new StoreUnavailableError(
+        `optimistic concurrency exhausted ${this.#maxRetries} retries for key`,
+      );
+    } finally {
+      if (conn !== this.#client) await conn.disconnect?.();
     }
-    throw new StoreUnavailableError(
-      `optimistic concurrency exhausted ${this.#maxRetries} retries for key`,
-    );
   }
 
   async reset(key: string): Promise<void> {

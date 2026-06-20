@@ -87,6 +87,19 @@ function makeNodeFake(execImpl?: () => Promise<unknown[]>): {
       };
       return chain;
     },
+    duplicate() {
+      calls.push({ method: "duplicate", args: [] });
+      // A sibling shares this fake's call log so the test can observe its connect/use.
+      return client;
+    },
+    connect() {
+      calls.push({ method: "connect", args: [] });
+      return Promise.resolve("OK");
+    },
+    quit() {
+      calls.push({ method: "quit", args: [] });
+      return Promise.resolve("OK");
+    },
   };
   return { client, calls, multiSets };
 }
@@ -181,6 +194,22 @@ describe("fromNodeRedis", () => {
     await expect(fromNodeRedis(client).multi().set("k", "v", "PX", 1).exec()).rejects.toThrow(
       /connection lost/,
     );
+  });
+
+  it("duplicate() lazily connects the sibling on first command and quits it on disconnect", async () => {
+    const { client, calls } = makeNodeFake();
+    const dup = fromNodeRedis(client).duplicate?.();
+    expect(dup).toBeDefined();
+    expect(calls.map((c) => c.method)).toContain("duplicate");
+    // No connect yet — only on first use.
+    expect(calls.some((c) => c.method === "connect")).toBe(false);
+    await dup?.watch("k");
+    expect(calls.some((c) => c.method === "connect")).toBe(true);
+    // A second command reuses the same connection (connect runs exactly once).
+    await dup?.get("k");
+    expect(calls.filter((c) => c.method === "connect")).toHaveLength(1);
+    await dup?.disconnect?.();
+    expect(calls.some((c) => c.method === "quit")).toBe(true);
   });
 });
 

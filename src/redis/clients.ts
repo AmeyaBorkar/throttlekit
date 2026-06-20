@@ -93,6 +93,12 @@ export interface NodeRedisLike {
   watch(keys: string | string[]): Promise<string>;
   unwatch(): Promise<string>;
   multi(): NodeRedisMultiLike;
+  /** Open a fresh, unconnected sibling connection (must `connect()` before use). */
+  duplicate(): NodeRedisLike;
+  /** Open the underlying socket; resolves when ready. */
+  connect(): Promise<unknown>;
+  /** Close the connection. */
+  quit(): Promise<unknown>;
 }
 
 function isWatchError(err: unknown): boolean {
@@ -100,24 +106,39 @@ function isWatchError(err: unknown): boolean {
   return err instanceof Error && err.name === "WatchError";
 }
 
-/** Adapt the official node-redis (`redis`) client. Both the Lua and OCC paths work. */
-export function fromNodeRedis(client: NodeRedisLike): RedisClientLike {
+/**
+ * Adapt a node-redis (`redis`) client. `connected` controls connection lifecycle: a directly-passed
+ * client is already connected and ThrottleKit must not close it; a connection opened by `duplicate()`
+ * (for an isolated optimistic-concurrency transaction) is owned here, lazily connected on first
+ * command and closed by `disconnect()`.
+ */
+function adaptNodeRedis(client: NodeRedisLike, connected: boolean): RedisClientLike {
+  // For an owned (duplicated) connection, connect once on first use and reuse that promise.
+  let ready: Promise<unknown> | undefined = connected ? Promise.resolve() : undefined;
+  const ensure = (): Promise<unknown> => {
+    ready ??= client.connect();
+    return ready;
+  };
   return {
-    evalsha(sha, numkeys, ...rest) {
+    async evalsha(sha, numkeys, ...rest) {
+      await ensure();
       const { keys, args } = splitKeysArgs(numkeys, rest);
       return client.evalSha(sha, { keys, arguments: args });
     },
-    eval(script, numkeys, ...rest) {
+    async eval(script, numkeys, ...rest) {
+      await ensure();
       const { keys, args } = splitKeysArgs(numkeys, rest);
       return client.eval(script, { keys, arguments: args });
     },
-    get(key) {
+    async get(key) {
+      await ensure();
       return client.get(key);
     },
     del(...keys) {
       return client.del(keys);
     },
-    watch(...keys) {
+    async watch(...keys) {
+      await ensure();
       return client.watch(keys);
     },
     unwatch() {
@@ -144,7 +165,20 @@ export function fromNodeRedis(client: NodeRedisLike): RedisClientLike {
       };
       return wrapped;
     },
+    // Each OCC transaction gets its own connection: WATCH is connection-global, so sharing one would
+    // let concurrent applies tear down each other's watch (lost update / spurious abort).
+    duplicate() {
+      return adaptNodeRedis(client.duplicate(), false);
+    },
+    async disconnect() {
+      if (ready !== undefined) await client.quit();
+    },
   };
+}
+
+/** Adapt the official node-redis (`redis`) client. Both the Lua and OCC paths work. */
+export function fromNodeRedis(client: NodeRedisLike): RedisClientLike {
+  return adaptNodeRedis(client, true);
 }
 
 /**
