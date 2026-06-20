@@ -102,6 +102,23 @@ describe("mergeableSketch", () => {
     expect(() => a.merge(b.snapshot())).toThrow(/cannot merge/);
   });
 
+  it("refuses to merge a snapshot whose counters array is shorter than width*depth (regression)", () => {
+    // The dimension guard checked only the width/depth scalar fields, so a snapshot with matching
+    // fields but a too-short counters array slipped through; the merge loop then dereferenced b[i]
+    // past the source's end (undefined), and a[i]+undefined = NaN stored into a Uint32Array silently
+    // zeroed every tail counter — collapsing a heavy hitter's estimate below its true count (an
+    // underestimate, the unsafe direction). Fail closed instead.
+    const s = mergeableSketch();
+    s.add("heavy", 50);
+    const before = s.estimate("heavy");
+    const { width, depth } = s.snapshot();
+    expect(() => s.merge({ width, depth, total: 0, counters: new Uint32Array(2) })).toThrow(
+      /counters|length/,
+    );
+    // The target sketch must be untouched (no silent corruption of the heavy hitter).
+    expect(s.estimate("heavy")).toBe(before);
+  });
+
   it("rejects malformed bytes", () => {
     expect(() => sketchSnapshotFromBytes(new Uint8Array(4))).toThrow(/too short/);
     const ok = mergeableSketch({ epsilon: 0.1 }).toBytes();

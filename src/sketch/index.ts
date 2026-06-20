@@ -202,6 +202,14 @@ export class CountMinSketch {
         `cannot merge a ${snap.width}x${snap.depth} sketch into a ${this.width}x${this.depth} one`,
       );
     }
+    // Fail closed on a malformed counters array: the merge loop iterates the TARGET length, so a
+    // too-short source would dereference past its end (undefined) and `a[i] + undefined = NaN` stored
+    // into a Uint32Array silently zeroes the tail counter — an underestimate, the unsafe direction.
+    if (snap.counters.length !== this.counters.length) {
+      throw new Error(
+        `sketch snapshot has ${snap.counters.length} counters, expected ${this.counters.length}`,
+      );
+    }
     const a = this.counters;
     const b = snap.counters;
     // Saturate each merged counter: a plain element-wise add of two near-ceiling Uint32 counters would
