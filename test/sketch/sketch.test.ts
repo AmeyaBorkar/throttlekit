@@ -65,19 +65,33 @@ describe("CountMinSketch", () => {
     }
   });
 
-  it("is deterministic across instances (seeded hashing)", () => {
-    const a = new CountMinSketch(0.01, 0.001, true);
-    const b = new CountMinSketch(0.01, 0.001, true);
+  it("is deterministic across instances when given the same explicit seed", () => {
+    // With an explicit shared seed, hashing is reproducible across instances (seeded tests, and the
+    // shared-seed merge path). The default seed is per-instance random (see the griefing-resistance
+    // test below), so two default-seeded sketches deliberately do NOT hash identically.
+    const a = new CountMinSketch(0.01, 0.001, true, 12345);
+    const b = new CountMinSketch(0.01, 0.001, true, 12345);
     for (const k of ["1.2.3.4", "10.0.0.1", "user:42", ""]) {
       a.add(k, 3);
       b.add(k, 3);
     }
+    expect(a.seed).toBe(b.seed);
     expect(Array.from(a.counters)).toEqual(Array.from(b.counters));
   });
 
+  it("uses a per-instance random seed by default (no fixed public hashing to precompute against)", () => {
+    // Across many default-seeded instances the seeds should differ (a fixed default would let an
+    // attacker precompute colliders); a tiny collision rate is tolerated but they must not all match.
+    const seeds = new Set<number>();
+    for (let i = 0; i < 16; i++) seeds.add(new CountMinSketch(0.01, 0.001, true).seed);
+    expect(seeds.size).toBeGreaterThan(1);
+  });
+
   it("conservative update never exceeds the plain-increment estimate", () => {
-    const cons = new CountMinSketch(0.05, 0.01, true);
-    const plain = new CountMinSketch(0.05, 0.01, false);
+    // Same explicit seed so both sketches hash keys to the same cells — the comparison is only
+    // meaningful between identically-hashed sketches.
+    const cons = new CountMinSketch(0.05, 0.01, true, 4242);
+    const plain = new CountMinSketch(0.05, 0.01, false, 4242);
     const rnd = mulberry32(99);
     const keys = Array.from({ length: 500 }, (_, i) => `k${i}`);
     for (let i = 0; i < 30_000; i++) {
@@ -89,6 +103,43 @@ describe("CountMinSketch", () => {
       // Conservative update provably tightens (never loosens) the overestimate.
       expect(cons.estimate(k)).toBeLessThanOrEqual(plain.estimate(k));
     }
+  });
+
+  it("resists targeted full-column collisions: finding a key on a victim's full cell set costs ~width^depth, not ~width^2 (regression)", () => {
+    // The old double-hash form h_i = (h1 + i*h2) % width collapsed all rows to 2 degrees of freedom:
+    // a key matching the victim on any TWO rows necessarily matched on ALL rows, so a full collision
+    // (which lets an attacker inflate the victim's estimate and grief it into false denial) cost only
+    // ~width^2 to forge. Independent per-row hashing restores ~width^depth, so a bounded search well
+    // past width^2 finds essentially none.
+    const epsilon = 0.1; // width = ceil(e/epsilon) = 28
+    const delta = 0.01; // depth = ceil(ln(1/delta)) = 5  →  width^2 = 784, width^depth ≈ 1.7e7
+    const seed = 0xc0ffee;
+    const probe = new CountMinSketch(epsilon, delta, false, seed);
+    const victim = "customer-premium-7";
+
+    // A candidate is a "full collider" iff adding it once raises the victim's estimate (all of the
+    // victim's cells were touched). Reset the sketch between candidates so each is measured cleanly.
+    let fullColliders = 0;
+    const budget = 4000; // ~5x width^2, so the 2-DOF form would yield several; independent rows ≈ 0.
+    for (let i = 0; i < budget && fullColliders < 1; i++) {
+      probe.clear();
+      probe.add(`atk-${i}`, 1);
+      if (probe.estimate(victim) >= 1) fullColliders++;
+    }
+    expect(fullColliders).toBe(0);
+  });
+
+  it("the same key hashes to a different cell set under a different seed (no fixed public hashing)", () => {
+    // Per-instance/explicit seeds mean an attacker's precomputed colliders are tied to one sketch's
+    // hashing. Concretely: add a batch of keys to two differently-seeded sketches and the resulting
+    // counter tables must differ (the same keys land on different cells).
+    const a = new CountMinSketch(0.1, 0.01, false, 1);
+    const b = new CountMinSketch(0.1, 0.01, false, 2);
+    for (let i = 0; i < 200; i++) {
+      a.add(`k-${i}`, 1);
+      b.add(`k-${i}`, 1);
+    }
+    expect(Array.from(a.counters)).not.toEqual(Array.from(b.counters));
   });
 
   it("clear() zeroes counters and resets total without reallocating", () => {

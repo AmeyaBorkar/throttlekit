@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { systemClock } from "../core/clock";
 import type { Clock, Decision } from "../core/types";
 import { requireCost, requireInteger } from "../core/validate";
@@ -43,9 +44,17 @@ export interface SketchSnapshot {
  * - `estimate(key) <= trueCount(key) + epsilon * N` with probability `>= 1 - delta`, where `N` is
  *   the total mass added. Set `width = ceil(e / epsilon)` and `depth = ceil(ln(1 / delta))`.
  *
- * The `depth` independent hashes are derived by double hashing —
- * `h_i(x) = (h1(x) + i * h2(x)) mod width` — from two distinct deterministic 32-bit string hashes
- * (FNV-1a with two seeds). Deterministic across runs, so seeded tests are reproducible.
+ * Each of the `depth` rows uses its OWN independent hash: `h_i(x) = fnv1a(x, rowSeed[i]) mod width`,
+ * where the `depth` per-row seeds are derived from a single 32-bit base `seed`. Per-row independence
+ * is what the Cormode–Muthukrishnan error bound rests on, and it is also a security property: under
+ * the older Kirsch–Mitzenmacher double-hash form `(h1 + i*h2) mod width`, a key colliding with a
+ * victim on any TWO rows necessarily collided on ALL rows (only 2 degrees of freedom), so a targeted
+ * full-column collision cost ~`width²` to forge instead of ~`width^depth` — cheap enough to grief a
+ * victim key into false denial. Independent rows restore the ~`width^depth` cost.
+ *
+ * The base `seed` defaults to a per-instance random value (so colliders cannot be precomputed
+ * offline); pass an explicit `seed` for reproducible tests or to share hashing across nodes (a merge
+ * is only meaningful between sketches with the same seed, as it already requires the same dimensions).
  *
  * @internal Exposed for testing; the public surface is {@link sketchRateLimit}.
  */
@@ -58,13 +67,17 @@ export class CountMinSketch {
   readonly counters: Uint32Array;
   /** Whether {@link CountMinSketch.add} uses the conservative-update rule. */
   readonly conservative: boolean;
+  /** The 32-bit base seed the per-row hash seeds are derived from. */
+  readonly seed: number;
 
   /** Total mass added across all keys (the `N` in the `epsilon * N` error term). */
   #total = 0;
   /** Reused scratch for {@link CountMinSketch.#indexes}; length is fixed at {@link depth}. */
   readonly #cols: Int32Array;
+  /** One independent FNV-1a seed per row, derived from {@link CountMinSketch.seed}. */
+  readonly #rowSeeds: Uint32Array;
 
-  constructor(epsilon: number, delta: number, conservative: boolean) {
+  constructor(epsilon: number, delta: number, conservative: boolean, seed?: number) {
     if (!Number.isFinite(epsilon) || epsilon <= 0 || epsilon >= 1) {
       throw new RangeError(`epsilon must be a number in (0, 1), got ${String(epsilon)}`);
     }
@@ -77,6 +90,14 @@ export class CountMinSketch {
     this.conservative = conservative;
     this.counters = new Uint32Array(this.depth * this.width);
     this.#cols = new Int32Array(this.depth);
+    // A per-instance random base seed by default so an attacker cannot precompute colliders offline.
+    this.seed = seed === undefined ? randomInt(0, 0x1_0000_0000) : seed >>> 0;
+    // Derive one independent FNV-1a seed per row by hashing the row index under the base seed, so the
+    // rows are truly independent (no shared linear structure to collapse) yet fully reproducible.
+    this.#rowSeeds = new Uint32Array(this.depth);
+    for (let i = 0; i < this.depth; i++) {
+      this.#rowSeeds[i] = fnv1a(`row:${i}`, this.seed);
+    }
   }
 
   /** Number of counters in the table (`depth * width`). Footprint is `4 * size` bytes. */
@@ -90,18 +111,17 @@ export class CountMinSketch {
   }
 
   /**
-   * Compute the per-row column indices for `key` via double hashing. Writes into the reused
-   * {@link CountMinSketch.#cols} scratch buffer to avoid a per-call allocation on the hot path.
+   * Compute the per-row column indices for `key`: each row uses an INDEPENDENT FNV-1a hash under its
+   * own seed (not a linear `h1 + i*h2`), so a collision on some rows leaks nothing about the others —
+   * a full-column collision can't be forged cheaply. Writes into the reused {@link CountMinSketch.#cols}
+   * scratch buffer to avoid a per-call allocation on the hot path.
    */
   #indexes(key: string): Int32Array {
-    const h1 = fnv1a(key, FNV_OFFSET_BASIS);
-    // A second, independent hash from a distinct seed. The `>>> 0` keeps it an unsigned 32-bit int.
-    const h2 = fnv1a(key, FNV_SEED_2) >>> 0;
     const cols = this.#cols;
     const width = this.width;
+    const rowSeeds = this.#rowSeeds;
     for (let i = 0; i < this.depth; i++) {
-      // (h1 + i*h2) can exceed 2^53 only for absurd depths; depth is tiny (≈7), so this is exact.
-      cols[i] = (h1 + i * h2) % width;
+      cols[i] = fnv1a(key, rowSeeds[i]!) % width;
     }
     return cols;
   }
@@ -214,10 +234,6 @@ export class CountMinSketch {
   }
 }
 
-/** FNV-1a 32-bit offset basis (seed for `h1`). */
-const FNV_OFFSET_BASIS = 0x811c9dc5;
-/** A distinct 32-bit seed for the second hash `h2`, so `h1` and `h2` are independent. */
-const FNV_SEED_2 = 0x9e3779b1;
 /** FNV-1a 32-bit prime. */
 const FNV_PRIME = 0x01000193;
 
@@ -260,6 +276,12 @@ export interface SketchRateLimitOptions {
    * never-over-admit guarantee holds either way.
    */
   conservative?: boolean;
+  /**
+   * 32-bit hash seed. **Defaults to a per-instance random value**, so an attacker cannot precompute
+   * keys that collide with a victim and grief it into false denial. Pass a fixed `seed` only for
+   * reproducible tests — pinning it re-enables offline collider precomputation.
+   */
+  seed?: number;
   /** Injected clock. Defaults to the system clock. */
   clock?: Clock;
 }
@@ -315,7 +337,9 @@ export function sketchRateLimit(options: SketchRateLimitOptions): SketchRateLimi
   const conservative = options.conservative ?? true;
   const clock = options.clock ?? systemClock;
 
-  const sketch = new CountMinSketch(epsilon, delta, conservative);
+  // seed omitted ⇒ a per-instance random seed (CountMinSketch's default): colliders can't be
+  // precomputed offline against a fixed public seed.
+  const sketch = new CountMinSketch(epsilon, delta, conservative, options.seed);
   // -Infinity guarantees the first check (at any finite `now`) is treated as a fresh window.
   let windowStart = Number.NEGATIVE_INFINITY;
 
@@ -386,6 +410,13 @@ export function sketchSnapshotFromBytes(bytes: Uint8Array): SketchSnapshot {
   return { width, depth, total, counters };
 }
 
+/** A fixed default seed for {@link mergeableSketch}, so peers hash identically and merge out of the
+ * box (a merge requires the same hashing on every node — same dimensions AND same seed). Override
+ * with a shared `seed` to rotate; the cluster-wide estimator's threat model is hiding a heavy hitter
+ * (under-estimate), which the never-underestimate guarantee covers, not the single-node over-deny
+ * griefing that {@link sketchRateLimit}'s random seed defends against. */
+const MERGEABLE_DEFAULT_SEED = 0x9e3779b1;
+
 /** Options for {@link mergeableSketch}. */
 export interface MergeableSketchOptions {
   /**
@@ -395,6 +426,12 @@ export interface MergeableSketchOptions {
   epsilon?: number;
   /** Failure probability for the {@link MergeableSketchOptions.epsilon} bound. Default `0.001`. */
   delta?: number;
+  /**
+   * 32-bit hash seed shared by every node in the cluster. Defaults to a fixed value so peers merge
+   * out of the box; all merging nodes MUST use the same seed (as they already must use the same
+   * `epsilon`/`delta`), since a merge of differently-hashed sketches is meaningless.
+   */
+  seed?: number;
 }
 
 /**
@@ -444,8 +481,9 @@ export interface MergeableSketch {
 export function mergeableSketch(options: MergeableSketchOptions = {}): MergeableSketch {
   const epsilon = options.epsilon ?? 0.01;
   const delta = options.delta ?? 0.001;
-  // Plain (non-conservative) CMS: counters are purely additive, so a merge is the exact union.
-  const sketch = new CountMinSketch(epsilon, delta, false);
+  // Plain (non-conservative) CMS: counters are purely additive, so a merge is the exact union. The
+  // seed defaults to a fixed value so peers hash identically and merge without coordination.
+  const sketch = new CountMinSketch(epsilon, delta, false, options.seed ?? MERGEABLE_DEFAULT_SEED);
   return {
     add: (key, count = 1) => {
       // A counter is an integer Uint32: a fractional count truncates (desyncing the table from `total`)
