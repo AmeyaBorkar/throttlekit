@@ -182,15 +182,20 @@ export function snapshotToProto(snap: LensSnapshot): Record<string, unknown> {
  * reference renders as `"[Circular]"`; any value still unserializable degrades to a one-key error envelope.
  */
 export function safeStringify(snap: LensSnapshot): string {
-  const seen = new WeakSet<object>();
-  const replacer = (_key: string, value: unknown): unknown => {
+  // Track ancestors on the CURRENT path (not a global seen-set), so only a genuine back-edge — a node
+  // that reaches itself — is tamed. A WeakSet flagged every object reachable by two distinct paths as
+  // "[Circular]", corrupting a shared-but-acyclic DAG (e.g. a custom stat returning { a: x, b: x }).
+  const ancestors: object[] = [];
+  function replacer(this: unknown, _key: string, value: unknown): unknown {
     if (typeof value === "bigint") return value.toString();
     if (typeof value === "object" && value !== null) {
-      if (seen.has(value)) return "[Circular]";
-      seen.add(value);
+      // JSON.stringify binds `this` to the holder of `value`; pop ancestors no longer on the path to it.
+      while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) ancestors.pop();
+      if (ancestors.includes(value)) return "[Circular]"; // genuine back-edge only
+      ancestors.push(value);
     }
     return value;
-  };
+  }
   try {
     return JSON.stringify(snap, replacer);
   } catch {

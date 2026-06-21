@@ -137,6 +137,31 @@ describe("Monitor: snapshotToProto projection", () => {
     const big = raw.stats.find((s: any) => s.name === "bigcount");
     expect(big.value).toBe("42"); // BigInt rendered as its decimal string, not a crash
   });
+
+  it("serializes shared (non-circular) references in custom stats without corrupting them to [Circular]", async () => {
+    // Regression: a global seen-set marked every object on first encounter and never un-marked it, so a
+    // shared-but-acyclic reference (a DAG: one object reached by two keys) was wrongly rendered as the
+    // literal string "[Circular]" on its second encounter. Path-based detection flags only true back-edges.
+    const { hub } = await populatedHub("node-dag");
+    const shared = { a: 1 };
+    hub.trackStats("dag", "gauge", () => ({ first: shared, second: shared }));
+    const arr = [1, 2, 3];
+    hub.trackStats("dagarr", "gauge", () => ({ p: arr, q: arr }));
+    const circular: Record<string, unknown> = { a: 1 };
+    circular.self = circular;
+    hub.trackStats("loopy", "gauge", () => circular);
+
+    const snap = snapshotToProto(hub.snapshot()) as any;
+    const raw = JSON.parse(snap.rawJson);
+    const dag = raw.stats.find((s: any) => s.name === "dag");
+    expect(dag.value.first).toEqual({ a: 1 });
+    expect(dag.value.second).toEqual({ a: 1 }); // NOT "[Circular]" — a forward edge in a DAG
+    const dagarr = raw.stats.find((s: any) => s.name === "dagarr");
+    expect(dagarr.value.q).toEqual([1, 2, 3]); // a shared array is also not a cycle
+    // …but a genuine back-edge is still tamed, so the guard isn't lost.
+    const loopy = raw.stats.find((s: any) => s.name === "loopy");
+    expect(loopy.value).toEqual({ a: 1, self: "[Circular]" });
+  });
 });
 
 describe("Monitor door over gRPC (loopback, no secret)", () => {
