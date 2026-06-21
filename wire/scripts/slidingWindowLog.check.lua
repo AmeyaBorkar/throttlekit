@@ -6,12 +6,16 @@ end
 local windowMs = tonumber(ARGV[2])
 local limit = tonumber(ARGV[3])
 local cost = tonumber(ARGV[4])
+-- A log stores one stamp per unit, so a fractional cost is charged as whole units (ceil) — matching the
+-- JS path. Charging the raw fractional cost would ZADD floor(cost) members (and 0 for cost < 1), diverging
+-- from JS and over-admitting.
+local units = math.ceil(cost)
 local key = KEYS[1]
 local windowStart = now - windowMs
 redis.call('ZREMRANGEBYSCORE', key, '-inf', windowStart)
 local count = redis.call('ZCARD', key)
-if count + cost <= limit then
-  for i = 1, cost do
+if count + units <= limit then
+  for i = 1, units do
     redis.call('ZADD', key, now, now .. '-' .. (count + i))
   end
   local px = math.ceil(windowMs)
@@ -20,7 +24,7 @@ if count + cost <= limit then
   local first = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
   local oldest = now
   if first[2] then oldest = tonumber(first[2]) end
-  local remaining = limit - (count + cost)
+  local remaining = limit - (count + units)
   if remaining < 0 then remaining = 0 end
   return {1, limit, remaining, math.ceil(oldest + windowMs), 0}
 end
@@ -28,7 +32,7 @@ local retry
 if count == 0 then
   retry = windowMs
 else
-  local kMin = count + cost - limit
+  local kMin = count + units - limit
   if kMin < 1 then kMin = 1 end
   if kMin > count then kMin = count end
   local ref = redis.call('ZRANGE', key, kMin - 1, kMin - 1, 'WITHSCORES')

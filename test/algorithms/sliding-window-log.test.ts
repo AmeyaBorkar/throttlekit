@@ -62,6 +62,23 @@ describe("slidingWindowLog", () => {
     }
   });
 
+  it("charges a fractional cost as whole units (ceil) — integer remaining + integer state", () => {
+    // Regression: the check() append loop persisted ceil(cost) stamps but reported a non-integer
+    // remaining (limit - (count + cost)), which leaked into the RFC RateLimit-* headers; and the raw
+    // cost made the JS loop and the Lua `for i=1,cost` loop persist a DIFFERENT number of stamps,
+    // splitting MemoryStore vs Redis state. Now both charge ceil(cost).
+    const s = slidingWindowLog({ limit: 5, windowMs: 1000 });
+    const r = s.check(undefined, 1000, 1.5);
+    expect(r.result.allowed).toBe(true);
+    expect(Number.isInteger(r.result.remaining)).toBe(true);
+    expect(r.result.remaining).toBe(3); // 5 - ceil(1.5) = 5 - 2
+    expect(r.state).toEqual([1000, 1000]); // ceil(1.5) = 2 stamps, matching the Lua ZADD count
+
+    // cost < 1 must still consume a whole unit (the Lua `for i=1,cost` would ZADD nothing → unbounded).
+    const half = s.check(undefined, 1000, 0.5);
+    expect(half.state).toHaveLength(1); // ceil(0.5) = 1
+  });
+
   it("exposes an atomic Lua program", () => {
     const s = slidingWindowLog({ limit: 5, windowMs: 1000 });
     expect(s.lua?.buildArgv(50, 2)).toEqual([50, 1000, 5, 2]);

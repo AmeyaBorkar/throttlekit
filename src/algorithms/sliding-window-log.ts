@@ -29,12 +29,16 @@ const SLIDING_LOG_LUA = `${LUA_NOW}
 local windowMs = tonumber(ARGV[2])
 local limit = tonumber(ARGV[3])
 local cost = tonumber(ARGV[4])
+-- A log stores one stamp per unit, so a fractional cost is charged as whole units (ceil) — matching the
+-- JS path. Charging the raw fractional cost would ZADD floor(cost) members (and 0 for cost < 1), diverging
+-- from JS and over-admitting.
+local units = math.ceil(cost)
 local key = KEYS[1]
 local windowStart = now - windowMs
 redis.call('ZREMRANGEBYSCORE', key, '-inf', windowStart)
 local count = redis.call('ZCARD', key)
-if count + cost <= limit then
-  for i = 1, cost do
+if count + units <= limit then
+  for i = 1, units do
     redis.call('ZADD', key, now, now .. '-' .. (count + i))
   end
   local px = math.ceil(windowMs)
@@ -43,7 +47,7 @@ if count + cost <= limit then
   local first = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
   local oldest = now
   if first[2] then oldest = tonumber(first[2]) end
-  local remaining = limit - (count + cost)
+  local remaining = limit - (count + units)
   if remaining < 0 then remaining = 0 end
   return {1, limit, remaining, math.ceil(oldest + windowMs), 0}
 end
@@ -51,7 +55,7 @@ local retry
 if count == 0 then
   retry = windowMs
 else
-  local kMin = count + cost - limit
+  local kMin = count + units - limit
   if kMin < 1 then kMin = 1 end
   if kMin > count then kMin = count end
   local ref = redis.call('ZRANGE', key, kMin - 1, kMin - 1, 'WITHSCORES')
@@ -98,13 +102,18 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
       let firstLive = 0;
       while (firstLive < prev.length && (prev[firstLive] as number) <= windowStart) firstLive++;
       const count = prev.length - firstLive;
+      // A log stores one timestamp per unit, so a fractional cost is charged as whole units (ceil) on BOTH
+      // backends — otherwise the JS `for i<cost` loop (ceil-toward) and the Lua `for i=1,cost` loop
+      // (floor-toward) would persist a different stamp count for the same cost, splitting state across
+      // MemoryStore and Redis (and `cost < 1` would ZADD nothing in Lua → unbounded admission).
+      const units = Math.ceil(cost);
 
-      if (count + cost <= limit) {
-        // One copy of the survivors, then append `cost` stamps — no filter array, no second copy.
+      if (count + units <= limit) {
+        // One copy of the survivors, then append `units` stamps — no filter array, no second copy.
         const newLog = prev.slice(firstLive);
-        for (let i = 0; i < cost; i++) newLog.push(now);
+        for (let i = 0; i < units; i++) newLog.push(now);
         const oldest = newLog.length > 0 ? (newLog[0] as number) : now;
-        let remaining = limit - (count + cost);
+        let remaining = limit - (count + units);
         if (remaining < 0) remaining = 0;
         return {
           state: newLog,
@@ -125,7 +134,7 @@ export function slidingWindowLog(options: SlidingWindowLogOptions): Strategy<num
       if (count === 0) {
         retryAfterMs = windowMs; // cost exceeds limit: unsatisfiable in one window
       } else {
-        let kMin = count + cost - limit;
+        let kMin = count + units - limit;
         if (kMin < 1) kMin = 1;
         if (kMin > count) kMin = count;
         const ref = prev[firstLive + kMin - 1] ?? now;

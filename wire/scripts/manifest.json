@@ -1,6 +1,6 @@
 {
   "contractVersion": "1",
-  "generatedFrom": "throttlekit@1.0.1",
+  "generatedFrom": "throttlekit@1.5.2",
   "frozen": false,
   "replyTuple": [
     "allowed",
@@ -135,7 +135,7 @@
         "limit",
         "cost"
       ],
-      "sha256": "9345973de84b2a575b8fb1c78afb04c27af894226c83a717c15ca3d50e1f730f"
+      "sha256": "8c10898415624dca1e7b9a7ff8184c85995e966747b50e1d6ce8d8dfbb64a12d"
     },
     {
       "name": "slidingWindowLog.read",
