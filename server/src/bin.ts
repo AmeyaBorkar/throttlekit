@@ -27,7 +27,7 @@ import { corpusFromCapture, corpusFromTraceFile } from "./policy/corpus.js";
 import { runPolicyPlan } from "./policy/plan.js";
 import { replayService } from "./replay/tap.js";
 import { type WiredReplay, replayConfigFromText, wireReplay } from "./replay/wire.js";
-import { createServerCredentials, createStore, isSecure } from "./runtime.js";
+import { createServerCredentials, createStore, isSecure, securityLabel } from "./runtime.js";
 import type { StoreType } from "./runtime.js";
 import type { RateLimiterService } from "./service.js";
 import { type RunningTui, canRunTui, runTui } from "./tui.js";
@@ -595,6 +595,14 @@ async function main(): Promise<void> {
 
   const tls = { certPath: args.tlsCert, keyPath: args.tlsKey, caPath: args.tlsCa };
   const secure = isSecure(tls);
+  // A `--tls-ca` expresses intent to require + verify client certs (mTLS), which is impossible without a
+  // server cert/key — createServerCredentials would silently fall back to plaintext. Fail closed rather
+  // than serve an unauthenticated port while the operator believes mTLS is in force.
+  if (args.tlsCa !== undefined && !secure) {
+    throw new Error(
+      "--tls-ca requires --tls-cert and --tls-key (cannot honor mTLS without a server cert/key)",
+    );
+  }
   if (!secure && !LOOPBACK.has(args.host)) {
     console.warn(
       `warning: serving INSECURE gRPC on a non-loopback host (${args.host}). Pass --tls-cert/--tls-key (and --tls-ca for mTLS) before exposing this.`,
@@ -750,7 +758,7 @@ async function main(): Promise<void> {
     ...monitorOption,
     ...fleetOption,
   });
-  const security = args.tlsCa !== undefined ? "mTLS" : secure ? "TLS" : "insecure";
+  const security = securityLabel(tls);
 
   // The Monitor snapshot carries traffic keys (PII). Without a secret it is loopback-only, so warn loudly
   // when the server is bound somewhere remote can reach it — remote Monitor calls will be rejected.

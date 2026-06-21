@@ -403,6 +403,18 @@ export function isSecure(spec: TlsSpec): boolean {
 }
 
 /**
+ * The security label for the startup banner. Keyed on the credentials {@link createServerCredentials}
+ * actually builds, NOT on flag presence: a `caPath` with no cert/key cannot honor mTLS (the channel
+ * silently falls back to insecure), so it must report `"insecure"` rather than claiming `"mTLS"`. The
+ * invariant: the label never advertises more security than the channel provides — it is `"insecure"`
+ * exactly when {@link createServerCredentials} returns insecure credentials.
+ */
+export function securityLabel(spec: TlsSpec): "mTLS" | "TLS" | "insecure" {
+  if (!isSecure(spec)) return "insecure";
+  return spec.caPath !== undefined ? "mTLS" : "TLS";
+}
+
+/**
  * Build gRPC server credentials: **insecure** when no cert/key is given (loopback/dev only), **TLS** with
  * a cert + key, and **mTLS** when a `caPath` is also supplied (client certs required and verified).
  */

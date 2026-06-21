@@ -5,6 +5,7 @@ import {
   createStore,
   isSecure,
   resolveStoreType,
+  securityLabel,
 } from "../src/runtime.js";
 
 /**
@@ -147,5 +148,29 @@ describe("runtime: credentials", () => {
 
   it("returns insecure credentials when no cert/key is provided", () => {
     expect(createServerCredentials({})).toBeInstanceOf(ServerCredentials);
+  });
+
+  it("labels the channel by what createServerCredentials actually builds, not flag presence", () => {
+    // A CA without a server cert/key cannot honor mTLS: the channel falls back to insecure, so the
+    // label must read "insecure" — never "mTLS". (The banner used to key on `--tls-ca` presence and
+    // claimed "mTLS" for this fully-unauthenticated plaintext port.)
+    expect(securityLabel({ caPath: "/ca.pem" })).toBe("insecure");
+    expect(securityLabel({})).toBe("insecure");
+    expect(securityLabel({ certPath: "c" })).toBe("insecure");
+    expect(securityLabel({ keyPath: "k" })).toBe("insecure");
+    expect(securityLabel({ certPath: "c", keyPath: "k" })).toBe("TLS");
+    expect(securityLabel({ certPath: "c", keyPath: "k", caPath: "/ca.pem" })).toBe("mTLS");
+  });
+
+  it("never advertises more security than createServerCredentials provides", () => {
+    // Invariant: label === "insecure" iff the built credentials are the insecure ones. (Cert/key paths
+    // that exist would have createServerCredentials read real PEM files, so only the insecure-equivalent
+    // specs are exercised against the real builder here.)
+    const insecureSpecs = [{}, { caPath: "/ca.pem" }, { certPath: "c" }, { keyPath: "k" }];
+    const insecureCtor = createServerCredentials({}).constructor;
+    for (const spec of insecureSpecs) {
+      expect(securityLabel(spec)).toBe("insecure");
+      expect(createServerCredentials(spec).constructor).toBe(insecureCtor);
+    }
   });
 });
