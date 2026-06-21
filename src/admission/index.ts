@@ -715,6 +715,9 @@ export interface TokenBudgetMeter {
  */
 export function tokenBudget(options: TokenBudgetOptions): TokenBudgetMeter {
   requirePositive("tokenBudget.budget", options.budget);
+  // The budget floors to an integer L, so it must be at least 1 — a fractional budget in (0,1) would
+  // floor to L=0 and, via the `served >= L` stop-at-boundary rule, silently deny every debit. Fail fast.
+  requireAtLeast("tokenBudget.budget", options.budget, 1);
   requirePositive("tokenBudget.windowMs", options.windowMs);
 
   const L = Math.floor(options.budget);

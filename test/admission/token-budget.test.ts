@@ -92,6 +92,20 @@ describe("tokenBudget — config validation", () => {
     expect(() => m.debitSync(1.5)).toThrow(RangeError); // tokens are whole units
     expect(() => m.debitSync(Number.NaN)).toThrow(RangeError);
   });
+
+  it("rejects a fractional budget in (0,1) that would floor to L=0 (deny-all)", () => {
+    // Regression: requirePositive admits 0.5, but Math.floor(0.5) = 0, and the `served >= L` rule then
+    // denied every debit (limit:0 forever) instead of failing fast. The budget must floor to L >= 1.
+    expect(() => tokenBudget({ budget: 0.5, windowMs: 60_000 })).toThrow(/>= 1/);
+    expect(() => tokenBudget({ budget: 0.999, windowMs: 60_000 })).toThrow(RangeError);
+  });
+
+  it("a valid fractional budget still floors and admits the floored count", () => {
+    // budget 1.9 floors to L=1 and must admit exactly one debit (the floor-of-a-valid-fraction control).
+    const m = tokenBudget({ budget: 1.9, windowMs: 60_000, clock: new ManualClock(0) });
+    expect(m.debitSync(1)).toMatchObject({ allowed: true, limit: 1 });
+    expect(m.debitSync(1).allowed).toBe(false);
+  });
 });
 
 describe("tokenBudget — per-token metering (the headline: Δ = 0)", () => {

@@ -10,7 +10,7 @@ import type {
   Store,
   Transform,
 } from "../core/types";
-import { requireInteger, requirePositive } from "../core/validate";
+import { requireAtLeast, requireInteger, requirePositive } from "../core/validate";
 
 /** Options for {@link distributedTokenBudget}. */
 export interface DistributedTokenBudgetOptions {
@@ -160,6 +160,9 @@ export function distributedTokenBudget(
   options: DistributedTokenBudgetOptions,
 ): DistributedTokenBudgetMeter {
   requirePositive("distributedTokenBudget.budget", options.budget);
+  // Mirrors tokenBudget: the budget floors to an integer L, so it must be >= 1 — a fractional budget in
+  // (0,1) would floor to L=0 and the `served >= L` rule would silently deny every debit. Fail fast.
+  requireAtLeast("distributedTokenBudget.budget", options.budget, 1);
   requirePositive("distributedTokenBudget.windowMs", options.windowMs);
 
   const L = Math.floor(options.budget);

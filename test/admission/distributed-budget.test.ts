@@ -22,6 +22,9 @@ describe("distributedTokenBudget", () => {
     const store = new MemoryStore({ clock, sweepIntervalMs: 0 });
     expect(() => distributedTokenBudget({ budget: 0, windowMs: 1000, store })).toThrow(RangeError);
     expect(() => distributedTokenBudget({ budget: 10, windowMs: 0, store })).toThrow(RangeError);
+    // Regression: a fractional budget in (0,1) floors to L=0 and would silently deny every debit;
+    // mirror tokenBudget and fail fast (the budget must floor to L >= 1).
+    expect(() => distributedTokenBudget({ budget: 0.5, windowMs: 1000, store })).toThrow(/>= 1/);
   });
 
   it("rejects non-positive / non-integer token debits", async () => {
