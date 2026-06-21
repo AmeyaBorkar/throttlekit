@@ -93,6 +93,19 @@ describe("tokenBudget — config validation", () => {
     expect(() => m.debitSync(Number.NaN)).toThrow(RangeError);
   });
 
+  it("async debit() delivers an invalid-token error as a rejected promise, not a sync throw", () => {
+    // Regression: debit() was `return Promise.resolve(debitSync(tokens))`, so the eager debitSync throw
+    // escaped at the call site BEFORE a promise existed — a `meter.debit(bad).catch(h)` threw instead of
+    // rejecting. It must mirror distributedTokenBudget.debit and always return a (rejected) promise.
+    const m = tokenBudget({ budget: 100, windowMs: 1000, clock: new ManualClock(0) });
+    return Promise.all([
+      expect(m.debit(0)).rejects.toThrow(RangeError),
+      expect(m.debit(-1)).rejects.toThrow(RangeError),
+      expect(m.debit(1.5)).rejects.toThrow(RangeError),
+      expect(m.debit(Number.NaN)).rejects.toThrow(RangeError),
+    ]);
+  });
+
   it("rejects a fractional budget in (0,1) that would floor to L=0 (deny-all)", () => {
     // Regression: requirePositive admits 0.5, but Math.floor(0.5) = 0, and the `served >= L` rule then
     // denied every debit (limit:0 forever) instead of failing fast. The budget must floor to L >= 1.

@@ -769,7 +769,14 @@ export function tokenBudget(options: TokenBudgetOptions): TokenBudgetMeter {
   return {
     debitSync,
     debit(tokens = 1): Promise<Decision> {
-      return Promise.resolve(debitSync(tokens));
+      // debitSync validates eagerly and throws on a bad `tokens`; wrap so the async-shaped API always
+      // returns a promise (a rejected one), matching distributedTokenBudget.debit and the `.catch` idiom —
+      // a bare `meter.debit(bad).catch(h)` must not throw synchronously at the call site.
+      try {
+        return Promise.resolve(debitSync(tokens));
+      } catch (err) {
+        return Promise.reject(err);
+      }
     },
     remaining(): number {
       const now = clock.now();
