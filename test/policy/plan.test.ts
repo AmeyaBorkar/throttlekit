@@ -77,6 +77,34 @@ describe("plan() — the decision diff", () => {
     expect(p.corpus.truncated).toBe(true);
   });
 
+  it("does not spuriously refuse a complete corpus larger than the recorder's default cap", () => {
+    // Regression: coldRecord re-records the baseline through recordLimiter. It used to inherit the
+    // recorder's 1,000,000-step default, so a complete (non-truncated) corpus of > 1M arrivals was itself
+    // re-recorded as `truncated`, and replay refused the baseline as `trace-truncated` — fabricating the
+    // whole ledger to zeros and dropping the policy from the replayable set. The cap is now sized to the
+    // input, so a complete corpus replays honestly however large.
+    const N = 1_000_001;
+    const arrivals = Array.from({ length: N }, (_, i) => ({ key: "u", cost: 1, at: 1000 + i }));
+    const corpus = { api: { arrivals, truncated: false, traces: 1 } };
+    const p = plan(policySet([policy("api", FW3)]), policySet([policy("api", FW5)]), corpus);
+
+    const d = p.diffs[0];
+    expect(d?.state).toBe("ok"); // not "refused"
+    expect(d?.refusal).toBeUndefined();
+    expect(d?.steps).toBe(N); // the real ledger, not a fabricated zero
+    expect(d?.denyToAllow).toBeGreaterThan(0);
+    expect(p.summary.replayable).toBe(1);
+  });
+
+  it("the exact-cap boundary (a corpus of exactly the old 1M default) stays ok", () => {
+    const N = 1_000_000;
+    const arrivals = Array.from({ length: N }, (_, i) => ({ key: "u", cost: 1, at: 1000 + i }));
+    const corpus = { api: { arrivals, truncated: false, traces: 1 } };
+    const p = plan(policySet([policy("api", FW3)]), policySet([policy("api", FW5)]), corpus);
+    expect(p.diffs[0]?.state).toBe("ok");
+    expect(p.diffs[0]?.steps).toBe(N);
+  });
+
   it("not-replayable: a declared non-rate axis is surfaced, not omitted", () => {
     const u = [{ name: "workers", reason: "concurrency axis (releases are not decisions)" }];
     const p = plan(

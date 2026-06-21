@@ -214,7 +214,12 @@ function diffPolicy(
 function coldRecord(spec: LimiterSpec, arrivals: readonly Arrival[]): ReplayTrace {
   const first = arrivals[0]?.at ?? 0;
   const clock = new ManualClock(first);
-  const rec = recordLimiter(spec, { clock });
+  // Size the recorder cap to the input so an internal cap can never masquerade as a user-supplied
+  // truncation: recordLimiter's drop guard is `steps.length >= maxSteps`, so `maxSteps === arrivals.length`
+  // admits all N arrivals. Without this, a corpus larger than the recorder's 1,000,000 default was
+  // re-recorded as `truncated`, and replay refused the (complete) baseline as `trace-truncated`. The
+  // corpus's OWN truncation flag is honored separately, so a genuinely-prefixed source stays honest.
+  const rec = recordLimiter(spec, { clock, maxSteps: arrivals.length });
   for (const a of arrivals) {
     clock.set(a.at);
     rec.limiter.checkSync(a.key, a.cost);
