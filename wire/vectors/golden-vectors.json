@@ -1,6 +1,6 @@
 {
   "contractVersion": "1",
-  "generatedFrom": "throttlekit@1.4.0",
+  "generatedFrom": "throttlekit@1.5.2",
   "frozen": false,
   "decisionFields": [
     "allowed",
@@ -24,91 +24,14 @@
       "key": "k",
       "ops": [
         {
-          "now": 0,
+          "now": 1000,
           "cost": 1,
           "expect": {
             "allowed": true,
             "limit": 5,
             "remaining": 4,
-            "resetAt": 100,
+            "resetAt": 1100,
             "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 3,
-            "resetAt": 200,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 2,
-            "resetAt": 300,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 1,
-            "resetAt": 400,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 0,
-            "resetAt": 500,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": false,
-            "limit": 5,
-            "remaining": 0,
-            "resetAt": 500,
-            "retryAfterMs": 100
-          }
-        },
-        {
-          "now": 100,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 0,
-            "resetAt": 600,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 100,
-          "cost": 1,
-          "expect": {
-            "allowed": false,
-            "limit": 5,
-            "remaining": 0,
-            "resetAt": 600,
-            "retryAfterMs": 100
           }
         },
         {
@@ -117,8 +40,85 @@
           "expect": {
             "allowed": true,
             "limit": 5,
+            "remaining": 3,
+            "resetAt": 1200,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 2,
+            "resetAt": 1300,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 1,
+            "resetAt": 1400,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 1500,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 1500,
+            "retryAfterMs": 100
+          }
+        },
+        {
+          "now": 1100,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 1600,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1100,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 1600,
+            "retryAfterMs": 100
+          }
+        },
+        {
+          "now": 2000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
             "remaining": 4,
-            "resetAt": 1100,
+            "resetAt": 2100,
             "retryAfterMs": 0
           }
         }
@@ -138,67 +138,23 @@
       "key": "k",
       "ops": [
         {
-          "now": 0,
+          "now": 1000,
           "cost": 1,
           "expect": {
             "allowed": true,
             "limit": 3,
             "remaining": 2,
-            "resetAt": 334,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 3,
-            "remaining": 1,
-            "resetAt": 667,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 3,
-            "remaining": 0,
-            "resetAt": 1000,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": false,
-            "limit": 3,
-            "remaining": 0,
-            "resetAt": 1000,
-            "retryAfterMs": 334
-          }
-        },
-        {
-          "now": 334,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 3,
-            "remaining": 0,
             "resetAt": 1334,
             "retryAfterMs": 0
           }
         },
         {
-          "now": 667,
+          "now": 1000,
           "cost": 1,
           "expect": {
             "allowed": true,
             "limit": 3,
-            "remaining": 0,
+            "remaining": 1,
             "resetAt": 1667,
             "retryAfterMs": 0
           }
@@ -211,6 +167,50 @@
             "limit": 3,
             "remaining": 0,
             "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 3,
+            "remaining": 0,
+            "resetAt": 2000,
+            "retryAfterMs": 334
+          }
+        },
+        {
+          "now": 1334,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 3,
+            "remaining": 0,
+            "resetAt": 2334,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1667,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 3,
+            "remaining": 0,
+            "resetAt": 2667,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 2000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 3,
+            "remaining": 0,
+            "resetAt": 3000,
             "retryAfterMs": 0
           }
         }
@@ -230,57 +230,57 @@
       "key": "k",
       "ops": [
         {
-          "now": 0,
+          "now": 1000,
           "cost": 10,
           "expect": {
             "allowed": true,
             "limit": 50,
             "remaining": 40,
-            "resetAt": 100,
+            "resetAt": 1100,
             "retryAfterMs": 0
           }
         },
         {
-          "now": 0,
+          "now": 1000,
           "cost": 25,
           "expect": {
             "allowed": true,
             "limit": 50,
             "remaining": 15,
-            "resetAt": 350,
+            "resetAt": 1350,
             "retryAfterMs": 0
           }
         },
         {
-          "now": 0,
+          "now": 1000,
           "cost": 20,
           "expect": {
             "allowed": false,
             "limit": 50,
             "remaining": 15,
-            "resetAt": 350,
+            "resetAt": 1350,
             "retryAfterMs": 50
           }
         },
         {
-          "now": 0,
+          "now": 1000,
           "cost": 15,
           "expect": {
             "allowed": true,
             "limit": 50,
             "remaining": 0,
-            "resetAt": 500,
+            "resetAt": 1500,
             "retryAfterMs": 0
           }
         },
         {
-          "now": 500,
+          "now": 1500,
           "cost": 5,
           "expect": {
             "allowed": true,
             "limit": 50,
             "remaining": 45,
-            "resetAt": 550,
+            "resetAt": 1550,
             "retryAfterMs": 0
           }
         }
@@ -358,68 +358,68 @@
       "key": "k",
       "ops": [
         {
-          "now": 0,
+          "now": 1000,
           "cost": 4,
           "expect": {
             "allowed": true,
             "limit": 10,
             "remaining": 6,
-            "resetAt": 800,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 6,
-          "expect": {
-            "allowed": true,
-            "limit": 10,
-            "remaining": 0,
-            "resetAt": 2000,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": false,
-            "limit": 10,
-            "remaining": 0,
-            "resetAt": 2000,
-            "retryAfterMs": 200
-          }
-        },
-        {
-          "now": 200,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 10,
-            "remaining": 0,
-            "resetAt": 2200,
+            "resetAt": 1800,
             "retryAfterMs": 0
           }
         },
         {
           "now": 1000,
+          "cost": 6,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 3000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1000,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 3000,
+            "retryAfterMs": 200
+          }
+        },
+        {
+          "now": 1200,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 10,
+            "remaining": 0,
+            "resetAt": 3200,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 2000,
           "cost": 5,
           "expect": {
             "allowed": false,
             "limit": 10,
             "remaining": 4,
-            "resetAt": 2200,
+            "resetAt": 3200,
             "retryAfterMs": 200
           }
         },
         {
-          "now": 10000,
+          "now": 11000,
           "cost": 10,
           "expect": {
             "allowed": true,
             "limit": 10,
             "remaining": 0,
-            "resetAt": 12000,
+            "resetAt": 13000,
             "retryAfterMs": 0
           }
         }
@@ -438,46 +438,46 @@
       "key": "k",
       "ops": [
         {
-          "now": 0,
+          "now": 1000,
           "cost": 7,
           "expect": {
             "allowed": true,
             "limit": 7,
             "remaining": 0,
-            "resetAt": 2334,
+            "resetAt": 3334,
             "retryAfterMs": 0
           }
         },
         {
-          "now": 0,
+          "now": 1000,
           "cost": 1,
           "expect": {
             "allowed": false,
             "limit": 7,
             "remaining": 0,
-            "resetAt": 2334,
+            "resetAt": 3334,
             "retryAfterMs": 334
           }
         },
         {
-          "now": 333,
+          "now": 1333,
           "cost": 1,
           "expect": {
             "allowed": false,
             "limit": 7,
             "remaining": 0,
-            "resetAt": 2334,
+            "resetAt": 3334,
             "retryAfterMs": 1
           }
         },
         {
-          "now": 1000,
+          "now": 2000,
           "cost": 3,
           "expect": {
             "allowed": true,
             "limit": 7,
             "remaining": 0,
-            "resetAt": 3334,
+            "resetAt": 4334,
             "retryAfterMs": 0
           }
         }
@@ -496,50 +496,6 @@
       "key": "k",
       "ops": [
         {
-          "now": 0,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 4,
-            "resetAt": 1000,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 100,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 3,
-            "resetAt": 1000,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 200,
-          "cost": 3,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 0,
-            "resetAt": 1000,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 300,
-          "cost": 1,
-          "expect": {
-            "allowed": false,
-            "limit": 5,
-            "remaining": 0,
-            "resetAt": 1000,
-            "retryAfterMs": 700
-          }
-        },
-        {
           "now": 1000,
           "cost": 1,
           "expect": {
@@ -551,14 +507,36 @@
           }
         },
         {
-          "now": 1999,
-          "cost": 4,
+          "now": 1100,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 3,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1200,
+          "cost": 3,
           "expect": {
             "allowed": true,
             "limit": 5,
             "remaining": 0,
             "resetAt": 2000,
             "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1300,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 2000,
+            "retryAfterMs": 700
           }
         },
         {
@@ -569,6 +547,28 @@
             "limit": 5,
             "remaining": 4,
             "resetAt": 3000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 2999,
+          "cost": 4,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 3000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 3000,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 4,
+            "resetAt": 4000,
             "retryAfterMs": 0
           }
         }
@@ -588,57 +588,57 @@
       "key": "k",
       "ops": [
         {
-          "now": 0,
+          "now": 1000,
           "cost": 6,
           "expect": {
             "allowed": true,
             "limit": 10,
             "remaining": 4,
-            "resetAt": 1100,
+            "resetAt": 2100,
             "retryAfterMs": 0
           }
         },
         {
-          "now": 500,
+          "now": 1500,
           "cost": 4,
           "expect": {
             "allowed": true,
             "limit": 10,
             "remaining": 0,
-            "resetAt": 1600,
+            "resetAt": 2600,
             "retryAfterMs": 0
           }
         },
         {
-          "now": 500,
+          "now": 1500,
           "cost": 1,
           "expect": {
             "allowed": false,
             "limit": 10,
             "remaining": 0,
-            "resetAt": 1600,
+            "resetAt": 2600,
             "retryAfterMs": 100
           }
         },
         {
-          "now": 1000,
+          "now": 2000,
           "cost": 5,
           "expect": {
             "allowed": false,
             "limit": 10,
             "remaining": 0,
-            "resetAt": 2100,
+            "resetAt": 3100,
             "retryAfterMs": 84
           }
         },
         {
-          "now": 1500,
+          "now": 2500,
           "cost": 5,
           "expect": {
             "allowed": true,
             "limit": 10,
             "remaining": 1,
-            "resetAt": 2600,
+            "resetAt": 3600,
             "retryAfterMs": 0
           }
         }
@@ -657,69 +657,14 @@
       "key": "k",
       "ops": [
         {
-          "now": 0,
+          "now": 1000,
           "cost": 1,
           "expect": {
             "allowed": true,
             "limit": 5,
             "remaining": 4,
-            "resetAt": 1000,
+            "resetAt": 2000,
             "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 100,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 3,
-            "resetAt": 1000,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 200,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 2,
-            "resetAt": 1000,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 300,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 1,
-            "resetAt": 1000,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 400,
-          "cost": 1,
-          "expect": {
-            "allowed": true,
-            "limit": 5,
-            "remaining": 0,
-            "resetAt": 1000,
-            "retryAfterMs": 0
-          }
-        },
-        {
-          "now": 500,
-          "cost": 1,
-          "expect": {
-            "allowed": false,
-            "limit": 5,
-            "remaining": 0,
-            "resetAt": 1000,
-            "retryAfterMs": 500
           }
         },
         {
@@ -728,8 +673,63 @@
           "expect": {
             "allowed": true,
             "limit": 5,
+            "remaining": 3,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1200,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 2,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1300,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
             "remaining": 1,
-            "resetAt": 1200,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1400,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 2000,
+            "retryAfterMs": 0
+          }
+        },
+        {
+          "now": 1500,
+          "cost": 1,
+          "expect": {
+            "allowed": false,
+            "limit": 5,
+            "remaining": 0,
+            "resetAt": 2000,
+            "retryAfterMs": 500
+          }
+        },
+        {
+          "now": 2100,
+          "cost": 1,
+          "expect": {
+            "allowed": true,
+            "limit": 5,
+            "remaining": 1,
+            "resetAt": 2200,
             "retryAfterMs": 0
           }
         }

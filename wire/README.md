@@ -55,7 +55,7 @@ Two locks, regenerated in-memory from the shipped core and diffed against the co
       "strategy": { "kind": "gcra", "options": { "limit": 10, "periodMs": 1000, "burst": 5 } },
       "key": "k",
       "ops": [
-        { "now": 0, "cost": 1, "expect": { "allowed": true, "limit": 5, "remaining": 4, "resetAt": 100, "retryAfterMs": 0 } }
+        { "now": 1000, "cost": 1, "expect": { "allowed": true, "limit": 5, "remaining": 4, "resetAt": 1100, "retryAfterMs": 0 } }
         // …state accumulates on `key` across the suite's ops
       ]
     },
@@ -84,7 +84,11 @@ re-implementation is most likely to diverge.
    can never silently drift.
 
 A Redis-backed port doesn't need to re-implement the math at all — it runs the *same* vendored Lua, and
-these vectors confirm its marshalling/decoding round-trips correctly.
+these vectors confirm its marshalling/decoding round-trips correctly. Every `rateLimit` op uses a
+**non-zero `now`** on purpose: the vendored check scripts read `ARGV[1] = 0` as the "use the Redis server
+clock" sentinel (see [`WIRE-PROTOCOL.md`](WIRE-PROTOCOL.md)), so a port passes each op's `now` literally
+(`useServerTime: false`) and gets the recorded `resetAt` back. (`tokenBudget`/`lease` suites are
+client-side and have no extracted Lua.)
 
 ## Regenerating
 

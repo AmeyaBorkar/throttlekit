@@ -51,6 +51,23 @@ describe("wire conformance vectors", () => {
     expect(suite.ops[5]?.expect.retryAfterMs).toBe(100);
   });
 
+  it("no rateLimit op uses now=0 — the Redis Lua reads ARGV[1]=0 as the server-clock sentinel", () => {
+    // A raw-Lua RedisBackend replays each op with ARGV[1]=op.now. The vendored check scripts overload
+    // ARGV[1]=0 to mean "read the Redis server TIME", so a now=0 op is unreproducible: real Lua would
+    // substitute the live epoch and the resetAt assertion would never match. Keeping every rateLimit op
+    // non-zero lets a port pass `now` literally — making the README's "runs the same vendored Lua …
+    // round-trips correctly" claim true for every rateLimit op. (tokenBudget/lease have no extracted Lua.)
+    for (const suite of fresh.suites) {
+      if (suite.primitive !== "rateLimit") continue;
+      for (const op of suite.ops) {
+        expect(
+          op.now,
+          `${suite.name} has a now=0 op (collides with the Lua server-clock sentinel)`,
+        ).not.toBe(0);
+      }
+    }
+  });
+
   it("pins tokenBudget stop-at-boundary (a crossing debit is admitted in full; the next is refused)", () => {
     const suite = fresh.suites.find((s) => s.name === "tokenBudget/crossing-debit");
     if (suite === undefined || suite.primitive === "lease")

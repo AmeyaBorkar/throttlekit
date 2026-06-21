@@ -151,16 +151,20 @@ const RATE_LIMIT_SUITES: RateLimitSuite[] = [
     name: "gcra/burst5-rate10ps",
     strategy: { kind: "gcra", options: { limit: 10, periodMs: 1000, burst: 5 } },
     key: "k",
+    // Timeline starts at 1000, not 0: a raw-Lua port replays each op with ARGV[1]=now, and the vendored
+    // check scripts read ARGV[1]=0 as the "use Redis server TIME" sentinel — a now=0 op is unreproducible.
+    // The whole timeline is offset by a constant (a full periodMs here), so only the absolute resetAt
+    // shifts; allowed/remaining/retryAfterMs are skew-free and unchanged.
     ops: [
-      { now: 0, cost: 1 }, // cold bucket: 5 admitted instantly…
-      { now: 0, cost: 1 },
-      { now: 0, cost: 1 },
-      { now: 0, cost: 1 },
-      { now: 0, cost: 1 },
-      { now: 0, cost: 1 }, // …6th denied (burst exhausted)
-      { now: 100, cost: 1 }, // one emission interval later: one credit back
-      { now: 100, cost: 1 }, // denied again
-      { now: 1000, cost: 1 }, // fully idle → recovered
+      { now: 1000, cost: 1 }, // cold bucket: 5 admitted instantly…
+      { now: 1000, cost: 1 },
+      { now: 1000, cost: 1 },
+      { now: 1000, cost: 1 },
+      { now: 1000, cost: 1 },
+      { now: 1000, cost: 1 }, // …6th denied (burst exhausted)
+      { now: 1100, cost: 1 }, // one emission interval later: one credit back
+      { now: 1100, cost: 1 }, // denied again
+      { now: 2000, cost: 1 }, // fully idle → recovered
     ],
   },
   {
@@ -169,14 +173,15 @@ const RATE_LIMIT_SUITES: RateLimitSuite[] = [
     // periodMs/limit = 1000/3 = 333.333…ms → a non-terminating T, exercising the %.17g TAT round-trip.
     strategy: { kind: "gcra", options: { limit: 3, periodMs: 1000, burst: 3 } },
     key: "k",
+    // Offset by a full periodMs so no op is now=0 (the Lua server-clock sentinel); decisions are unchanged.
     ops: [
-      { now: 0, cost: 1 },
-      { now: 0, cost: 1 },
-      { now: 0, cost: 1 },
-      { now: 0, cost: 1 }, // denied
-      { now: 334, cost: 1 }, // just past one fractional interval
-      { now: 667, cost: 1 },
       { now: 1000, cost: 1 },
+      { now: 1000, cost: 1 },
+      { now: 1000, cost: 1 },
+      { now: 1000, cost: 1 }, // denied
+      { now: 1334, cost: 1 }, // just past one fractional interval
+      { now: 1667, cost: 1 },
+      { now: 2000, cost: 1 },
     ],
   },
   {
@@ -184,12 +189,13 @@ const RATE_LIMIT_SUITES: RateLimitSuite[] = [
     name: "gcra/cost-gt-1",
     strategy: { kind: "gcra", options: { limit: 100, periodMs: 1000, burst: 50 } },
     key: "k",
+    // Offset by a full periodMs so no op is now=0 (the Lua server-clock sentinel); decisions are unchanged.
     ops: [
-      { now: 0, cost: 10 },
-      { now: 0, cost: 25 },
-      { now: 0, cost: 20 }, // 55 > remaining 15 → denied
-      { now: 0, cost: 15 }, // exactly fills
-      { now: 500, cost: 5 },
+      { now: 1000, cost: 10 },
+      { now: 1000, cost: 25 },
+      { now: 1000, cost: 20 }, // 55 > remaining 15 → denied
+      { now: 1000, cost: 15 }, // exactly fills
+      { now: 1500, cost: 5 },
     ],
   },
   {
@@ -210,13 +216,15 @@ const RATE_LIMIT_SUITES: RateLimitSuite[] = [
     name: "tokenBucket/cap10-refill5ps",
     strategy: { kind: "tokenBucket", options: { capacity: 10, refillPerSec: 5 } },
     key: "k",
+    // Offset by a constant so no op is now=0 (the Lua server-clock sentinel); refill is elapsed-time
+    // based, so only resetAt shifts.
     ops: [
-      { now: 0, cost: 4 },
-      { now: 0, cost: 6 }, // drains to 0
-      { now: 0, cost: 1 }, // denied
-      { now: 200, cost: 1 }, // 1 token refilled (5/sec → 1 per 200ms)
-      { now: 1000, cost: 5 }, // 5 refilled over the second
-      { now: 10_000, cost: 10 }, // long idle → capped at capacity, full burst
+      { now: 1000, cost: 4 },
+      { now: 1000, cost: 6 }, // drains to 0
+      { now: 1000, cost: 1 }, // denied
+      { now: 1200, cost: 1 }, // 1 token refilled (5/sec → 1 per 200ms)
+      { now: 2000, cost: 5 }, // 5 refilled over the second
+      { now: 11_000, cost: 10 }, // long idle → capped at capacity, full burst
     ],
   },
   {
@@ -224,11 +232,12 @@ const RATE_LIMIT_SUITES: RateLimitSuite[] = [
     name: "tokenBucket/fractional-refill",
     strategy: { kind: "tokenBucket", options: { capacity: 7, refillPerSec: 3 } },
     key: "k",
+    // Offset by a constant so no op is now=0 (the Lua server-clock sentinel); only resetAt shifts.
     ops: [
-      { now: 0, cost: 7 },
-      { now: 0, cost: 1 }, // denied
-      { now: 333, cost: 1 }, // ~1 token (3/sec)
-      { now: 1000, cost: 3 },
+      { now: 1000, cost: 7 },
+      { now: 1000, cost: 1 }, // denied
+      { now: 1333, cost: 1 }, // ~1 token (3/sec)
+      { now: 2000, cost: 3 },
     ],
   },
   {
@@ -236,14 +245,16 @@ const RATE_LIMIT_SUITES: RateLimitSuite[] = [
     name: "fixedWindow/limit5-1s",
     strategy: { kind: "fixedWindow", options: { limit: 5, windowMs: 1000 } },
     key: "k",
+    // Offset by a FULL windowMs so no op is now=0 (the Lua server-clock sentinel): a whole-window shift
+    // preserves each op's epoch-aligned window membership exactly, so only the absolute resetAt shifts.
     ops: [
-      { now: 0, cost: 1 },
-      { now: 100, cost: 1 },
-      { now: 200, cost: 3 }, // window total 5
-      { now: 300, cost: 1 }, // denied (window full)
-      { now: 1000, cost: 1 }, // new epoch-aligned window → reset
-      { now: 1999, cost: 4 },
-      { now: 2000, cost: 1 }, // next window
+      { now: 1000, cost: 1 },
+      { now: 1100, cost: 1 },
+      { now: 1200, cost: 3 }, // window total 5
+      { now: 1300, cost: 1 }, // denied (window full)
+      { now: 2000, cost: 1 }, // new epoch-aligned window → reset
+      { now: 2999, cost: 4 },
+      { now: 3000, cost: 1 }, // next window
     ],
   },
   {
@@ -251,12 +262,14 @@ const RATE_LIMIT_SUITES: RateLimitSuite[] = [
     name: "slidingWindow/limit10-1s-10buckets",
     strategy: { kind: "slidingWindow", options: { limit: 10, windowMs: 1000, buckets: 10 } },
     key: "k",
+    // Offset by a FULL windowMs (a whole number of sub-buckets) so no op is now=0 (the Lua server-clock
+    // sentinel): the bucket-ring alignment and per-bucket weights are preserved, so only resetAt shifts.
     ops: [
-      { now: 0, cost: 6 },
-      { now: 500, cost: 4 }, // window total 10
-      { now: 500, cost: 1 }, // denied
-      { now: 1000, cost: 5 }, // earliest bucket rolls off → room
-      { now: 1500, cost: 5 },
+      { now: 1000, cost: 6 },
+      { now: 1500, cost: 4 }, // window total 10
+      { now: 1500, cost: 1 }, // denied
+      { now: 2000, cost: 5 }, // earliest bucket rolls off → room
+      { now: 2500, cost: 5 },
     ],
   },
   {
@@ -264,14 +277,16 @@ const RATE_LIMIT_SUITES: RateLimitSuite[] = [
     name: "slidingWindowLog/limit5-1s",
     strategy: { kind: "slidingWindowLog", options: { limit: 5, windowMs: 1000 } },
     key: "k",
+    // Offset by a constant so no op is now=0 (the Lua server-clock sentinel): the trailing window depends
+    // only on relative time (windowStart = now - windowMs), so only the absolute resetAt shifts.
     ops: [
-      { now: 0, cost: 1 },
-      { now: 100, cost: 1 },
-      { now: 200, cost: 1 },
-      { now: 300, cost: 1 },
-      { now: 400, cost: 1 }, // 5 in the trailing second
-      { now: 500, cost: 1 }, // denied
-      { now: 1100, cost: 1 }, // the now=0..100 entries have aged out
+      { now: 1000, cost: 1 },
+      { now: 1100, cost: 1 },
+      { now: 1200, cost: 1 },
+      { now: 1300, cost: 1 },
+      { now: 1400, cost: 1 }, // 5 in the trailing second
+      { now: 1500, cost: 1 }, // denied
+      { now: 2100, cost: 1 }, // the now=1000..1100 entries have aged out
     ],
   },
 ];
