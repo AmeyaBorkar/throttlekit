@@ -42,6 +42,35 @@ export interface ElysiaContextLike {
 /** An Elysia `onBeforeHandle` hook: returns `undefined` to proceed, or a value to short-circuit. */
 export type ElysiaRateLimitHook = (ctx: ElysiaContextLike) => unknown;
 
+/** The 5xx status NAME strings Elysia accepts for `set.status` (it permits a status name, not just a code). */
+const SERVER_ERROR_NAMES = new Set<string>([
+  "Internal Server Error",
+  "Not Implemented",
+  "Bad Gateway",
+  "Service Unavailable",
+  "Gateway Timeout",
+  "HTTP Version Not Supported",
+  "Variant Also Negotiates",
+  "Insufficient Storage",
+  "Loop Detected",
+  "Not Extended",
+  "Network Authentication Required",
+]);
+
+/**
+ * Classify an Elysia `set.status` as a 5xx server error. Elysia accepts a numeric code, a
+ * numeric string ("500"), OR a status NAME string ("Internal Server Error"); a blind
+ * `Number(status) >= 500` turns the name string into `NaN` (never 5xx), so `dropOn5xx` would
+ * miss it. Handle all three shapes and bound to the proper 5xx class.
+ */
+function is5xx(status: number | string | undefined): boolean {
+  if (status === undefined) return false;
+  if (typeof status === "number") return status >= 500 && status < 600;
+  const n = Number(status);
+  if (!Number.isNaN(n)) return n >= 500 && n < 600; // "500"
+  return SERVER_ERROR_NAMES.has(status); // "Internal Server Error"
+}
+
 export type ElysiaRateLimitOptions = LimiterOrStrategy &
   CommonAdapterOptions & {
     /** Cost of a request in limiter units. A function computes it per context. Default 1. */
@@ -197,8 +226,7 @@ export function elysiaUnifiedAdmission(
       thrown = true;
       throw err;
     } finally {
-      const status = Number(ctx.set.status ?? 200);
-      release({ dropped: thrown || (dropOn5xx && status >= 500) });
+      release({ dropped: thrown || (dropOn5xx && is5xx(ctx.set.status)) });
     }
   };
 }
@@ -263,8 +291,7 @@ export function elysiaAdaptiveConcurrency(
       thrown = true;
       throw err;
     } finally {
-      const status = Number(ctx.set.status ?? 200);
-      lease.release({ dropped: thrown || (dropOn5xx && status >= 500) });
+      lease.release({ dropped: thrown || (dropOn5xx && is5xx(ctx.set.status)) });
     }
   };
 }
