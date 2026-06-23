@@ -296,6 +296,25 @@ describe("replay P1 — bounded recording (tail-stop, fail-loud on replay)", () 
       expect((e as ReplayRefusedError).reason).toBe("trace-truncated");
     }
   });
+
+  it("does no per-key work past the cap (redact/store bounded by maxSteps)", () => {
+    // Past the cap, checkSync must NOT run redact() or the inner store write —
+    // otherwise the keyref map + inner store grow with distinct-key cardinality,
+    // not maxSteps. A colliding redactKey would throw on the 2nd distinct key if
+    // redact still ran post-cap; after the fix the 2nd call is a no-op drop.
+    const rec = recordLimiter(
+      { strategy: "fixedWindow", limit: 10, windowMs: 1000 },
+      { clock: new ManualClock(0), maxSteps: 1, redactKey: () => "SAME" },
+    );
+    expect(() => rec.limiter.checkSync("a")).not.toThrow(); // fills the single step
+    // "b" redacts to the same "SAME" as "a"; pre-fix redact() ran first and threw
+    // keyref-collision. Post-fix the cap is hit before any per-key work.
+    expect(() => rec.limiter.checkSync("b")).not.toThrow();
+    const trace = rec.trace();
+    expect(trace.truncated).toBe(true);
+    expect(trace.dropped).toBe(1);
+    expect(trace.steps.length).toBe(1);
+  });
 });
 
 describe("replay P1 — serialize / parse round-trip", () => {

@@ -89,7 +89,8 @@ export function recordLimiter(spec: LimiterSpec, options: RecordOptions = {}): R
   let dropped = 0;
 
   // Redaction-collision guard: a redacted key that maps back to a DIFFERENT original is a silent
-  // state-merge hazard; refuse it loudly. Only populated when a redaction hook is supplied.
+  // state-merge hazard; refuse it loudly. Populated for each distinct key recorded under the cap
+  // (the identity default writes here too); bounded by maxSteps via the at-cap short-circuit below.
   const originalOf = new Map<string, string>();
   const redact = (key: string): string => {
     const r = redactKey(key);
@@ -104,11 +105,19 @@ export function recordLimiter(spec: LimiterSpec, options: RecordOptions = {}): R
     return r;
   };
 
+  const atCap = (): boolean => steps.length >= maxSteps;
+  // Once truncated, the trace is flagged and replay refuses it, so post-cap decisions are
+  // meaningless. Return a fixed sentinel WITHOUT redacting, writing the inner store, or recording —
+  // so the keyref map and the inner store stay bounded by maxSteps, not by distinct-key cardinality.
+  const droppedDecision: Decision = {
+    allowed: false,
+    limit: 0,
+    remaining: 0,
+    resetAt: 0,
+    retryAfterMs: 0,
+  };
+
   const record = (key: string, cost: number, at: number, decision: Decision): void => {
-    if (steps.length >= maxSteps) {
-      dropped++;
-      return;
-    }
     steps.push({ key, cost, at, decision });
   };
 
@@ -120,6 +129,10 @@ export function recordLimiter(spec: LimiterSpec, options: RecordOptions = {}): R
     strategy: inner.strategy,
 
     checkSync(key: string, cost = 1): Decision {
+      if (atCap()) {
+        dropped++;
+        return droppedDecision;
+      }
       const k = redact(key);
       const at = clock.now();
       const decision = inner.checkSync(k, cost);
@@ -133,6 +146,11 @@ export function recordLimiter(spec: LimiterSpec, options: RecordOptions = {}): R
       const at = clock.now();
       const out: Decision[] = new Array(keys.length);
       for (let i = 0; i < keys.length; i++) {
+        if (atCap()) {
+          dropped++;
+          out[i] = droppedDecision;
+          continue;
+        }
         const k = redact(keys[i] as string);
         const decision = inner.checkSync(k, cost);
         record(k, cost, at, decision);
