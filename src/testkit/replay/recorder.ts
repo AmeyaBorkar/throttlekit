@@ -96,9 +96,12 @@ export function recordLimiter(spec: LimiterSpec, options: RecordOptions = {}): R
     const r = redactKey(key);
     const prev = originalOf.get(r);
     if (prev !== undefined && prev !== key) {
+      // Name only the redacted value (which the trace already stores) — never the raw keys, which
+      // are the PII the redaction hook was configured to strip; echoing them into Error.message
+      // (a log-/serialize-exposed field) would defeat the privacy contract.
       throw new ReplayRefusedError(
         "keyref-collision",
-        `recordLimiter: redactKey mapped distinct keys ${JSON.stringify(prev)} and ${JSON.stringify(key)} to the same value — replay would merge their state`,
+        `recordLimiter: redactKey mapped two distinct keys to the same redacted value ${JSON.stringify(r)} — replay would merge their state (raw keys omitted: they are the PII the redaction hook strips)`,
       );
     }
     if (prev === undefined) originalOf.set(r, key);

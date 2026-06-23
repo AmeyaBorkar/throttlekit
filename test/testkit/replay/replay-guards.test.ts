@@ -132,6 +132,43 @@ describe("replay P1 — guard refusals (the fail-loud taxonomy)", () => {
     rec.limiter.checkSync("a"); // first mapping is fine
     expectRefusal(() => rec.limiter.checkSync("b"), "keyref-collision"); // distinct key, same redaction
   });
+
+  it("keyref-collision message omits the raw keys (PII) and names only the redacted value", () => {
+    // The redactKey hook exists to keep raw PII keys out of the trace/diagnostics, so its
+    // collision error must not re-expose the very identifiers it was configured to strip.
+    const rec = recordLimiter(GCRA_SPEC, {
+      clock: new ManualClock(0),
+      redactKey: () => "REDACTED",
+    });
+    rec.limiter.checkSync("user-email:alice@example.com");
+    try {
+      rec.limiter.checkSync("user-email:bob@example.com");
+      throw new Error("expected a keyref-collision refusal");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ReplayRefusedError);
+      expect((e as ReplayRefusedError).reason).toBe("keyref-collision");
+      const msg = (e as Error).message;
+      expect(msg).not.toContain("alice@example.com");
+      expect(msg).not.toContain("bob@example.com");
+      expect(msg).toContain("REDACTED"); // the safe value the trace already stores
+    }
+  });
+
+  it("keyref-collision via checkManySync also omits the raw keys", () => {
+    const rec = recordLimiter(GCRA_SPEC, {
+      clock: new ManualClock(0),
+      redactKey: () => "REDACTED",
+    });
+    try {
+      rec.limiter.checkManySync(["ssn:123-45-6789", "ssn:987-65-4321"]);
+      throw new Error("expected a keyref-collision refusal");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ReplayRefusedError);
+      const msg = (e as Error).message;
+      expect(msg).not.toContain("123-45-6789");
+      expect(msg).not.toContain("987-65-4321");
+    }
+  });
 });
 
 describe("replay P1 — trace format version gate", () => {
