@@ -120,6 +120,26 @@ describe("runReplay", () => {
     expect(o.stdout.some((l) => /top denied keys/.test(l))).toBe(true);
   });
 
+  it("treats a value-less --limit as the documented default (100), not limit=1", async () => {
+    // parseArgs yields `limit: true` for a value-less flag; that must fall back to
+    // the documented default (100), not coerce to Number(true) === 1 and build a
+    // degenerate limiter that denies most traffic.
+    expect(parseArgs(["log.jsonl", "--strategy", "gcra", "--limit"]).flags.limit).toBe(true);
+    const lines = ["k", "k", "k", "k", "k"].map((k) => JSON.stringify({ key: k })).join("\n");
+    writeFileSync(join(dir, "log.jsonl"), lines);
+    const o = makeSink();
+    const code = await runReplay(parseArgs(["log.jsonl", "--strategy", "gcra", "--limit"]), {
+      cwd: dir,
+      out: o,
+    });
+    expect(code).toBe(0);
+    const summary = o.stdout.find((l) => l.startsWith("replay:"));
+    // At the default limit=100 all five cost-1 requests on one key are allowed;
+    // a degenerate limit=1 would have allowed 1 and denied 4.
+    expect(summary).toMatch(/allowed=5/);
+    expect(summary).toMatch(/denied=0/);
+  });
+
   it("skips a line with a non-positive/NaN cost instead of aborting the whole run", async () => {
     // A single cost:0 (or negative/NaN) line must not reject the run: the valid
     // lines either side of it should still be counted and a summary emitted —

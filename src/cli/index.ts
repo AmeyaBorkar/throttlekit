@@ -184,7 +184,10 @@ interface ReplayLine {
 
 function strategyFromFlags(flags: Record<string, string | true>): Limiter | undefined {
   const strat = typeof flags.strategy === "string" ? flags.strategy : "gcra";
-  const limit = Number(flags.limit ?? 100);
+  // Guard like the sibling flags: a value-less `--limit` parses to `true`, and
+  // Number(true) is 1 — silently building a degenerate limiter. Fall back to the
+  // documented default (100) unless an actual string value was supplied.
+  const limit = typeof flags.limit === "string" ? Number(flags.limit) : 100;
   const period = typeof flags.period === "string" ? flags.period : "1m";
   const periodMs = parseDuration(period);
   if (strat === "gcra") return rateLimit({ strategy: gcra({ limit, periodMs }) });
