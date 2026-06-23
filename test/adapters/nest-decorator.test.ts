@@ -78,6 +78,17 @@ describe("@RateLimit decorator + createRateLimitGuard", () => {
     expect(() => RateLimit({ period: "1m" })).toThrow(/RateLimit.limit/);
   });
 
+  it("validates `defaults` eagerly: a missing limit (no strategy) throws at construction time", () => {
+    // The decorator validates `defaults` at decoration; the guard's `defaults`
+    // path must do the same. Otherwise a missing-limit `defaults` constructs OK
+    // and gcra({ limit: 0 }) throws a per-request RangeError OUTSIDE the
+    // fail-policy try/catch — a 500 on every unannotated route instead of a
+    // clear load-time error.
+    expect(() => createRateLimitGuard({ defaults: { period: "1m" } })).toThrow(
+      /must be a positive finite number/,
+    );
+  });
+
   it("limits an annotated handler and sets headers; over the limit it throws", async () => {
     class Ctl {
       create(): string {

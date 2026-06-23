@@ -255,6 +255,13 @@ export type RateLimitGuardOptions = CommonAdapterOptions & {
  * built and cached per distinct `@RateLimit(...)` config, all sharing the guard's `store`.
  */
 export function createRateLimitGuard(options: RateLimitGuardOptions = {}): NestCanActivate {
+  // Validate `defaults` eagerly, mirroring the @RateLimit decorator: otherwise a
+  // missing-limit defaults builds gcra({ limit: 0 }) lazily on the first request,
+  // throwing a RangeError outside the fail-policy try/catch (a 500 per route).
+  if (options.defaults !== undefined && options.defaults.strategy === undefined) {
+    requirePositive("createRateLimitGuard.defaults.limit", options.defaults.limit ?? Number.NaN);
+    parseDuration(options.defaults.period ?? "1m");
+  }
   const trust = trustFrom(options);
   const defaultKey = options.key ?? ((req: NodeReqLike) => nodeClientIp(req, trust));
   const sharedStore = options.store;
