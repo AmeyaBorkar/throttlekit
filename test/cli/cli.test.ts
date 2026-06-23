@@ -120,6 +120,40 @@ describe("runReplay", () => {
     expect(o.stdout.some((l) => /top denied keys/.test(l))).toBe(true);
   });
 
+  it("skips a line with a non-positive/NaN cost instead of aborting the whole run", async () => {
+    // A single cost:0 (or negative/NaN) line must not reject the run: the valid
+    // lines either side of it should still be counted and a summary emitted —
+    // matching how a malformed-JSON line is skipped via `continue`.
+    writeFileSync(
+      join(dir, "log.jsonl"),
+      [{ key: "a" }, { key: "b", cost: 0 }, { key: "c" }].map((o) => JSON.stringify(o)).join("\n"),
+    );
+    const o = makeSink();
+    const code = await runReplay(
+      parseArgs(["log.jsonl", "--strategy", "gcra", "--limit", "100", "--period", "1m"]),
+      { cwd: dir, out: o },
+    );
+    expect(code).toBe(0);
+    const summary = o.stdout.find((l) => l.startsWith("replay:"));
+    expect(summary).toMatch(/total=2/); // only the two valid lines "a" and "c"
+    expect(summary).toMatch(/allowed=2/);
+  });
+
+  it("skips a negative cost line too (full requireCost contract)", async () => {
+    writeFileSync(
+      join(dir, "log.jsonl"),
+      [{ key: "a" }, { key: "b", cost: -5 }, { key: "d" }].map((o) => JSON.stringify(o)).join("\n"),
+    );
+    const o = makeSink();
+    const code = await runReplay(
+      parseArgs(["log.jsonl", "--strategy", "gcra", "--limit", "100", "--period", "1m"]),
+      { cwd: dir, out: o },
+    );
+    expect(code).toBe(0);
+    const summary = o.stdout.find((l) => l.startsWith("replay:"));
+    expect(summary).toMatch(/total=2/); // "a" and "d"; the negative-cost "b" skipped
+  });
+
   it("loads a named limiter from --config", async () => {
     writeFileSync(
       join(dir, ".throttlekit.yaml"),

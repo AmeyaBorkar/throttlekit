@@ -248,6 +248,10 @@ export async function runReplay(
     }
     if (typeof parsed.key !== "string") continue;
     const cost = typeof parsed.cost === "number" ? parsed.cost : 1;
+    // `cost` must satisfy the limiter's requireCost contract (positive + finite); a
+    // 0/negative/NaN cost is skipped like a malformed-JSON line rather than rejecting
+    // the whole run (replay is a forensic tool — one dirty row shouldn't abort it).
+    if (!Number.isFinite(cost) || cost <= 0) continue;
     const d = await limiter.check(parsed.key, cost);
     if (d.allowed) {
       allowed += 1;
