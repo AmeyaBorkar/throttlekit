@@ -176,6 +176,67 @@ describe("replay P2 — candidate DSL (delta algebra)", () => {
       resolveCandidate(recW.trace(), candidate("ok", set("windowMs", 100_000))),
     ).not.toThrow();
   });
+
+  it("refuses a delta on a field the resolved strategy never reads (would be a silent no-op)", () => {
+    // fixedWindow's builder consumes only {strategy, limit, period, windowMs, prefix}; periodMs/
+    // burst/buckets/capacity are inert for it. A delta on an inert field would replay to a false
+    // zero-divergence — the exact misleading "no effect" the guard exists to prevent. Refuse it.
+    const base = recordFixed(2, 1); // fixedWindow, windowMs
+    for (const [path, value] of [
+      ["periodMs", 5000],
+      ["burst", 100],
+      ["buckets", 50],
+      ["capacity", 999],
+    ] as const) {
+      try {
+        resolveCandidate(base, candidate("inert", set(path, value)));
+        throw new Error(`should have refused set(${path})`);
+      } catch (e) {
+        expect(e).toBeInstanceOf(ReplayRefusedError);
+        expect((e as ReplayRefusedError).reason).toBe("candidate-invalid");
+        expect((e as Error).message).toMatch(/never reads it|does not read/i);
+      }
+    }
+  });
+
+  it("refuses a periodMs/capacity delta inert for slidingWindow / slidingWindowLog", () => {
+    const sw = recordLimiter(
+      { strategy: "slidingWindow", limit: 3, windowMs: 1000, buckets: 4 },
+      { clock: new ManualClock(1000) },
+    );
+    sw.limiter.checkSync("u");
+    expect(() => resolveCandidate(sw.trace(), candidate("x", set("periodMs", 5000)))).toThrow(
+      ReplayRefusedError,
+    );
+    expect(() => resolveCandidate(sw.trace(), candidate("x", set("capacity", 9)))).toThrow(
+      ReplayRefusedError,
+    );
+    // buckets IS consumed by slidingWindow — must NOT be refused.
+    expect(() => resolveCandidate(sw.trace(), candidate("ok", set("buckets", 8)))).not.toThrow();
+
+    const swl = recordLimiter(
+      { strategy: "slidingWindowLog", limit: 3, windowMs: 1000 },
+      { clock: new ManualClock(1000) },
+    );
+    swl.limiter.checkSync("u");
+    expect(() => resolveCandidate(swl.trace(), candidate("x", set("burst", 9)))).toThrow(
+      ReplayRefusedError,
+    );
+  });
+
+  it("does NOT refuse a field the resolved strategy legitimately consumes", () => {
+    const base = recordFixed(2, 1); // fixedWindow
+    // limit + windowMs are consumed by fixedWindow.
+    expect(() => resolveCandidate(base, candidate("ok", set("limit", 9)))).not.toThrow();
+    expect(() => resolveCandidate(base, candidate("ok", set("windowMs", 500)))).not.toThrow();
+    // gcra reads burst; tokenBucket reads capacity/refillPerSec.
+    const g = recordLimiter(
+      { strategy: "gcra", limit: 2, windowMs: 1000 },
+      { clock: new ManualClock(1000) },
+    );
+    g.limiter.checkSync("u");
+    expect(() => resolveCandidate(g.trace(), candidate("ok", set("burst", 5)))).not.toThrow();
+  });
 });
 
 describe("replay P2 — score reducers", () => {

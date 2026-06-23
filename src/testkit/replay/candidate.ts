@@ -32,6 +32,49 @@ const SPEC_PATH_TABLE: Record<keyof LimiterSpec, true> = {
 };
 const SPEC_PATHS: ReadonlySet<string> = new Set(Object.keys(SPEC_PATH_TABLE));
 
+/**
+ * Which {@link SpecPath}s each strategy's builder actually reads — the single source of truth is
+ * `buildStrategy` (src/config/index.ts). A field outside its strategy's set is inert: a delta on it
+ * would replay byte-identically and report a false zero-divergence, which the candidate guard exists
+ * to prevent. `strategy` + `prefix` are read by every builder path (prefix wraps the store). Add a
+ * field to a strategy's builder and it must be listed here, or a real delta is wrongly refused.
+ */
+const CONSUMED_BY_STRATEGY: Record<ConfigStrategy, ReadonlySet<SpecPath>> = {
+  // window = periodMs ?? windowMs (or `period`), so all three are meaningful.
+  gcra: new Set<SpecPath>([
+    "strategy",
+    "prefix",
+    "limit",
+    "period",
+    "periodMs",
+    "windowMs",
+    "burst",
+  ]),
+  tokenBucket: new Set<SpecPath>(["strategy", "prefix", "capacity", "refillPerSec"]),
+  fixedWindow: new Set<SpecPath>(["strategy", "prefix", "limit", "period", "windowMs"]),
+  slidingWindow: new Set<SpecPath>([
+    "strategy",
+    "prefix",
+    "limit",
+    "period",
+    "windowMs",
+    "buckets",
+  ]),
+  slidingWindowLog: new Set<SpecPath>(["strategy", "prefix", "limit", "period", "windowMs"]),
+  quota: new Set<SpecPath>([
+    "strategy",
+    "prefix",
+    "limit",
+    "period",
+    "periodMs",
+    "resetCadence",
+    "anchor",
+    "offsetMinutes",
+    "weekStartsOn",
+    "buckets",
+  ]),
+};
+
 /** Override one field to an explicit value. */
 export interface SetOp {
   readonly kind: "set";
@@ -220,6 +263,24 @@ export function resolveCandidate(trace: ReplayTrace, cand: Candidate): ResolvedC
       cand.name,
       "targets windowMs but the gcra spec sets `periodMs`, which takes precedence (periodMs ?? windowMs) — the delta would not apply; target `periodMs` instead",
     );
+  }
+
+  // General inert-field guard: a written field the resolved strategy's builder never reads would
+  // replay byte-identically (a false zero-divergence). Refuse it loudly. (Strategy/prefix are always
+  // read, so a swap's `strategy` write is never inert.) The two precedence guards above catch the
+  // narrower case where the field IS read but is shadowed by another set field — they fire first
+  // (more specific message); this catches everything else.
+  const resolvedStrategy = working.strategy as ConfigStrategy;
+  const consumed = CONSUMED_BY_STRATEGY[resolvedStrategy];
+  if (consumed !== undefined) {
+    for (const path of written) {
+      if (!consumed.has(path as SpecPath)) {
+        throw invalid(
+          cand.name,
+          `targets ${JSON.stringify(path)} but the resolved ${JSON.stringify(resolvedStrategy)} strategy never reads it — the delta would not apply; choose a field that strategy consumes (${[...consumed].join(", ")})`,
+        );
+      }
+    }
   }
 
   const spec = working as unknown as LimiterSpec;
