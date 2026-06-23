@@ -219,7 +219,10 @@ export async function runReplay(
   if (typeof args.flags.config === "string") {
     const config = loadConfig(readFileSync(resolvePath(cwd, args.flags.config), "utf8"));
     const name = typeof args.flags.name === "string" ? args.flags.name : "default";
-    limiter = config.limiters[name];
+    // Own-property check: `config.limiters` is a plain object inheriting
+    // Object.prototype, so a `--name` like "toString" would resolve a prototype
+    // method (not undefined) and later crash on `.check`. Check ownership, not value.
+    limiter = Object.hasOwn(config.limiters, name) ? config.limiters[name] : undefined;
     if (limiter === undefined) {
       out.err(
         `no limiter "${name}" in ${args.flags.config}; available: ${Object.keys(config.limiters).join(", ")}`,

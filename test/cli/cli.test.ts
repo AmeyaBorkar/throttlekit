@@ -192,6 +192,29 @@ describe("runReplay", () => {
     expect(o.stdout.find((l) => l.startsWith("replay:"))).toMatch(/allowed=1.*denied=1/);
   });
 
+  it("reports 'no limiter' for an Object.prototype member name instead of crashing", async () => {
+    // A plain-object limiters map inherits Object.prototype, so `--name toString`
+    // would resolve a prototype method (not undefined) and crash on `.check`. The
+    // own-property check must surface the friendly exit-2 message instead.
+    writeFileSync(
+      join(dir, ".throttlekit.yaml"),
+      "version: 1\nlimiters:\n  api: { strategy: gcra, limit: 5, period: 1m }\n",
+    );
+    writeFileSync(
+      join(dir, "log.jsonl"),
+      [{ key: "u1" }, { key: "u1" }].map((o) => JSON.stringify(o)).join("\n"),
+    );
+    for (const name of ["toString", "valueOf", "hasOwnProperty", "constructor"]) {
+      const o = makeSink();
+      const code = await runReplay(
+        parseArgs(["log.jsonl", "--config", ".throttlekit.yaml", "--name", name]),
+        { cwd: dir, out: o },
+      );
+      expect(code).toBe(2);
+      expect(o.stderr.join("\n")).toContain(`no limiter "${name}"`);
+    }
+  });
+
   it("emits a usage error without a log argument", async () => {
     const o = makeSink();
     expect(await runReplay(parseArgs([]), { cwd: dir, out: o })).toBe(2);
