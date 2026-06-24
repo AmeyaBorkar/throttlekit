@@ -6,6 +6,73 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-06-23
+
+A large correctness release from a full multi-agent audit sweep (security / math / logic / performance /
+concurrency). Every fix was independently reproduced on the real code, traced to root cause, and pinned by a
+regression proven to fail on the prior commit. Minor (not patch) because several fixes add **opt-in,
+backward-compatible** options; no existing default that was already correct changed shape.
+
+### Added
+
+- **`RedisStore` `ttlFloorMs`** — floor the physical key TTL independently of the strategy's logical window,
+  so a logically-live key isn't reclaimed by Redis real-time GC under a node-clock (`useServerTime:false`)
+  deployment. Default 0 (no change).
+- **`RedisClientLike.duplicate?()` / `disconnect?()`** — optional; when present, the optimistic-concurrency
+  fallback runs each `WATCH`/`MULTI`/`EXEC` on its own connection (see the lost-update fix below).
+- **`RedisConcurrencyCoordinator` `useServerTime`** (default true) — anchor eviction to the Redis server
+  clock; see the eviction fix below.
+- **`sketchRateLimit` / `mergeableSketch` `seed`** — and `sketchRateLimit` now defaults to a per-instance
+  random seed (see the collision-resistance fix).
+
+### Fixed
+
+- **Concurrency coordinator over-eviction (`RedisConcurrencyCoordinator`).** Eviction compared each peer's
+  stored deadline against the **calling node's** wall clock, so an ahead-clocked node evicted healthy peers
+  and over-granted. It now resolves `now` from the Redis server clock by default.
+- **Federation in-flight lease across a window roll.** A coordinator lease that resolved *after* a concurrent
+  check rolled the entry to the next window was credited into the new window (over-admit). The grant's source
+  window is now captured and a rolled grant is forfeit + reconciled to the old window.
+- **`twoTier` late proactive (low-water) refill** under `windowCoupled` smuggled a pre-boundary lease that
+  landed post-roll into the next window; it is now re-checked against the granting window and forfeit.
+- **`multiRateLimit` Redis prefix.** `check()` wrote multi keys **without** the store's `prefix` while
+  `reset()` deleted **with** it, so `reset()` was a silent no-op and two prefixed stores collided. Multi keys
+  now flow through the store prefix on both paths.
+- **`multiRateLimit` `all()` sync path** partial-consumed a state-mutating dimension on a **denied** composite
+  check (the read phase mutated a shared ring in place); the read phase is now non-destructive.
+- **`MemoryStore` CLOCK eviction** granted an expired-but-unswept key a "second chance" and evicted the
+  adjacent **live** key; an expired entry is now reclaimed before the ref-bit check.
+- **`RedisStore` OCC fallback** ran `WATCH`/`MULTI`/`EXEC` on a shared connection — concurrent applies
+  (`checkMany` on a custom strategy) cross-contaminated (lost update). Each transaction now isolates onto its
+  own connection when the client supports `duplicate()`.
+- **`ttlFloorMs` on the read path** — the floor ran on `peek()`/`forecast()`, writing a `PEXPIRE` during a
+  non-consuming read; it is now skipped on read-only ops.
+- **`sketchRateLimit` collision griefing.** The double-hash row form collapsed to 2 degrees of freedom and the
+  seeds were fixed public constants; rows now hash independently under a per-instance random seed.
+- **`mergeSnapshot`** silently zeroed tail counters (`NaN→0`) when fed a counters array shorter than
+  `width*depth`; it now fails closed.
+- **`slidingWindowLog` fractional cost** — the JS and Lua paths charged `ceil`/`floor` units respectively
+  (JS↔Lua divergence; non-integer `remaining`); both now charge whole (`ceil`) units.
+- **`tokenBudget` / `distributedTokenBudget`** rejected a fractional budget in `(0,1)` that floored to `L=0`
+  and silently denied every debit; such a budget is now rejected at construction.
+- **`tokenBudget.debit()`** threw synchronously on invalid tokens instead of returning a rejected promise.
+- **Trusted-proxy allowlist** mis-evaluated an IPv4-mapped IPv6 CIDR (a `/104` was rejected); the prefix is
+  now interpreted in v6 space.
+- **Policy plan `coldRecord`** re-recorded a baseline corpus under the 1,000,000-step default cap, spuriously
+  refusing any policy with a larger corpus; the recorder cap is now sized to the input.
+- **Replay candidate** delta on a strategy-inapplicable field replayed as a silent zero-divergence; it now
+  refuses. The recorder's key-collision map is bounded by `maxSteps`, and its collision error no longer leaks
+  raw (un-redacted) keys.
+- **Golden wire vectors** used `now=0` for rate-limit ops, which the Redis Lua reads as the "use server clock"
+  sentinel (unreplayable by a raw-Lua port); those ops are shifted off zero (decisions unchanged).
+- **CLI replay** aborted the whole run on one row with a non-positive/`NaN` cost (now skipped); a value-less
+  `--limit` silently built `limit=1` (now the documented default); a `--name` matching an `Object.prototype`
+  member crashed (now an own-property check).
+- **Elysia adapter** mis-classified a 5xx set via a status-name string for `dropOn5xx`; **Nest adapter**
+  validates guard `defaults` eagerly instead of throwing per-request outside the fail-policy.
+- **Store determinism (test infrastructure / `ttlFloorMs`).** Root-fixed the real-Redis-PEXPIRE-vs-injected-
+  clock divergence in the cross-store and fused conformance gates via `ttlFloorMs`.
+
 ## [1.5.2] — 2026-06-13
 
 A second audit patch (same discipline: every fix reproduced on real code, traced, and pinned by a
