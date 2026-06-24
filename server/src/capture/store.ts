@@ -110,13 +110,22 @@ export function createSegmentStore(
     list: listRefs,
 
     async read(id): Promise<CaptureSegment> {
-      const ref = (await listRefs()).find((r) => r.id === id);
-      if (ref === undefined) throw new Error(`segment ${JSON.stringify(id)} not found`);
+      // Validate the id directly against the anchored FILE_RE — same path-traversal guard as listRefs
+      // (no `/`, `\`, or `..` can match `^seg-<digits>-<hex>\.bin$`), but O(1): no readdir + scan of the
+      // whole directory per read. createdAt is recovered from the id for the TTL check. (The old read()
+      // re-ran listRefs per call, making cli `list` — read per ref — O(N^2) in directory syscalls.)
+      const m = FILE_RE.exec(id);
+      if (m === null) throw new Error(`segment ${JSON.stringify(id)} not found`);
+      const createdAt = Number(m[1]);
       // Refuse a past-TTL segment WITHOUT deleting it — only sweep() (and write()'s pre-sweep) delete, so a
       // read-only list/export never silently purges + skips its audit. The next flush's sweep removes it.
-      if (isExpired(ref.createdAt))
-        throw new Error(`segment ${JSON.stringify(id)} is past its TTL`);
-      const blob = await readFile(join(dir, id));
+      if (isExpired(createdAt)) throw new Error(`segment ${JSON.stringify(id)} is past its TTL`);
+      let blob: Buffer;
+      try {
+        blob = await readFile(join(dir, id)); // ENOENT ⇒ not found (matches the old missing-ref path)
+      } catch {
+        throw new Error(`segment ${JSON.stringify(id)} not found`);
+      }
       if (blob.length < IV_BYTES + TAG_BYTES)
         throw new Error(`segment ${JSON.stringify(id)} is corrupt (truncated blob)`);
       const iv = blob.subarray(0, IV_BYTES);

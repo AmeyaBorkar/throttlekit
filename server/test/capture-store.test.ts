@@ -1,9 +1,23 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSegmentStore } from "../src/capture/store.js";
 import type { CaptureSegment, DurableConfig, RetentionConfig } from "../src/capture/types.js";
+
+// Wrap node:fs/promises so we can COUNT readdir() calls (the O(N^2) symptom) while every other fs
+// op delegates to the real implementation. The counter is module-scoped and reset per test.
+const fsCounters = { readdir: 0 };
+vi.mock("node:fs/promises", async (importActual) => {
+  const actual = await importActual<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readdir: (...args: Parameters<typeof actual.readdir>) => {
+      fsCounters.readdir += 1;
+      return (actual.readdir as (...a: unknown[]) => unknown)(...args);
+    },
+  };
+});
 
 /**
  * #289 Replay P3 (Phase B) — P3.3: the durable AES-256-GCM segment store. The security-critical phase:
@@ -129,5 +143,33 @@ describe("#289 P3.3 — durable AES-256-GCM segment store", () => {
     await s.write(sampleSegment(1000));
     await s.write(sampleSegment(2000));
     expect((await s.list()).map((r) => r.createdAt)).toEqual([1000, 2000, 3000]);
+  });
+
+  it("read() does not enumerate the directory (O(1) in stored count, not O(N))", async () => {
+    // A single read() must validate the id and stat one file — never re-readdir the whole
+    // directory. The old read() re-ran listRefs (a full readdir + regex scan + .find), making
+    // cli `list` (read per ref) O(N^2) in directory syscalls.
+    const s = makeStore();
+    const ids: string[] = [];
+    for (let i = 0; i < 8; i++) ids.push(await s.write(sampleSegment(1000 + i)));
+    fsCounters.readdir = 0;
+    await s.read(ids[0] as string);
+    expect(fsCounters.readdir).toBe(0);
+  });
+
+  it("read() still validates the id (path-traversal guard) and TTL after the O(1) change", async () => {
+    let now = 1000;
+    const s = makeStore({ now: () => now }, 5000);
+    const id = await s.write(sampleSegment(1000));
+    // A non-matching / traversal id throws "not found" (the anchored FILE_RE rejects slashes/..).
+    await expect(s.read("../etc/passwd")).rejects.toThrow(/not found/);
+    await expect(s.read("not-a-segment")).rejects.toThrow(/not found/);
+    // A well-formed but absent id is also "not found".
+    await expect(s.read("seg-1000-deadbeefdeadbeef.bin")).rejects.toThrow(/not found/);
+    // Round-trip still works; TTL refusal still fires (and does not delete).
+    expect(await s.read(id)).toEqual(sampleSegment(1000));
+    now = 7000;
+    await expect(s.read(id)).rejects.toThrow(/past its TTL/);
+    expect(await s.list()).toHaveLength(1);
   });
 });
