@@ -1,6 +1,12 @@
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
-import { ManualClock, adaptiveConcurrency, unifiedAdmission } from "throttlekit";
+import {
+  ManualClock,
+  adaptiveConcurrency,
+  fixedWindow,
+  rateLimit,
+  unifiedAdmission,
+} from "throttlekit";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type RunningServer, resolveProtoPath, serve } from "../src/grpc.js";
 import {
@@ -124,6 +130,40 @@ describe("admission lifecycle — in-process service core", () => {
     await expect(mixed.admit("api", "k")).rejects.toBeInstanceOf(OperationNotSupportedError);
     await expect(mixed.check("cc", "k")).rejects.toBeInstanceOf(OperationNotSupportedError);
     await expect(mixed.admit("ghost", "k")).rejects.toBeInstanceOf(PolicyNotFoundError);
+  });
+});
+
+describe("admit cost is inert on the rate axis (documented one-oracle behavior)", () => {
+  // Pins the documented Admit contract: a rate×concurrency policy has NO cost axis (buildAdmitter
+  // wires none), and unifiedAdmission's sequential path debits the rate axis exactly 1 per Admit
+  // regardless of opts.cost. So admit(cost:10) does NOT exhaust a limit=10 rate window in one call —
+  // it takes 10 calls. The AdmitOptions.cost / proto comments now say so explicitly. This guards
+  // against a future change silently making cost weight the rate axis (which would need core reauth).
+  it("admit(cost:10) debits exactly 1 rate unit; a limit=10 window permits 10 such admits", async () => {
+    const clock = new ManualClock(0);
+    const admitter = unifiedAdmission({
+      // High concurrency ceiling so the rate axis is the only binding lane; no cost axis configured.
+      concurrency: adaptiveConcurrency({ minLimit: 1000, maxLimit: 1000, clock }),
+      rate: rateLimit({ strategy: fixedWindow({ limit: 10, windowMs: 1000 }), clock }),
+      clock,
+    });
+    const service = createRateLimiterService({
+      limiters: {},
+      admitters: { p: admitter },
+      clock,
+      leaseTtlMs: 2000,
+    });
+
+    let allowed = 0;
+    for (let i = 0; i < 10; i++) {
+      const a = await service.admit("p", "k", { cost: 10 });
+      if (a.decision.allowed) allowed += 1;
+    }
+    // If cost weighted the rate axis, one cost=10 admit would have exhausted the window (1 allowed).
+    // The documented behavior is cost-inert-on-rate: all 10 fit.
+    expect(allowed).toBe(10);
+    // The 11th admit is denied — the window is now full at 10 rate units (1 per admit).
+    expect((await service.admit("p", "k", { cost: 10 })).decision.allowed).toBe(false);
   });
 });
 

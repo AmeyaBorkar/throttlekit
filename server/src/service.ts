@@ -33,7 +33,12 @@ import {
 
 /** Per-call options for {@link RateLimiterService.admit} (the concurrency / unified axes). */
 export interface AdmitOptions {
-  /** Rate/cost units (default 1). */
+  /**
+   * Cost-axis weight (default 1). NOTE: the rate axis always consumes exactly 1 per Admit; `cost`
+   * weights only a configured cost axis. Server Admit policies (concurrency + optional rate strategy)
+   * configure no cost axis today, so `cost` is currently inert on Admit — use Debit/Check for weighted
+   * consumption.
+   */
   cost?: number;
   /** Expected hold/service time for the 3-axis joint-LP concurrency term (default 0; experimental). */
   hold?: number;

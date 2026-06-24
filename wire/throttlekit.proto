@@ -119,7 +119,10 @@ message DebitResponse {
 message AdmitRequest {
   string policy = 1;
   string key    = 2;   // passed to the rate/cost axes; the concurrency axis is keyless
-  int64  cost   = 3;   // rate/cost units; 0 ⇒ 1
+  int64  cost   = 3;   // cost-axis units (0 ⇒ 1). NOTE: the rate axis always consumes 1 per Admit;
+                       // cost weights ONLY a configured cost axis. Server Admit policies (concurrency
+                       // + optional rate strategy) have no cost axis, so cost is currently inert on
+                       // Admit — use Debit/Check for weighted consumption.
   int64  hold   = 4;   // 3-axis concurrency term for the joint-LP policy (default 0; experimental)
   int64  value  = 5;   // joint-LP bid value (default 0 ⇒ 1; experimental)
 }
