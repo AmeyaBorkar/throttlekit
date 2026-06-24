@@ -7,6 +7,27 @@ conformance-tested against the golden vectors).
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-06-23
+
+Server-side findings from the full audit sweep — each reproduced on real code, traced, and pinned by a
+regression proven to fail on the prior commit.
+
+### Fixed
+
+- **Monitor `safeStringify` DAG false-positive.** The cycle guard used a global seen-set, so a shared
+  (non-circular) object reached by two paths in a snapshot was corrupted to the literal `"[Circular]"`. It now
+  tracks ancestors on the current path, so only a genuine back-edge is tamed (BigInt → string and the
+  never-throws guarantee are unchanged).
+- **Startup banner security label.** The banner reported `"mTLS"` whenever `--tls-ca` was given, even when
+  `--tls-cert`/`--tls-key` were missing and `createServerCredentials` had silently downgraded the
+  channel to insecure. The label now tracks the channel that is actually built (and `main()` fails closed).
+- **Capture `SegmentStore.read` was O(N).** Each `read(id)` re-ran a full directory scan, making admin `list`
+  O(N²) over the segment store; `read` now validates the id and opens the single file directly (same
+  traversal guard).
+- **`Admit` `cost` documentation.** Clarified (JSDoc + the tracked proto comment) that `cost` weights only a
+  configured cost axis; an Admit policy's rate axis always consumes exactly 1 per call. Behavior unchanged; a
+  test pins it.
+
 ## [0.4.2] — 2026-06-13
 
 An audit patch for the server surfaces (Monitor / capture / Admit lifecycle). Each fix was reproduced on
