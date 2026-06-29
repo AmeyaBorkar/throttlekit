@@ -5,7 +5,7 @@
  * decision streams into one — a *wrong* forensic record, not merely a lossy one.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ThrottleKitError, hashKey } from "throttlekit";
 import type { LimiterSpec } from "throttlekit/config";
 import type { RedactionConfig, RedactionMode } from "./types.js";
@@ -20,8 +20,6 @@ export const DROP_PLACEHOLDER = "__redacted__";
  * is astronomically unlikely, so beyond this cap the guard is best-effort (it stops tracking new refs).
  */
 const COLLISION_GUARD_MAX = 50_000;
-/** A fixed, distinct salt for the collision witness — independent of the redaction `derive` function. */
-const WITNESS_SALT = "throttlekit-capture-collision-witness";
 
 /** A bound redactor: one mode + (for `per-trace-salt`) one captured salt. */
 export interface Redactor {
@@ -70,7 +68,12 @@ export function createRedactor(config: RedactionConfig): Redactor {
     if (seen !== undefined) {
       const prev = seen.get(ref);
       if (prev !== undefined || seen.size < COLLISION_GUARD_MAX) {
-        const witness = hashKey(raw, WITNESS_SALT); // a PII-free second digest, never the raw key
+        // A PII-free second digest, never the raw key. It is a plain (unkeyed) SHA-256: the witness is
+        // only ever compared against another witness computed the same way, it never persists and never
+        // leaves this in-process `seen` Map, so it needs no keyed-hash secrecy — and an unkeyed digest is
+        // ~half the work of the HMAC-SHA-256 the redaction REF uses. (The REF — `derive(raw)` — that
+        // reaches disk is unchanged; only this internal collision witness changed.)
+        const witness = createHash("sha256").update(raw).digest("hex");
         if (prev !== undefined) {
           if (prev !== witness)
             throw new ThrottleKitError(
