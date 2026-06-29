@@ -79,7 +79,7 @@ interface TenantSeries {
 }
 
 /** A validated, fully-coerced tenant reading: a usable key plus finite, non-negative metrics. */
-interface TenantReading {
+export interface TenantReading {
   key: string;
   used: number;
   weight: number;
@@ -110,6 +110,36 @@ function readTenant(t: { tenant: string; weight: number; used: number }): Tenant
   };
 }
 
+/** Validate + finite-coerce the roster (drop missing/empty keys, finite-coerce metrics), in roster order. */
+function collectValid(stats: CostRoomStats): TenantReading[] {
+  const valid: TenantReading[] = [];
+  for (const t of stats.tenants) {
+    const r = readTenant(t);
+    if (r !== null) valid.push(r);
+  }
+  return valid;
+}
+
+/**
+ * One snapshot frame's validated roster — computed ONCE in {@link costRoomSource} and shared by the
+ * accumulator and the renderer, so a frame validates + sorts the roster once rather than once in
+ * `sample()` and again in `buildCostRoom()`. It carries the FULL validated set in roster order
+ * (`buildCostRoom` needs all of it for `totalWeight` + `activeTenants`, not just the top-N) plus a single
+ * used-descending stable sort (the shared comparator) for the top-N selection both consumers do.
+ */
+export interface ValidatedRoster {
+  /** Every usable tenant reading, in roster order (the order `stats.tenants` arrived in). */
+  readonly valid: TenantReading[];
+  /** {@link ValidatedRoster.valid} sorted by `used` descending — one stable sort with the shared comparator. */
+  readonly sorted: TenantReading[];
+}
+
+/** Validate + finite-coerce the roster once, then sort it once — the shared per-frame projection. */
+function validateRoster(stats: CostRoomStats): ValidatedRoster {
+  const valid = collectValid(stats);
+  return { valid, sorted: [...valid].sort((a, b) => b.used - a.used) };
+}
+
 /**
  * A bounded per-tenant burn accumulator. `sample()` is called once per frame with the live WFE stats;
  * `rate()` derives a Prometheus-style span rate. Peak state is bounded at `maxKeys` rings × `ringSize`
@@ -134,7 +164,7 @@ export class BurnAccumulator {
    * window (warming; nothing to sample), per-tenant increment sampling with negative-delta discard,
    * dropping vanished tenants, and activity-ranked eviction down to `maxKeys`.
    */
-  sample(stats: CostRoomStats, now: number): void {
+  sample(stats: CostRoomStats, now: number, roster?: ValidatedRoster): void {
     // Coerce a corrupt windowStart (NaN / +Infinity) to the warming sentinel so it can't poison the math.
     const ws = Number.isFinite(stats.windowStart) ? stats.windowStart : Number.NEGATIVE_INFINITY;
 
@@ -158,15 +188,14 @@ export class BurnAccumulator {
 
     // Ring only the hottest `maxKeys` tenants this frame (by `used`), ranked by activity — so a
     // 100k-tenant flood never allocates 100k rings (peak state is bounded to `maxKeys`), and the tenants
-    // actually rendered always keep a warm ring (no arbitrary-FIFO "warming flap" pathology).
-    const valid: TenantReading[] = [];
-    for (const t of stats.tenants) {
-      const r = readTenant(t);
-      if (r !== null) valid.push(r);
-    }
+    // actually rendered always keep a warm ring (no arbitrary-FIFO "warming flap" pathology). The
+    // validation + sort is shared with `buildCostRoom` via `roster` (one per frame from costRoomSource);
+    // a standalone caller (no `roster`) validates internally and sorts only when selection requires it —
+    // identical `selected` either way (`roster.sorted === [...valid].sort(cmp)`).
+    const valid = roster?.valid ?? collectValid(stats);
     const selected =
       valid.length > this.#maxKeys
-        ? [...valid].sort((a, b) => b.used - a.used).slice(0, this.#maxKeys)
+        ? (roster?.sorted ?? [...valid].sort((a, b) => b.used - a.used)).slice(0, this.#maxKeys)
         : valid;
 
     const present = new Set<string>();
@@ -241,6 +270,7 @@ export function buildCostRoom(
   acc: BurnAccumulator,
   now: number,
   opts: ResolvedOptions,
+  roster?: ValidatedRoster,
 ): LensCostRoomSnapshot {
   // A corrupt windowStart (NaN / +Infinity) is treated as the warming sentinel; -Infinity stays warming.
   const windowStart = Number.isFinite(stats.windowStart)
@@ -254,17 +284,20 @@ export function buildCostRoom(
   // A window narrower than the span we need can never accrue a clean rate within one window.
   const windowTooShort = opts.windowMs < opts.minSpanMs * 1.3;
 
-  // Validate + coerce the roster once (drop missing/empty keys; finite-coerce metrics).
-  const valid: TenantReading[] = [];
-  for (const t of stats.tenants) {
-    const r = readTenant(t);
-    if (r !== null) valid.push(r);
-  }
+  // Validate + coerce the roster (drop missing/empty keys; finite-coerce metrics). Shared with the
+  // accumulator via `roster` (one validation + sort per frame from costRoomSource); a standalone caller
+  // validates internally. `totalWeight` + `activeTenants` need the FULL roster — summed in roster order so
+  // the floating-point total is byte-identical to the pre-share path.
+  const valid = roster?.valid ?? collectValid(stats);
   let totalWeight = 0;
   for (const r of valid) totalWeight += r.weight;
 
-  // Render candidates: the hottest `renderCap` tenants by `used` (the accumulator tracks ≥ these).
-  const candidates = [...valid].sort((a, b) => b.used - a.used).slice(0, opts.renderCap);
+  // Render candidates: the hottest `renderCap` tenants by `used` (the accumulator tracks ≥ these). The
+  // shared `roster.sorted` is `[...valid].sort(cmp)`, so the sliced candidates are identical to before.
+  const candidates = (roster?.sorted ?? [...valid].sort((a, b) => b.used - a.used)).slice(
+    0,
+    opts.renderCap,
+  );
 
   const tenants: LensTenantBurnRow[] = [];
   let sumRate = 0;
@@ -363,8 +396,11 @@ export function costRoomSource(
   return (): LensCostRoomSnapshot => {
     const stats = asStats(read());
     const now = clock.now();
-    acc.sample(stats, now);
-    return buildCostRoom(policy, stats, acc, now, opts);
+    // Validate + sort the roster ONCE per frame, then share it with both the accumulator and the renderer
+    // (each previously re-validated + re-sorted the full roster independently — twice the work per frame).
+    const roster = validateRoster(stats);
+    acc.sample(stats, now, roster);
+    return buildCostRoom(policy, stats, acc, now, opts, roster);
   };
 }
 
