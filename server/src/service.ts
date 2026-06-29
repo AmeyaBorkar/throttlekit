@@ -221,7 +221,11 @@ export function createRateLimiterService(options: RateLimiterServiceOptions): Ra
   const enforcers = new Map<string, Enforcer>();
   for (const [name, limiter] of Object.entries(options.limiters)) {
     order.push(name);
-    enforcers.set(name, createEnforcer({ limiter, fail, policyName: name }));
+    // `emit: false` short-circuits the gate's `headersFor` to `{}` (no RateLimit header Record, no
+    // String() formatting, no clock read) — the service door returns only the core `Decision` over gRPC
+    // and never reads `r.headers`, so HTTP-style headers are pure dead work here. The Decision is wholly
+    // independent of `emit`, so this is byte-identical over the wire.
+    enforcers.set(name, createEnforcer({ limiter, fail, policyName: name, emit: false }));
   }
   // Token-budget (cost-axis) policies: one meter per key, lazily created and FIFO-bounded by `maxKeys`.
   const meters = new Map<string, { policy: MeterPolicy; cache: Map<string, ServerMeter> }>();
