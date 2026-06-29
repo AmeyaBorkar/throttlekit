@@ -393,10 +393,21 @@ export function federatedWeightedFairEscrow(
     return totalWeight > 0 ? Math.floor((weight * regionBudget) / totalWeight) : 0;
   }
 
-  /** In-region tenant fairness against `regionBudget`. Identical math to `weightedFairEscrow.decide`. */
-  function decide(entry: TenantEntry, cost: number, now: number): Decision {
+  /**
+   * In-region tenant fairness against `regionBudget`. Identical math to `weightedFairEscrow.decide`.
+   * `agg` lets the caller thread the active-set aggregate it already computed: the in-process
+   * `checkSync` path does (the aggregate is invariant from bootstrap through decide — nothing in
+   * between mutates a tenant's weight/used), saving a recompute. Omit it (the async path) to compute
+   * it fresh, since an awaited grant could let a `reset()` interleave.
+   */
+  function decide(
+    entry: TenantEntry,
+    cost: number,
+    now: number,
+    agg?: { totalWeight: number; totalUsed: number },
+  ): Decision {
     const resetAt = Math.ceil(windowStart + windowMs);
-    const { totalWeight, totalUsed } = aggregate();
+    const { totalWeight, totalUsed } = agg ?? aggregate();
     const gAsker = guaranteedShare(entry.weight, totalWeight);
     const lRemaining = regionBudget - totalUsed;
 
@@ -462,9 +473,16 @@ export function federatedWeightedFairEscrow(
     return entry;
   }
 
-  /** Non-mutating predicate: would {@link decide} admit `cost` for `entry` at the current budget? */
-  function wouldAdmit(entry: TenantEntry, cost: number): boolean {
-    const { totalWeight, totalUsed } = aggregate();
+  /**
+   * Non-mutating predicate: would {@link decide} admit `cost` for `entry` at the current budget?
+   * `agg` threads a precomputed active-set aggregate (the sync lease loop); omit it to compute fresh.
+   */
+  function wouldAdmit(
+    entry: TenantEntry,
+    cost: number,
+    agg?: { totalWeight: number; totalUsed: number },
+  ): boolean {
+    const { totalWeight, totalUsed } = agg ?? aggregate();
     const lRemaining = regionBudget - totalUsed;
     if (cost > lRemaining) return false;
     const gAsker = guaranteedShare(entry.weight, totalWeight);
@@ -488,10 +506,19 @@ export function federatedWeightedFairEscrow(
    * request only what the current backlog needs (bounded, not all of L), so regions still interleave
    * weight-fairly through the pool's reservation rather than the first one grabbing the whole budget.
    */
-  function ensureRegionBudget(entry: TenantEntry, cost: number, now: number): void {
+  function ensureRegionBudget(
+    entry: TenantEntry,
+    cost: number,
+    now: number,
+    agg: { totalWeight: number; totalUsed: number },
+  ): void {
+    // The active-set aggregate is invariant across this loop: `pool.grant` only moves `regionBudget`
+    // (which `guaranteedShare` reads live), and no tenant weight/used changes between checkSync's
+    // bootstrap and decide. So the single `agg` checkSync threaded in is byte-identical to the
+    // per-iteration rescan it replaces — and to decide's, which gets the same `agg`.
+    const { totalWeight, totalUsed } = agg;
     for (let iter = 0; iter < MAX_LEASE_ITERS; iter++) {
-      if (regionBudget >= L || wouldAdmit(entry, cost)) return;
-      const { totalWeight, totalUsed } = aggregate();
+      if (regionBudget >= L || wouldAdmit(entry, cost, agg)) return;
       let reserveOthers = 0;
       for (const t of tenants.values()) {
         if (t === entry) continue;
@@ -556,8 +583,12 @@ export function federatedWeightedFairEscrow(
     // Grow this region's pool-granted budget until it can admit (or the pool caps us at our
     // weighted-fair share). The region's weight is its CURRENT active aggregate tenant weight (the
     // GPS-decomposition condition that collapses the two-level hierarchy to a flat water-fill).
-    ensureRegionBudget(entry, cost, now);
-    return decide(entry, cost, now);
+    // Compute the active-set aggregate ONCE and thread it through the lease loop AND decide: on the
+    // synchronous path nothing mutates tenant weight/used between here and decide, so this one
+    // aggregate is byte-identical to the per-step rescans it replaces (#5a).
+    const agg = aggregate();
+    ensureRegionBudget(entry, cost, now, agg);
+    return decide(entry, cost, now, agg);
   }
 
   // With a store-backed pool, `ensureRegionBudgetAsync` awaits a round-trip, so two concurrent checks
