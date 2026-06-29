@@ -337,8 +337,11 @@ export function createFederationEngine<S>(options: FederateOptions<S>): Federati
     requireCost(cost);
     const key = keyFor(rawKey);
     const now = clock.now();
-    // Re-probe coordinator health if needed (no-op outside regional-only mode).
-    await maybeProbeHealth(now);
+    // Re-probe coordinator health if needed. The probe does nothing unless we are in regional-only
+    // mode AND currently believe the coordinator is down — its first two internal guards. Hoist that
+    // cheap check here so the common path (healthy coordinator, or fail-closed mode) skips the async
+    // call and its microtask hop entirely; the probe still fires under byte-identical conditions.
+    if (regionalOnlyActive && !coordinatorHealthy) await maybeProbeHealth(now);
     let e = advance(key, now);
 
     // Lease until balance >= cost or coordinator denies.
