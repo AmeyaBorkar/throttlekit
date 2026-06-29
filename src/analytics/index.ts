@@ -183,6 +183,9 @@ export function withAnalytics(limiter: Limiter, options: AnalyticsOptions = {}):
   requireAtLeast("withAnalytics.topK", topK, 1);
 
   let windowStart = -1;
+  // The cached window as a half-open interval `[windowStart, windowEnd)`. The hot path is a check, not a
+  // window roll, so we keep the end pre-computed and recompute the `floor` boundary only on a cross.
+  let windowEnd = -1;
   let allowed = 0;
   let denied = 0;
   const requested = new StreamSummary(topK);
@@ -201,9 +204,14 @@ export function withAnalytics(limiter: Limiter, options: AnalyticsOptions = {}):
    * exactly like {@link fixedWindow}. Resets counters and summaries on every roll.
    */
   const roll = (now: number): void => {
+    // Fast path: still inside the cached half-open window — two integer compares, no divide/floor/multiply
+    // (which `roll` ran on every single decision before). The boundary `floor` is recomputed only on a
+    // cross. Initially `[-1, -1)` is empty, so the first call always falls through and establishes it.
+    if (now >= windowStart && now < windowEnd) return;
     const start = Math.floor(now / windowMs) * windowMs;
     if (start !== windowStart) {
       windowStart = start;
+      windowEnd = start + windowMs;
       clear();
     }
   };
@@ -291,8 +299,11 @@ export function withAnalytics(limiter: Limiter, options: AnalyticsOptions = {}):
     },
 
     resetAnalytics(): void {
-      // Force the next observation/snapshot to re-establish the window, then clear all state.
+      // Force the next observation/snapshot to re-establish the window, then clear all state. Resetting
+      // `windowEnd` too is essential: otherwise `roll()`'s fast path would short-circuit on the next call
+      // and leave `windowStart` at -1, so `analytics()` would report `windowStartedAt = -1`.
       windowStart = -1;
+      windowEnd = -1;
       clear();
     },
   };
