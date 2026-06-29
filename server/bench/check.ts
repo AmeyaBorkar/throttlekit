@@ -38,7 +38,10 @@ const CONFIG = JSON.stringify({
 });
 
 /** The shape `rateLimiterHandlers().check` actually consumes: it reads only `call.request`. */
-type UnaryHandler = (call: { request: unknown }, cb: (err: unknown, resp?: unknown) => void) => void;
+type UnaryHandler = (
+  call: { request: unknown },
+  cb: (err: unknown, resp?: unknown) => void,
+) => void;
 
 interface Row {
   label: string;
@@ -93,7 +96,9 @@ async function main(): Promise<void> {
   // Confirm we're on the ALLOW path before timing (a denied/erroring config would silently skew the row).
   const probe = (await checkOnce()) as { decision?: { allowed?: boolean } };
   if (probe?.decision?.allowed !== true) {
-    throw new Error("Check-handler bench expected an ALLOW decision; got a deny — check the config");
+    throw new Error(
+      "Check-handler bench expected an ALLOW decision; got a deny — check the config",
+    );
   }
 
   for (let i = 0; i < WARMUP; i++) await checkOnce(); // warm up / JIT
