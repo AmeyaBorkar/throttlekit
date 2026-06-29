@@ -29,8 +29,13 @@ export interface SegmentRef {
 
 /** The durable encrypted segment store. */
 export interface SegmentStore {
-  /** Encrypt + persist a segment (sweeping past-TTL files first); returns its opaque id. */
-  write(segment: CaptureSegment): Promise<string>;
+  /**
+   * Encrypt + persist a segment; returns its opaque id. Sweeps past-TTL files first when `presweep` is
+   * `true` (the default — the contract every direct caller relies on). The flush loop passes `false`
+   * after sweeping ONCE up front for the whole batch: a segment written this batch is freshly created and
+   * cannot be past-TTL, so re-sweeping per write would only repeat the full directory scan (O(K×N)).
+   */
+  write(segment: CaptureSegment, presweep?: boolean): Promise<string>;
   /** List stored segment handles (timestamps only — **no decryption**), oldest first. */
   list(): Promise<SegmentRef[]>;
   /**
@@ -92,9 +97,12 @@ export function createSegmentStore(
   }
 
   return {
-    async write(segment): Promise<string> {
+    async write(segment, presweep = true): Promise<string> {
       await mkdir(dir, { recursive: true });
-      await sweep(); // TTL enforced at write — a stale segment never lingers past its window
+      // TTL enforced at write — a stale segment never lingers past its window. The flush loop sweeps the
+      // batch ONCE before its writes (passing `presweep: false`) so this no longer rescans the directory
+      // per segment; a direct caller (`presweep` defaults true) still sweeps past-TTL first, unchanged.
+      if (presweep) await sweep();
       const iv = randomBytes(IV_BYTES);
       const cipher = createCipheriv("aes-256-gcm", key, iv);
       const plaintext = Buffer.from(JSON.stringify(segment), "utf8");

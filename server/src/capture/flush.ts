@@ -33,13 +33,24 @@ export function createFlushLoop(recorder: CaptureRecorder, store: SegmentStore):
     const segments = recorder.drain();
     let written = 0;
     let dropped = 0;
-    for (const segment of segments) {
+    if (segments.length > 0) {
+      // Sweep past-TTL files ONCE for the whole batch, then write each segment without re-sweeping
+      // (`presweep: false`). Every segment we write now is freshly created so it cannot be past-TTL —
+      // the single leading sweep enforces retention for the batch, turning O(K segments × N files) into
+      // O(N). A sweep fault is best-effort (it never fails the flush — retention catches up next batch).
       try {
-        await store.write(segment);
-        written++;
+        await store.sweep();
       } catch {
-        // A write failure drops that segment, counted — never throws (flush is best-effort + off-path).
-        dropped++;
+        /* best-effort: a sweep fault never fails the flush — the next batch's sweep catches up */
+      }
+      for (const segment of segments) {
+        try {
+          await store.write(segment, false);
+          written++;
+        } catch {
+          // A write failure drops that segment, counted — never throws (flush is best-effort + off-path).
+          dropped++;
+        }
       }
     }
     return { written, dropped };
