@@ -330,11 +330,12 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
         // copy: if the composite denies, returning persist:false alone would still leave that in-place
         // bump on the shared object, partial-consuming a co-keyed dimension (the all() no-partial-consume
         // contract). The persisted state is re-derived from the live object in the commit phase below.
-        out = dim.strategy.check(
-          state === undefined ? undefined : structuredClone(state),
-          now,
-          cost,
-        );
+        // Only object/array state can be mutated in place, so only it needs the copy: primitive/null
+        // state (e.g. gcra's Strategy<number>) is immutable and passes straight through. Skipping the
+        // clone for primitives changes no decision — structuredClone of a primitive returns an equal
+        // primitive — and is the audit's strongest multi-path win (gcra dimensions no longer clone).
+        const arg = state === null || typeof state !== "object" ? state : structuredClone(state);
+        out = dim.strategy.check(arg, now, cost);
         return { state, result: out.result, ttlMs: out.ttlMs, persist: false };
       }) as Transform<unknown, Decision>;
       store.applySync(fk, peek, now);
