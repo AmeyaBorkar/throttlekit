@@ -161,6 +161,37 @@ export function leakyBucket(options: LeakyBucketOptions): Shaper {
     return fn as Transform<number, Reservation>;
   };
 
+  // A single reused transform for reserveSync's local hot path (mirrors core/limiter.ts). reserveSync
+  // sets these slots then invokes the transform through a synchronous applySync with no await in
+  // between, so single-threaded execution guarantees the slots are read before any other call can run
+  // — safe to reuse, and it avoids a per-call closure + dead LuaInvocation allocation. No Lua
+  // invocation is attached: a synchronous store never reads it. The async reserve() path keeps
+  // makeTransform, which legitimately needs the Lua form plus per-call reentrant state.
+  let syncNow = 0;
+  let syncCost = 1;
+  const syncTransform = ((state: number | undefined): ApplyOutcome<number, Reservation> => {
+    const now = syncNow;
+    const inc = T * syncCost;
+    const stored = state ?? now;
+    const departure = stored > now ? stored : now;
+    const delay = departure - now;
+    if (delay > maxQueueMs) {
+      return {
+        state,
+        result: { accepted: false, delayMs: Math.ceil(delay - maxQueueMs) },
+        ttlMs: maxQueueMs,
+        persist: false,
+      };
+    }
+    const newDeparture = departure + inc;
+    return {
+      state: newDeparture,
+      result: { accepted: true, delayMs: Math.ceil(delay) },
+      ttlMs: Math.max(1, Math.ceil(newDeparture - now)),
+      persist: true,
+    };
+  }) as Transform<number, Reservation>;
+
   return {
     async reserve(key: string, cost = 1): Promise<Reservation> {
       requireCost(cost);
@@ -173,8 +204,9 @@ export function leakyBucket(options: LeakyBucketOptions): Shaper {
           "reserveSync requires a synchronous store (e.g. MemoryStore); the configured store is async-only",
         );
       }
-      const now = clock.now();
-      return store.applySync(keyFor(key), makeTransform(now, cost), now);
+      syncNow = clock.now();
+      syncCost = cost;
+      return store.applySync(keyFor(key), syncTransform, syncNow);
     },
     async schedule(key: string, cost = 1): Promise<void> {
       const r = await this.reserve(key, cost);
