@@ -583,8 +583,18 @@ export function federatedWeightedFairEscrow(
 
   return {
     checkSync,
-    async check(tenant: string, cost = 1): Promise<Decision> {
-      return isAsync ? checkAsync(tenant, cost) : checkSync(tenant, cost);
+    // Not `async`: the async (store-backed) path returns the serialized `checkAsync` promise
+    // directly — dropping the adoption microtask tick — and the in-process path funnels
+    // checkSync()'s synchronous throw through Promise.reject. `checkAsync` is still *called*
+    // synchronously here, so it mutates `checkChain` at call time in call order — the Σ ≤ L
+    // serialization the chain provides is unchanged.
+    check(tenant: string, cost = 1): Promise<Decision> {
+      if (isAsync) return checkAsync(tenant, cost);
+      try {
+        return Promise.resolve(checkSync(tenant, cost));
+      } catch (err) {
+        return Promise.reject(err);
+      }
     },
     reset(tenant?: string): void {
       if (tenant === undefined) {

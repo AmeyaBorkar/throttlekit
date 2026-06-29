@@ -412,23 +412,15 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     return decide(entry, cost, now);
   }
 
-  async function check(tenant: string, cost = 1): Promise<Decision> {
-    const w = validateInputs(tenant, cost);
-    const now = clock.now();
-    rollWindow(now);
-    let entry = tenants.get(tenant);
-    if (entry === undefined) entry = bootstrapTenant(tenant, w);
-    else entry.weight = w;
-
-    if (l2 === undefined) {
-      return decide(entry, cost, now);
-    }
-
-    // L2 path. Top up `lEffective` by leasing from the shared store whenever the local budget is
-    // insufficient to satisfy the T1 cap (`L_remaining ≥ cost`). The borrow phase's reserve math
-    // is bounded by `lEffective`, so growing it grows both `gᵢ` and the reserve in lockstep —
-    // leasing past T1 satisfaction doesn't help the borrow-blocked-by-reserve case and would only
-    // pull more credits out of the shared pool unnecessarily. Documented in DESIGN.md §6.3.
+  /**
+   * The L2 lease loop, extracted so the synchronous {@link check} prelude can hand the promise back
+   * directly. Top up `lEffective` by leasing from the shared store whenever the local budget is
+   * insufficient to satisfy the T1 cap (`L_remaining ≥ cost`). The borrow phase's reserve math
+   * is bounded by `lEffective`, so growing it grows both `gᵢ` and the reserve in lockstep —
+   * leasing past T1 satisfaction doesn't help the borrow-blocked-by-reserve case and would only
+   * pull more credits out of the shared pool unnecessarily. Documented in DESIGN.md §6.3.
+   */
+  async function checkL2(entry: TenantEntry, cost: number, now: number): Promise<Decision> {
     for (;;) {
       const { totalUsed } = aggregate();
       const lRem = lEffective - totalUsed;
@@ -461,6 +453,34 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     }
 
     return decide(entry, cost, now);
+  }
+
+  // Not `async`: the L1 / sync-pool branch is purely synchronous, so it hands back an
+  // already-resolved promise (mirroring rateLimit()'s sync fast path in core/limiter.ts) and the
+  // L2 branch returns the lease-loop promise directly — no `async` adoption microtask. A throw in
+  // the synchronous prelude is funnelled through `Promise.reject` so throw-becomes-reject is kept.
+  function check(tenant: string, cost = 1): Promise<Decision> {
+    let entry: TenantEntry;
+    let now: number;
+    try {
+      const w = validateInputs(tenant, cost);
+      now = clock.now();
+      rollWindow(now);
+      const existing = tenants.get(tenant);
+      if (existing === undefined) {
+        entry = bootstrapTenant(tenant, w);
+      } else {
+        existing.weight = w;
+        entry = existing;
+      }
+    } catch (err) {
+      return Promise.reject(err);
+    }
+
+    if (l2 === undefined) {
+      return Promise.resolve(decide(entry, cost, now));
+    }
+    return checkL2(entry, cost, now);
   }
 
   return {
