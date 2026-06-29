@@ -198,8 +198,12 @@ export class PostgresCoordinator implements GlobalCoordinator {
       const windowStart = Math.floor(nowMs / this.#windowMs) * this.#windowMs;
       const expiresAt = windowStart + this.#windowMs;
 
-      // Upsert: initialize OR roll the window in place.
-      await client.query(
+      // Upsert: initialize OR roll the window in place. `DO UPDATE` already
+      // row-locks the conflicting row, and `RETURNING budget` yields the
+      // identical post-upsert budget — so we read it straight from here
+      // instead of a redundant `SELECT … FOR UPDATE` round-trip that would
+      // just re-lock and re-read the same row we already wrote in this txn.
+      const upsertResult = await client.query(
         `INSERT INTO ${this.#tableName} (key, budget, expires_at, reconciled_markers, updated_at)
          VALUES ($1, $2, $3, '{}'::bigint[], $4)
          ON CONFLICT (key) DO UPDATE
@@ -214,18 +218,13 @@ export class PostgresCoordinator implements GlobalCoordinator {
                    THEN '{}'::bigint[]
                  ELSE ${this.#tableName}.reconciled_markers
                END,
-               updated_at = EXCLUDED.updated_at`,
+               updated_at = EXCLUDED.updated_at
+         RETURNING budget`,
         [pgKey, perKeyBudget, expiresAt, nowMs],
       );
-
-      // Lock + read the now-fresh budget.
-      const lockResult = await client.query(
-        `SELECT budget FROM ${this.#tableName} WHERE key = $1 FOR UPDATE`,
-        [pgKey],
-      );
-      const row = lockResult.rows[0] as { budget: string | number } | undefined;
+      const row = upsertResult.rows[0] as { budget: string | number } | undefined;
       if (row === undefined) {
-        // Cannot happen — the upsert above guarantees a row. Defensive.
+        // Cannot happen — `DO UPDATE` always RETURNs the upserted row. Defensive.
         throw new Error("internal: tk_fed_state row missing after upsert");
       }
       const currentBudget = Number(row.budget);

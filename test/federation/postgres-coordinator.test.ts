@@ -15,6 +15,7 @@ import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { PostgresCoordinator } from "../../src/federation";
+import type { PgClientLike, PgPoolLike, PgQueryResultLike } from "../../src/postgres/store";
 
 const url = process.env.THROTTLEKIT_TEST_POSTGRES;
 const d = url ? describe : describe.skip;
@@ -260,5 +261,96 @@ d("PostgresCoordinator (TK-1302)", () => {
       c.close();
       c.close(); // does not throw
     });
+  });
+});
+
+/**
+ * Storeless SQL-shape guard — runs WITHOUT `THROTTLEKIT_TEST_POSTGRES` (plain
+ * `describe`, not the gated `d`). Pins the lease-path perf optimization with a
+ * fake `PgPoolLike` that records every issued statement: the upsert must carry
+ * `RETURNING budget`, and the redundant `SELECT … FOR UPDATE` lock-read
+ * round-trip must be gone — while the decision (`granted = min(tokens, budget)`)
+ * stays unchanged. The live-Postgres suite above is what proves the RETURNING
+ * value equals the old SELECT value against a real database; this guards the
+ * query shape in CI with no database.
+ */
+describe("PostgresCoordinator lease — query shape (storeless)", () => {
+  const BUDGET = 100;
+
+  /** Fake pool: records issued SQL; answers the upsert RETURNING with the post-upsert budget. */
+  function makeRecordingPool(): { pool: PgPoolLike; issued: string[]; clientSql: string[] } {
+    const issued: string[] = [];
+    const clientSql: string[] = [];
+    // The upsert is the only statement the coordinator reads a budget back from.
+    const answer = (text: string): PgQueryResultLike =>
+      /INSERT INTO/.test(text) ? { rows: [{ budget: BUDGET }] } : { rows: [] };
+    const pool: PgPoolLike = {
+      async query(text: string): Promise<PgQueryResultLike> {
+        issued.push(text);
+        return answer(text);
+      },
+      async connect(): Promise<PgClientLike> {
+        return {
+          async query(text: string): Promise<PgQueryResultLike> {
+            issued.push(text);
+            clientSql.push(text);
+            return answer(text);
+          },
+          release(): void {
+            // no real pooled connection to return
+          },
+        };
+      },
+    };
+    return { pool, issued, clientSql };
+  }
+
+  const makeCoord = (pool: PgPoolLike) =>
+    new PostgresCoordinator({
+      pool,
+      windowMs: 60_000,
+      budgetPerWindow: BUDGET,
+      tableName: "tk_fed_state_mock",
+      prefix: "mock",
+      gcIntervalMs: 0,
+      useServerTime: false, // deterministic now() — no clock_timestamp() round-trip to stub
+    });
+
+  it("lease upsert RETURNs budget and issues no SELECT FOR UPDATE round-trip", async () => {
+    const { pool, issued, clientSql } = makeRecordingPool();
+    const c = makeCoord(pool);
+    try {
+      // Decision unchanged: min(30, 100) = 30, read from the upsert's RETURNING budget.
+      expect(await c.lease("k", 30, Date.now() + 60_000)).toBe(30);
+
+      const upsert = clientSql.find((s) => s.includes("INSERT INTO"));
+      expect(upsert, "lease must issue the upsert").toBeDefined();
+      expect(upsert).toContain("ON CONFLICT (key) DO UPDATE");
+      expect(upsert).toContain("RETURNING budget");
+
+      // The redundant lock-read round-trip is gone: no FOR UPDATE anywhere, and no
+      // standalone SELECT on the lease path (clock_timestamp is off via useServerTime:false).
+      expect(issued.some((s) => /FOR UPDATE/.test(s))).toBe(false);
+      expect(clientSql.some((s) => s.trimStart().startsWith("SELECT"))).toBe(false);
+
+      // Transaction shape: BEGIN, one upsert(RETURNING), one decrement UPDATE, COMMIT — no extra read.
+      expect(clientSql[0]).toBe("BEGIN");
+      expect(clientSql[clientSql.length - 1]).toBe("COMMIT");
+      expect(clientSql.filter((s) => s.includes("INSERT INTO")).length).toBe(1);
+      expect(clientSql.filter((s) => s.trimStart().startsWith("UPDATE")).length).toBe(1);
+    } finally {
+      c.close();
+    }
+  });
+
+  it("grant stays capped to the RETURNed budget (min(tokens, budget))", async () => {
+    const { pool } = makeRecordingPool();
+    const c = makeCoord(pool);
+    try {
+      // Over-ask: min(250, 100) = 100 — proves granted derives from the RETURNed budget, not tokens.
+      expect(await c.lease("k", 250, Date.now() + 60_000)).toBe(BUDGET);
+    } finally {
+      c.close();
+    }
   });
 });
