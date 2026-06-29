@@ -329,6 +329,7 @@
     "bench:lens": "tsx bench/lens-taps.ts",
     "bench:lease": "tsx bench/lease.ts",
     "bench:fleet": "tsx server/bench/fleet.ts",
+    "bench:check": "tsx server/bench/check.ts",
     "wire:vectors": "tsx wire/generate.ts",
     "wire:scripts": "tsx wire/scripts/generate-scripts.ts",
     "wire": "npm run wire:vectors && npm run wire:scripts",

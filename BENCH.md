@@ -237,6 +237,9 @@ node --expose-gc --import tsx bench/lease.ts             # npm run bench:lease
 # The Fleet door — Tier-1 Check vs Tier-2 lease round-trip reduction (in-process + Redis coordinators):
 THROTTLEKIT_TEST_REDIS=redis://localhost:6380 npm run bench:fleet
 
+# The server Check handler CPU in isolation (no network — decision + enforce + message shaping):
+npm run bench:check
+
 # Head-to-head vs. rate-limiter-flexible and express-rate-limit (+ the distributed tiers):
 npm run bench:compare
 THROTTLEKIT_TEST_REDIS=redis://localhost:6380 \
@@ -246,7 +249,8 @@ THROTTLEKIT_TEST_POSTGRES=postgres://throttlekit:throttlekit@localhost:5433/thro
 
 Each run stamps a machine-tagged manifest into [`bench/manifests/`](bench/manifests/) (the JSON behind the
 tables above). The CI **bench-regression gate** (`npm run bench:gate`) guards the in-process hot paths —
-the three sync `checkSync` strategies — on every push using a machine-independent relative metric, so a
+the three sync `checkSync` strategies, the multi-dimensional `all()` combine (2- and 3-dimension), and the
+two-tier weighted-fair-escrow grant — on every push using a machine-independent relative metric, so a
 hot-path regression fails the build rather than silently shipping. The Tier-2 `lease spend` is measured and
 reported too, but at ~20 ns it sits below the gate's noise floor — too fast to ratio-normalise across
 machines — so its absolute cost is pinned by its own [`bench/lease.ts`](bench/lease.ts) rather than the

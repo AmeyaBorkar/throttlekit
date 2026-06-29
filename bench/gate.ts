@@ -58,8 +58,10 @@ import { fixedWindow } from "../src/algorithms/fixed-window";
 import { gcra } from "../src/algorithms/gcra";
 import { tokenBucket } from "../src/algorithms/token-bucket";
 import { rateLimit } from "../src/core/limiter";
+import { all, multiRateLimit } from "../src/multi/index";
 import { MemoryStore } from "../src/stores/memory";
 import { LeaseSpender } from "../src/twotier/lease-spender";
+import { weightedFairEscrow } from "../src/twotier/weighted-fair-escrow";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = resolvePath(HERE, "baseline.json");
@@ -107,6 +109,15 @@ interface Baseline {
 interface BenchCase {
   label: string;
   make: () => { checkSync: (key: string) => unknown };
+  /**
+   * Per-case timed-iteration override (default {@link ITERS}). The 2M default is sized for the ~170 ns
+   * `checkSync` rows, where many iters are needed to dominate timer + warmup noise. A microsecond-scale
+   * row (the multi-dimensional combine is ~5–8 µs/op — `structuredClone` on the read path) is already
+   * dead-stable at a fraction of that, and 2M iters would make the gate take minutes for no precision
+   * gain — so those cases lower it. `relative` is a per-op ratio, independent of the iteration count, so
+   * the machine-independent metric the gate compares is unaffected.
+   */
+  iters?: number;
 }
 
 const cases: BenchCase[] = [
@@ -144,6 +155,60 @@ const cases: BenchCase[] = [
       const s = new LeaseSpender({ limit: 1_000_000 });
       s.applyLease({ capacity: Number.MAX_SAFE_INTEGER, expiresAt: Number.MAX_SAFE_INTEGER });
       return { checkSync: () => s.spend(0, 1) };
+    },
+  },
+  {
+    // Multi-dimensional `all()` over a sync store, 2 dimensions (per-ip ∧ per-user). Each dimension's
+    // read phase peeks a `structuredClone` of its (primitive) gcra state before committing all-or-none —
+    // the path the perf audit's strongest win (skipping that clone for primitive state) lands on, so this
+    // guards it against a deopt the same way the `checkSync` rows guard the single-state algorithms. Each
+    // dimension uses the SAME gcra params as `gcra checkSync` above, so this row's relative cost is the
+    // combine-over-2-gcra-dimensions overhead. Adapts to the BenchCase `checkSync(key)` shape (ctx fixed).
+    label: "multi all() 2-dim checkSync",
+    iters: 200_000, // ~5 µs/op ⇒ 200k timed iters is already dead-stable; 2M would add minutes to the gate
+    make: () => {
+      const mkDim = () => gcra({ limit: 1_000_000, periodMs: 60_000 });
+      const m = multiRateLimit<{ ip: string; user: string }>({
+        strategy: all<{ ip: string; user: string }>({
+          ip: { key: (c) => c.ip, strategy: mkDim() },
+          user: { key: (c) => c.user, strategy: mkDim() },
+        }),
+        store: new MemoryStore({ sweepIntervalMs: 0 }),
+      });
+      const ctx = { ip: "203.0.113.7", user: "u-42" };
+      return { checkSync: () => m.checkSync(ctx) };
+    },
+  },
+  {
+    // The 3-dimension sibling (per-ip ∧ per-user ∧ per-route) — one more cloned-state read + commit per
+    // check, so the gap to the 2-dim row isolates the per-dimension cost the audit's clone-skip win cuts.
+    label: "multi all() 3-dim checkSync",
+    iters: 200_000, // ~8 µs/op ⇒ see the 2-dim note; keep the gate tractable
+    make: () => {
+      const mkDim = () => gcra({ limit: 1_000_000, periodMs: 60_000 });
+      const m = multiRateLimit<{ ip: string; user: string; route: string }>({
+        strategy: all<{ ip: string; user: string; route: string }>({
+          ip: { key: (c) => c.ip, strategy: mkDim() },
+          user: { key: (c) => c.user, strategy: mkDim() },
+          route: { key: (c) => c.route, strategy: mkDim() },
+        }),
+        store: new MemoryStore({ sweepIntervalMs: 0 }),
+      });
+      const ctx = { ip: "203.0.113.7", user: "u-42", route: "/v1/chat/completions" };
+      return { checkSync: () => m.checkSync(ctx) };
+    },
+  },
+  {
+    // Two-tier weighted-fair-escrow per-decision grant (L1-only ⇒ synchronous). Rotating 8 tenants keeps
+    // them all in the active set so the O(active-tenants) `aggregate()` scan that runs on every decision is
+    // exercised (not collapsed to N=1); `L` is large enough that every check stays on the within-guarantee
+    // grant branch (the ALLOW path). Guards the fair-allocation hot path the same way the others guard theirs.
+    label: "weightedFairEscrow grant (8 tenants)",
+    make: () => {
+      const wfe = weightedFairEscrow({ limit: 1_000_000_000, windowMs: 60_000 });
+      const tenants = Array.from({ length: 8 }, (_, i) => `tenant-${i}`);
+      let i = 0;
+      return { checkSync: () => wfe.checkSync(tenants[i++ % tenants.length] as string) };
     },
   },
 ];
@@ -192,7 +257,7 @@ export function measureRows(runs = RUNS, iters = ITERS): { rows: Row[]; referenc
   const referenceNsPerOp = timeBestOf(referenceOp(), iters, runs);
   const rows = cases.map((c) => {
     const limiter = c.make();
-    const nsPerOp = timeBestOf(() => limiter.checkSync("k"), iters, runs);
+    const nsPerOp = timeBestOf(() => limiter.checkSync("k"), c.iters ?? iters, runs);
     return { label: c.label, nsPerOp, relative: nsPerOp / referenceNsPerOp };
   });
   return { rows, referenceNsPerOp };

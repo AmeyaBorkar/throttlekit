@@ -14,7 +14,9 @@ import { adaptiveConcurrency } from "../src/concurrency/adaptive";
 import { distributedAdaptiveConcurrency } from "../src/concurrency/distributed";
 import { TestConcurrencyCoordinator } from "../src/concurrency/test-concurrency-coordinator";
 import { rateLimit } from "../src/core/limiter";
+import { all, multiRateLimit } from "../src/multi/index";
 import { MemoryStore } from "../src/stores/memory";
+import { weightedFairEscrow } from "../src/twotier/weighted-fair-escrow";
 
 const gc = (globalThis as { gc?: () => void }).gc;
 
@@ -104,6 +106,77 @@ function memorySection(): void {
   reportThroughput(
     "fixedWindow checkSync",
     throughput((_) => fw.checkSync("k"), 5_000_000),
+  );
+}
+
+/** Request context for the multi-dimensional limiter (one fixed value ⇒ a single hot key per dimension). */
+interface MultiCtx {
+  ip: string;
+  user: string;
+  route: string;
+}
+
+function multiDimensionSection(): void {
+  // The multi-dimensional `all()` combine over a synchronous store: read every dimension (peeking a
+  // structuredClone of its state so a composite deny can't partial-consume a co-keyed axis), combine,
+  // then commit all-or-none. The per-dimension `structuredClone` of *primitive* gcra state (a single
+  // TAT number) is the path the perf audit targets — this row is what makes that win measurable. Each
+  // dimension uses the SAME gcra params as the gated single-dimension `gcra checkSync`, so the 2-/3-dim
+  // rows read directly as "combine overhead over N gcra dimensions".
+  const ITERS = 2_000_000; // heavier than a single checkSync ⇒ fewer iters keep the section's wall-time sane
+  console.log("\nMulti-dimensional (MemoryStore) — all() combine, single hot key per dimension:");
+
+  const mkStore = () => new MemoryStore({ sweepIntervalMs: 0 });
+  const mkDim = () => gcra({ limit: 1_000_000, periodMs: 60_000 });
+  const ctx: MultiCtx = { ip: "203.0.113.7", user: "u-42", route: "/v1/chat/completions" };
+
+  // 1-dimension contrast: a single gcra checkSync with the params each multi dimension uses.
+  const single = rateLimit({ strategy: mkDim(), store: mkStore() });
+  reportThroughput(
+    "gcra checkSync (1-dim contrast)",
+    throughput((_) => single.checkSync("k"), ITERS),
+  );
+
+  const two = multiRateLimit<MultiCtx>({
+    strategy: all<MultiCtx>({
+      ip: { key: (c) => c.ip, strategy: mkDim() },
+      user: { key: (c) => c.user, strategy: mkDim() },
+    }),
+    store: mkStore(),
+  });
+  reportThroughput(
+    "multi all() 2-dim checkSync",
+    throughput((_) => two.checkSync(ctx), ITERS),
+  );
+
+  const three = multiRateLimit<MultiCtx>({
+    strategy: all<MultiCtx>({
+      ip: { key: (c) => c.ip, strategy: mkDim() },
+      user: { key: (c) => c.user, strategy: mkDim() },
+      route: { key: (c) => c.route, strategy: mkDim() },
+    }),
+    store: mkStore(),
+  });
+  reportThroughput(
+    "multi all() 3-dim checkSync",
+    throughput((_) => three.checkSync(ctx), ITERS),
+  );
+}
+
+function weightedFairEscrowSection(): void {
+  // The two-tier weighted-fair-escrow per-decision grant path (L1-only ⇒ synchronous `checkSync`).
+  // Rotating a handful of tenants keeps several entries in the active set so the O(active-tenants)
+  // `aggregate()` scan (run on every decision) is actually exercised, not optimised to N=1. The budget
+  // `L` is large enough that every check stays on the within-guarantee grant branch (the ALLOW path).
+  const ITERS = 2_000_000;
+  console.log("\nTwo-tier weighted-fair-escrow (L1-only) — per-decision grant, 8 tenants:");
+
+  const wfe = weightedFairEscrow({ limit: 1_000_000_000, windowMs: 60_000 });
+  const tenants = Array.from({ length: 8 }, (_, i) => `tenant-${i}`);
+  let i = 0;
+  reportThroughput(
+    "weightedFairEscrow grant",
+    throughput((_) => wfe.checkSync(tenants[i++ % tenants.length] as string), ITERS),
   );
 }
 
@@ -223,6 +296,8 @@ async function main(): Promise<void> {
     `node ${process.version}  ${gc ? "(gc exposed — measuring allocations)" : "(no --expose-gc — allocations not measured)"}`,
   );
   memorySection();
+  multiDimensionSection();
+  weightedFairEscrowSection();
   await asyncSection();
   await concurrencySection();
   if (process.argv.includes("--redis")) await redisSection();

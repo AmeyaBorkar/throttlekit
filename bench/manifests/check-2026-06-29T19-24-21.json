@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "capturedAt": "2026-06-29T19:24:21.033Z",
+    "node": "v24.13.1",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M",
+    "cores": 24,
+    "totalMemGB": 33.4,
+    "gcExposed": false
+  },
+  "benchmark": "server-check-handler-cpu-in-process",
+  "iters": 200000,
+  "warmup": 10000,
+  "runs": 5,
+  "rows": [
+    {
+      "label": "RateLimiter.Check handler",
+      "note": "in-process gcra/MemoryStore; decision + enforce + message-shaping (excludes proto wire codec)",
+      "opsPerSec": 1029805.1351233063,
+      "nsPerOp": 971.0575
+    }
+  ]
+}

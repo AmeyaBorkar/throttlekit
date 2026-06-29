@@ -1,33 +1,48 @@
 {
   "schemaVersion": 2,
   "recorded": {
-    "at": "2026-06-10",
+    "at": "2026-06-29",
     "node": "v24.13.1",
     "platform": "win32"
   },
   "runs": 10,
   "iters": 2000000,
-  "referenceNsPerOp": 127.59935,
+  "referenceNsPerOp": 128.26005,
   "rows": [
     {
       "label": "gcra checkSync",
-      "nsPerOp": 171.13005,
-      "relative": 1.3411514243607041
+      "nsPerOp": 173.0328,
+      "relative": 1.3490779085147713
     },
     {
       "label": "tokenBucket checkSync",
-      "nsPerOp": 173.3977,
-      "relative": 1.3589230666143675
+      "nsPerOp": 218.425,
+      "relative": 1.7029854580596218
     },
     {
       "label": "fixedWindow checkSync",
-      "nsPerOp": 195.87075,
-      "relative": 1.5350450452921585
+      "nsPerOp": 242.1513,
+      "relative": 1.887971351952537
     },
     {
       "label": "lease spend",
-      "nsPerOp": 21.938,
-      "relative": 0.17192877549924823
+      "nsPerOp": 22.61135,
+      "relative": 0.17629300783837212
+    },
+    {
+      "label": "multi all() 2-dim checkSync",
+      "nsPerOp": 4862.1205,
+      "relative": 37.9083003632074
+    },
+    {
+      "label": "multi all() 3-dim checkSync",
+      "nsPerOp": 7435.322,
+      "relative": 57.97067754144802
+    },
+    {
+      "label": "weightedFairEscrow grant (8 tenants)",
+      "nsPerOp": 179.71045,
+      "relative": 1.4011412750891645
     }
   ]
 }
