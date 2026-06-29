@@ -294,6 +294,12 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
   const prefix = options.prefix;
   const entries = Object.entries(multi.dimensions);
   const mode = multi.mode;
+  // Per-dimension fused encodings (TYPE lookup + buildArgv + slice) for the async Lua path, memoized
+  // on first use. The strategies are fixed at construction, so encodeDim is invariant across checks —
+  // compute once and reuse rather than rebuilding the argv on every async check. Lazy (not eager at
+  // construction) so an unsupported-strategy-on-async-store still throws on the first check(), exactly
+  // as before — never at multiRateLimit() build time.
+  let encoded: ReturnType<typeof encodeDim>[] | undefined;
 
   const keyOf = (name: string, raw: string): string =>
     prefix !== undefined && prefix.length > 0 ? `${prefix}:${name}:${raw}` : `${name}:${raw}`;
@@ -372,12 +378,21 @@ export function multiRateLimit<Ctx>(options: MultiRateLimitOptions<Ctx>): MultiL
 
   const runLua = (ctx: Ctx, globalCost: number): Promise<Decision> => {
     const now = clock.now();
+    encoded ??= entries.map(([, dim]) => encodeDim(dim.strategy));
+    const dims = encoded;
     const keys: string[] = [];
     const perDim: number[] = [];
-    for (const [name, dim] of entries) {
+    for (let i = 0; i < entries.length; i++) {
+      const [name, dim] = entries[i] as [string, Dimension<Ctx>];
       keys.push(keyOf(name, dim.key(ctx)));
-      const { type, params } = encodeDim(dim.strategy);
-      perDim.push(type, dimCost(dim, ctx, globalCost), params[0], params[1], params[2]);
+      const enc = dims[i] as ReturnType<typeof encodeDim>;
+      perDim.push(
+        enc.type,
+        dimCost(dim, ctx, globalCost),
+        enc.params[0],
+        enc.params[1],
+        enc.params[2],
+      );
     }
     const program: LuaProgram = {
       script: MULTI_LUA,
