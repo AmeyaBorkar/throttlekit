@@ -89,6 +89,78 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  live-store:
+    name: Live-store gate (Redis + Postgres + DynamoDB)
+    runs-on: ubuntu-latest
+    # The store-gated suites prove the headline claim — one transform, bit-identical across
+    # in-memory / Redis / Postgres — against REAL backends, plus the server's live-backend gRPC e2e.
+    # The `test` matrix above runs storeless + Redis only (the fast publish gate); every other store
+    # suite `describe.skip`s when its THROTTLEKIT_TEST_* URL is unset, so without this job the
+    # cross-store-equivalence, Postgres store/coordinator, region-fair-pool, and server Postgres/DynamoDB
+    # e2e tests never execute in CI. One Node version (the store paths are not node-version-sensitive)
+    # keeps container cost flat; `--no-file-parallelism` serialises the Postgres/DynamoDB suites (Redis
+    # tests pin a per-file logical DB and parallelise safely, but the flag is harmless for them).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: postgres:16-alpine
+        ports:
+          - 5433:5432
+        env:
+          POSTGRES_USER: throttlekit
+          POSTGRES_PASSWORD: throttlekit
+          POSTGRES_DB: throttlekit
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      dynamodb:
+        image: amazon/dynamodb-local
+        ports:
+          - 8000:8000
+    env:
+      THROTTLEKIT_TEST_REDIS: redis://localhost:6380
+      THROTTLEKIT_TEST_POSTGRES: postgres://throttlekit:throttlekit@localhost:5433/throttlekit
+      THROTTLEKIT_TEST_DYNAMODB: http://localhost:8000
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Wait for DynamoDB local
+        # amazon/dynamodb-local ships no shell/health tooling, so a service `--health-cmd` is impossible;
+        # poll the HTTP port instead. A reachable listener answers a bare GET with HTTP 400, so curl exits
+        # 0 once it is up and non-zero only while the connection is refused.
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null http://localhost:8000; then echo "dynamodb-local is up"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::dynamodb-local did not become reachable on :8000"
+          exit 1
+      - name: Core store-gated suite (Redis + Postgres)
+        run: npx vitest run --no-file-parallelism
+      - name: Server live-backend e2e (Postgres + DynamoDB)
+        working-directory: server
+        run: |
+          npm ci
+          npm run build
+          npm test
+
   bench-gate:
     name: Bench regression gate
     runs-on: ubuntu-latest
