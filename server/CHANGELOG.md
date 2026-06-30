@@ -7,6 +7,8 @@ conformance-tested against the golden vectors).
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-06-30
+
 ### Performance
 
 Internal / observer-only wins from the performance optimization sweep — decisions and the frozen gRPC wire are
