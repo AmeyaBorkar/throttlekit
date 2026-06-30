@@ -34,6 +34,16 @@ export interface RedisMultiLike {
   exec(): Promise<Array<[Error | null, unknown]> | null>;
 }
 
+/**
+ * The subset of a Redis pipeline used to coalesce the strategy eval and the `ttlFloorMs` floor into one
+ * network round trip. Duck-typed off {@link RedisClientLike} (ioredis exposes `pipeline()`), so it never
+ * widens the required client surface — a client without it just takes the sequential path.
+ */
+interface RedisPipelineLike {
+  evalsha(sha: string, numkeys: number, ...args: Array<string | number>): RedisPipelineLike;
+  exec(): Promise<Array<[Error | null, unknown]> | null>;
+}
+
 export interface RedisStoreOptions {
   /** An `ioredis` (or compatible) client. */
   client: RedisClientLike;
@@ -130,17 +140,71 @@ export class RedisStore implements Store {
       const keys = lua.program.buildKeys(baseKey);
       const nowArg = this.#useServerTime ? 0 : lua.now;
       const argv = lua.program.buildArgv(nowArg, lua.cost);
-      const raw = await this.#eval(lua.program.script, keys, argv);
-      // Optional: keep a logically-live key from real-time GC (see ttlFloorMs). Only extends the TTL,
-      // so it never alters a decision; one extra round trip, taken only when the floor is configured.
-      // Never on a non-consuming read (peek/forecast) — a pure read must not write (the next check
-      // re-applies the floor), and skipping it also drops the extra round trip on that hot path.
-      if (this.#ttlFloorMs > 0 && lua.readOnly !== true) {
-        await this.#eval(TTL_FLOOR_LUA, keys, [this.#ttlFloorMs]);
-      }
+      // Optional ttlFloorMs (see the option doc): keep a logically-live key from real-time GC. The
+      // floor only EXTENDS the TTL, so it never alters a decision. Skip it on a non-consuming read
+      // (peek/forecast) — a pure read must not write, which also drops the extra work on that hot path.
+      // When the floor is configured, run the strategy eval and the floor in ONE round trip via a
+      // pipeline (#evalFloored); otherwise the strategy eval is a single round trip as before.
+      const raw =
+        this.#ttlFloorMs > 0 && lua.readOnly !== true
+          ? await this.#evalFloored(lua.program.script, keys, argv)
+          : await this.#eval(lua.program.script, keys, argv);
       return lua.decode(raw);
     }
     return this.#applyOcc(baseKey, transform);
+  }
+
+  /**
+   * Run the strategy script and the `ttlFloorMs` floor in a SINGLE network round trip when the client
+   * supports pipelining (ioredis; duck-typed so it stays off the exported {@link RedisClientLike}),
+   * instead of two sequential `EVALSHA`s. The strategy is *consuming*, so it must run EXACTLY ONCE: on a
+   * pipeline `NOSCRIPT` for the strategy it never ran, so we take the sequential fallback; once it has
+   * run we keep its result and only (idempotently) re-apply the floor if the floor command `NOSCRIPT`'d.
+   * The floor only ever extends `PTTL`, so applying it twice — or on a not-yet-created key — is a no-op.
+   * Sending both commands together means the server runs them back to back with no client-side gap, so
+   * the floor lands with effectively no window for the short native TTL to be GC'd between the two — the
+   * non-atomic-floor race the sequential two-trip path had.
+   */
+  async #evalFloored(
+    script: string,
+    keys: string[],
+    argv: Array<string | number>,
+  ): Promise<unknown> {
+    const makePipeline = (this.#client as { pipeline?: () => RedisPipelineLike }).pipeline;
+    if (typeof makePipeline !== "function") {
+      // No pipelining available: sequential strategy eval + floor eval (the pre-pipeline behavior).
+      const raw = await this.#eval(script, keys, argv);
+      await this.#eval(TTL_FLOOR_LUA, keys, [this.#ttlFloorMs]);
+      return raw;
+    }
+    const results = await makePipeline
+      .call(this.#client)
+      .evalsha(this.#sha(script), keys.length, ...keys, ...argv)
+      .evalsha(this.#sha(TTL_FLOOR_LUA), keys.length, ...keys, this.#ttlFloorMs)
+      .exec();
+    if (results === null) {
+      // Pipeline aborted as a whole (not expected outside MULTI/WATCH) — fall back sequentially.
+      const raw = await this.#eval(script, keys, argv);
+      await this.#eval(TTL_FLOOR_LUA, keys, [this.#ttlFloorMs]);
+      return raw;
+    }
+    const [stratErr, stratRes] = results[0] ?? [null, undefined];
+    if (stratErr) {
+      // NOSCRIPT here means the strategy script was not cached, so it did NOT run (nothing consumed):
+      // run it once via #eval (which re-caches on NOSCRIPT), then the floor. Any other error propagates.
+      if (!isNoScript(stratErr)) throw stratErr;
+      const raw = await this.#eval(script, keys, argv);
+      await this.#eval(TTL_FLOOR_LUA, keys, [this.#ttlFloorMs]);
+      return raw;
+    }
+    // The strategy ran exactly once. Ensure the floor landed; re-apply only if it NOSCRIPT'd
+    // (idempotent — it just extends PTTL), and propagate any other floor error.
+    const floorErr = results[1]?.[0];
+    if (floorErr != null) {
+      if (!isNoScript(floorErr)) throw floorErr;
+      await this.#eval(TTL_FLOOR_LUA, keys, [this.#ttlFloorMs]);
+    }
+    return stratRes;
   }
 
   /** Optimistic-concurrency fallback for strategies without a Lua form. State is JSON-encoded. */

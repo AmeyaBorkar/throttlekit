@@ -152,9 +152,12 @@ d("fused ≡ sequential (TK-1006 byte-identity)", () => {
     // GC pauses), the floor round trip for some step can be starved past that short PX; the sequential key
     // expires before it is extended, so a later admit reads a *cold* key (resets the TAT to `now`) while
     // the atomic fused key is still warm — diverging `remaining` / `resetAt` with `allowed` still matching.
-    // `ttlFloorMs` cannot close this on the sequential path because that floor is structurally non-atomic
-    // (a second RTT); only an atomic in-script floor would, and the standalone strategy Lua is a frozen
-    // polyglot wire artifact we won't fork for a test. So we keep `ttlFloorMs` (it still shrinks the window
+    // `ttlFloorMs` cannot close this on *this* test's path because the floor is a second RTT that can be
+    // starved. (For a pipeline-capable client like ioredis, `RedisStore` now coalesces the strategy eval
+    // and the floor into ONE round trip — see `#evalFloored` — which closes the window; but this test drives
+    // the sequential path via `fromNodeRedis`, a node-redis client with no `pipeline()`, so it keeps the
+    // two-RTT floor. Folding the floor into the strategy Lua would also work but that script is a frozen
+    // polyglot wire artifact we won't fork for a test.) So we keep `ttlFloorMs` (it still shrinks the window
     // and helps the cross-store gate) AND re-introduce a bounded `retry`: a fresh `flushDb`-reset replay of
     // the whole timeline almost never re-hits the same starvation pattern, so 3 attempts make the
     // logical-equivalence assertion robust without masking any real (reproducible-on-retry) divergence.
