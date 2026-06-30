@@ -6,6 +6,8 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-06-30
+
 ### Performance
 
 A performance optimization sweep — internal-only, every change byte-identical to before (decisions, the frozen
