@@ -275,11 +275,27 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
   // Insertion order preserved so eviction is approximate-FIFO when `l1.maxKeys` is set.
   const tenants = new Map<string, TenantEntry>();
 
+  // O(1) aggregate fast path (#5b): running Σ weight / Σ used over the active set, maintained in
+  // lockstep with the map at every mutation point (`setWeight`, `applyUsed`, bootstrap eviction/add,
+  // reset). `aggregate()` consults them ONLY while `fractionalSeen` is false — i.e. while every weight
+  // and used contributing to them this window is a non-negative integer, so they are exact
+  // sums/differences of integers and equal a fresh O(T) rescan bit-for-bit. The instant a fractional
+  // weight or cost enters the state, `fractionalSeen` latches true (until the window rolls / a full
+  // reset) and `aggregate()` falls back to the O(T) rescan: a running float counter sums in MUTATION
+  // order, where a single 1-ULP re-association could flip a floor/comparison vs the rescan oracle. The
+  // integer gate is pinned by `test/twotier/weighted-fair-escrow-fractional.test.ts`.
+  let aggWeight = 0;
+  let aggUsed = 0;
+  let fractionalSeen = false;
+
   function rollWindow(now: number): void {
     if (now >= windowStart + windowMs) {
       windowStart = Math.floor(now / windowMs) * windowMs;
       lEffective = l2 === undefined ? L : 0;
       tenants.clear();
+      aggWeight = 0;
+      aggUsed = 0;
+      fractionalSeen = false;
     }
   }
 
@@ -293,8 +309,15 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     return Math.floor((weight * lEffective) / totalWeight);
   }
 
-  /** Aggregate the active set in one scan: total weight + total used. */
+  /**
+   * Aggregate the active set: total weight + total used. O(1) via the running counters when every
+   * active weight/used is an integer (`!fractionalSeen` ⇒ they are exact integer sums equal to the
+   * rescan); O(active-tenants) rescan otherwise — the source of truth that the integer gate protects.
+   */
   function aggregate(): { totalWeight: number; totalUsed: number } {
+    if (!fractionalSeen) {
+      return { totalWeight: aggWeight, totalUsed: aggUsed };
+    }
     let totalWeight = 0;
     let totalUsed = 0;
     for (const t of tenants.values()) {
@@ -302,6 +325,20 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
       totalUsed += t.used;
     }
     return { totalWeight, totalUsed };
+  }
+
+  /** Update an existing tenant's weight, keeping the running weight counter + integer gate in lockstep. */
+  function setWeight(entry: TenantEntry, w: number): void {
+    aggWeight += w - entry.weight;
+    entry.weight = w;
+    if (!Number.isInteger(w)) fractionalSeen = true;
+  }
+
+  /** Admit `cost` to `entry`, keeping the running used counter + integer gate in lockstep with `entry.used`. */
+  function applyUsed(entry: TenantEntry, cost: number): void {
+    entry.used += cost;
+    aggUsed += cost;
+    if (!Number.isInteger(cost)) fractionalSeen = true;
   }
 
   /**
@@ -328,7 +365,7 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     }
 
     if (entry.used + cost <= gAsker) {
-      entry.used += cost;
+      applyUsed(entry, cost);
       return {
         allowed: true,
         limit: gAsker,
@@ -358,7 +395,7 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     const realizedCeiling = gAsker + grantable;
 
     if (entry.used + cost <= realizedCeiling) {
-      entry.used += cost;
+      applyUsed(entry, cost);
       return {
         allowed: true,
         limit: realizedCeiling,
@@ -380,10 +417,21 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
   function bootstrapTenant(tenant: string, w: number): TenantEntry {
     if (tenants.size >= maxKeys) {
       const oldest = tenants.keys().next();
-      if (!oldest.done) tenants.delete(oldest.value);
+      if (!oldest.done) {
+        // Evicting frees the tenant's used back to the pool (the rescan no longer sums it), so drop
+        // it from the running counters too.
+        const evicted = tenants.get(oldest.value);
+        if (evicted !== undefined) {
+          aggWeight -= evicted.weight;
+          aggUsed -= evicted.used;
+        }
+        tenants.delete(oldest.value);
+      }
     }
     const entry: TenantEntry = { weight: w, used: 0 };
     tenants.set(tenant, entry);
+    aggWeight += w;
+    if (!Number.isInteger(w)) fractionalSeen = true;
     return entry;
   }
 
@@ -408,7 +456,7 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
     rollWindow(now);
     let entry = tenants.get(tenant);
     if (entry === undefined) entry = bootstrapTenant(tenant, w);
-    else entry.weight = w;
+    else setWeight(entry, w);
     return decide(entry, cost, now);
   }
 
@@ -470,7 +518,7 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
       if (existing === undefined) {
         entry = bootstrapTenant(tenant, w);
       } else {
-        existing.weight = w;
+        setWeight(existing, w);
         entry = existing;
       }
     } catch (err) {
@@ -491,7 +539,16 @@ export function weightedFairEscrow(options: WeightedFairEscrowOptions): Weighted
         windowStart = Number.NEGATIVE_INFINITY;
         lEffective = l2 === undefined ? L : 0;
         tenants.clear();
+        aggWeight = 0;
+        aggUsed = 0;
+        fractionalSeen = false;
         return;
+      }
+      // Removing a tenant frees its used back to the pool; keep the running counters in step.
+      const entry = tenants.get(tenant);
+      if (entry !== undefined) {
+        aggWeight -= entry.weight;
+        aggUsed -= entry.used;
       }
       tenants.delete(tenant);
     },
