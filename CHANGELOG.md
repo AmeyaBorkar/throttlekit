@@ -6,6 +6,25 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+### Performance
+
+A performance optimization sweep — internal-only, every change byte-identical to before (decisions, the frozen
+1.x API, and the golden wire vectors are unchanged); the gated ~169 ns `gcra checkSync` path is untouched.
+Same-machine before/after, median of 3 runs:
+
+- **Multi-dimension `multiRateLimit.checkSync` ~−40%** (2-dim 4968→2968 ns/op, 3-dim 7507→4599 ns/op): skip the
+  per-dimension `structuredClone` of immutable primitive state in the sync read phase. Object/array states
+  (sliding-window ring, token-bucket, …) still clone, preserving the no-partial-consume contract.
+- **`weightedFairEscrow` grant −15%** (182→155 ns/op): an O(1) running `Σweight`/`Σused` aggregate, gated on
+  integer weights and costs — fractional input falls back to the exact O(active-tenants) rescan, pinned by a
+  new fractional-input conformance test whose gate-guard proves the integer gate is load-bearing.
+- `RedisStore` coalesces the `ttlFloorMs` floor into the strategy eval in one pipelined round trip for
+  pipeline-capable clients (ioredis), and `PostgresCoordinator` drops a redundant `SELECT … FOR UPDATE` per
+  lease via `RETURNING`.
+- Smaller allocation/closure/async cleanups: `leakyBucket.reserveSync` transform reuse, multi `encodeDim`
+  memoization, WFE/federation `check()` de-asyncing, a call-site-gated federation health probe, and a half-open
+  analytics window check.
+
 ## [1.6.0] — 2026-06-23
 
 A large correctness release from a full multi-agent audit sweep (security / math / logic / performance /

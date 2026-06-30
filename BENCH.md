@@ -98,6 +98,27 @@ The distributed guard's steady-state `acquire` is a lean local in-flight check a
 (the coordinator round trip happens off the request path, on the heartbeat), so it is *cheaper* per
 request than the single-process AIMD controller that samples RTT inline.
 
+### Multi-dimension combine + weighted-fair-escrow
+
+The cost of composing dimensions (`multiRateLimit.checkSync` over k keys) and of the weighted-fair-escrow
+grant — added, and sharpened, in the 2026-06-30 performance sweep. The combine path's hero win: the sync read
+phase no longer `structuredClone`s a dimension's state when it is an immutable primitive (the GCRA default),
+only when it is a mutable object/array — so a composite of GCRA dimensions skips the clone entirely.
+
+| Path | before | after | Δ |
+|---|--:|--:|--:|
+| `multiRateLimit.checkSync`, 2 GCRA dims | 4968 ns | **2968 ns** | −40% |
+| `multiRateLimit.checkSync`, 3 GCRA dims | 7507 ns | **4599 ns** | −39% |
+| `weightedFairEscrow` grant, 8 tenants | 182 ns | **155 ns** | −15% |
+| server `RateLimiter.Check` handler (in-process, no wire codec) | 898 ns | **675 ns** | −25% |
+
+`before` is the pre-sweep tree (`7db5c65`), `after` is the optimized tree — both median-of-3 launches on this
+machine, same harness, decisions byte-identical (allocation/round-trip removals, not algorithm changes). The
+two multi-combine rows and the WFE grant are guarded by the relative `bench/gate.ts` regression gate alongside
+the `checkSync` strategies; the server-handler row reproduces via `npm run bench:check`. The synchronous
+strategy rows above are unchanged within noise by the sweep — the gated ~169 ns `gcra checkSync` path was
+deliberately left untouched.
+
 ---
 
 ## Head-to-head vs. incumbents

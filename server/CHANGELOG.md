@@ -7,6 +7,17 @@ conformance-tested against the golden vectors).
 
 ## [Unreleased]
 
+### Performance
+
+Internal / observer-only wins from the performance optimization sweep — decisions and the frozen gRPC wire are
+unchanged.
+
+- **`RateLimiter.Check` handler −25%** (898→675 ns/op, 1.11M→1.48M ops/s in-process): build the server enforcer
+  with `emit:false` so the `RateLimit-*` header set the gRPC path discards is never computed.
+- Capture: compute the in-process collision witness with an unkeyed SHA-256 (the witness never persists), and
+  sweep the encrypted segment store once per flush batch instead of once per write (O(K×N) → O(N)).
+- Cost Room: validate + sort the weighted-fair-escrow tenant roster once per snapshot frame instead of twice.
+
 ## [0.4.3] — 2026-06-23
 
 Server-side findings from the full audit sweep — each reproduced on real code, traced, and pinned by a

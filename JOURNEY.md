@@ -5,6 +5,95 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-06-30 — A performance optimization sweep (measured before/after)
+
+Ran a multi-agent performance audit across all three libraries — core, the server (`throttlekit-server`),
+and the Python client (`throttlekit-py`): fan out finders by perf dimension, then *adversarially* verify every
+finding for **hotness × impact × safety** before it could land. 33 opportunities found, 29 confirmed, 4
+dismissed on honest impact (real inefficiencies, but negligible on network/cold paths). The gated ~169 ns
+`gcra checkSync` hot path yielded **zero** findings — the right outcome; it's already allocation-tight.
+
+**Measurement-first, because a perf "win" you can't measure is a regression waiting to happen.** Most of the
+audit's targets sat on paths with *no benchmark* — the multi-dimension combine, the two-tier WFE grant, the
+server `Check` handler. So step one was benches for those (wired into the machine-independent `bench/gate.ts`),
+which made the wins provable and, going forward, regression-guarded. Same-machine, median-of-3 before/after
+(unoptimized `7db5c65` vs the optimized tree):
+
+| Path | Before | After | Δ |
+|---|--:|--:|--:|
+| `multiRateLimit.checkSync` (2-dim) | 4968 ns | 2968 ns | **−40%** |
+| `multiRateLimit.checkSync` (3-dim) | 7507 ns | 4599 ns | **−39%** |
+| `weightedFairEscrow` grant (8 tenants) | 182 ns | 155 ns | **−15%** |
+| server `RateLimiter.Check` handler | 898 ns (1.11M/s) | 675 ns (1.48M/s) | **−25%** |
+| `gcra` / `tokenBucket` / `fixedWindow` checkSync | 176 / 190 / 206 | 173 / 191 / 204 | flat (gate untouched) |
+
+**The hero** was almost embarrassing: the multi-dimension sync path deep-`structuredClone`d *every* dimension's
+stored state per decision to protect the no-partial-consume contract — even when that state is an immutable
+primitive (GCRA's `Strategy<number>`). Guarding the clone on object-ness (primitives pass straight through;
+object/array states still clone) cut ~40% off the common per-IP∧per-user composite, byte-identical decisions.
+Three independent finders converged on it.
+
+**The one with a real trap** was the WFE aggregate. Replacing the O(active-tenants) rescan with running
+`Σweight`/`Σused` counters is only safe for *integer* weights and costs — a mutation-order float sum can
+1-ULP-diverge from a fresh rescan and flip a floor. So the fast path is gated on integers and falls back to the
+rescan the instant a fractional value enters; the new conformance test drives fractional adversarial timelines
+*and* carries a **gate-guard** proving the gate is load-bearing (a counter-mode aggregate genuinely diverges
+from the rescan oracle, so the suite fails if anyone removes the gate). A measured −15% on the side.
+
+**Honest scoping.** #3 coalesces the `ttlFloorMs` floor into the strategy eval in one pipelined round trip — but
+only for clients that expose `pipeline()` (ioredis); `fused-conformance` drives node-redis (no `pipeline()`),
+so its bounded retry stays and the comment now says exactly why. Deferred, with rationale in
+`research/perf/FOLLOWUPS.md`: the OCC connection pool (niche custom-strategy path, would add a public `close()`
++ an idle-socket leak), the slidingWindow `HGETALL` (blocked by the frozen, checksummed wire scripts), and the
+Postgres 5-statement collapse (the proposed CTE is unsafe — advisory-lock ordering is proof-load-bearing).
+Three more (multi double-check-commit, heartbeat Lua, monitor double-wrap) skipped as high-risk/low-reward.
+"Optimize as much as possible, but safely" meant taking the niche-but-safe long tail (leaky `reserveSync`
+reuse, Python `slots`, capture/monitor cleanups, a Postgres `RETURNING` round-trip drop, …) while *declining*
+the ones that buy a vanity number at real risk.
+
+**Two dead-ends worth recording.** (1) A fix agent was killed mid-flight by a monthly spend limit, leaving a
+half-finished commit in the tree; rather than trust it, I reviewed the diff and the new test by hand and ran
+the full verification it never reached before committing. (2) A live-Redis run went red — and it was *not* the
+code: the Docker daemon had crashed (`ECONNREFUSED`, a hook timeout), not an assertion. The recurring lesson on
+this box: an infra failure and a logic failure look different if you actually read the error.
+
+**Status.** 18 optimizations landed across the three repos as small byte-identical commits, each behind a test
+or benchmark. Verified green: storeless core **1469**, server **321**, consolidated live-store (Redis+Postgres)
+**608**, the bench gate (no regressions), lint + strict types on both. Committed on `main` in both repos,
+**not yet released** — clean patch bumps (core 1.6.1 / server 0.4.4 / py 0.5.1) pending the call.
+
+## 2026-05-28 → 06-23 — Catch-up: 0.8 → 1.6, the embedded-library pivot, and the scaling arc
+
+A consolidation entry — the journal skipped a busy five weeks. The through-line, so the gap isn't a hole:
+
+- **1.0.0 (2026-05-31): the stability signal.** After a fast 0.8 → 0.13 run hardening the surface, cut the 1.0
+  with a frozen public API — the contract the later distributed work builds on without breaking callers.
+- **Python client + store breadth (1.1–1.2, server-door, early June).** `throttlekit-py` shipped (async
+  backends, framework adapters), and non-Redis stores (Postgres, DynamoDB) became reachable from Python via the
+  service door rather than re-implementing the oracle.
+- **The product pivot — the embedded-library wedge (Road B, 06-08).** Rather than chase a fleet/wire build
+  first, the bet: make the single-process library undeniable — multi-axis attribution + deterministic replay —
+  *then* distribute.
+- **Replay (→ `throttlekit@1.3.0`, server `0.1.0`/`0.2.0`, 06-09).** A deterministic decision recorder/replayer
+  + candidate-compare scorecard (`throttlekit/testkit`); server-side opt-in capture (durable, AES-GCM-redacted,
+  fail-closed) and a "what-if" replay tab in the terminal dashboard. Two security rounds fixed a critical
+  unbounded-redaction-map leak and a tenant-scope leak.
+- **Policy Plans (→ `throttlekit@1.4.0`, server `0.3.0`, 06-10).** "terraform plan for limits": replay recorded
+  traffic against a *candidate* policy and diff allow↔deny before deploy (`throttlekit/policy`).
+- **The scaling arc — "one oracle, four doors, two tiers" (P0–P9, → 1.5.x / server `0.3.0` / py `0.5.0`).** With
+  the wire-freeze reauthorized (additive-only, `buf`-gated), the distributed features (federation, fleet budget,
+  distributed concurrency, store-backed cross-region fair escrow) became reachable from every language over the
+  service door; a read-only **Monitor** door + Prometheus/health landed; and a Tier-2 **`Fleet.Reserve`** lease
+  shipped — lease a batch, spend locally byte-identical to the core L1, conformance-vector-pinned. The Python
+  client reached parity (`throttlekit-py@0.5.0`: Fleet + Monitor clients).
+- **A full-codebase audit (→ `throttlekit@1.6.0`, server `0.4.3`, 06-23).** Find → reproduce → adversarially
+  verify; 28 confirmed bugs fixed as clean bisectable commits (a Redis-coordinator over-eviction, an in-flight
+  federation lease crossing a window roll, a multi `reset()` prefix no-op, an OCC lost-update, …), plus the
+  determinism root-fix (`ttlFloorMs`) decoupling Redis GC from the logical window.
+
+The monitoring story also settled in this stretch: the web "Lens" pivoted to a built-in **terminal dashboard**
+(`throttlekit-server --tui`).
+
 ## 2026-05-27 — 0.7.0: the learned/predictive layers ship
 
 The research that sat gated under `test/` now lands in `src/`. Four primitives, one per GALE/TALE
