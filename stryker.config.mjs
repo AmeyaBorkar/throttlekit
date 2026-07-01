@@ -27,12 +27,13 @@ export default {
   ],
   reporters: ["html", "clear-text", "progress"],
   htmlReporter: { fileName: "reports/mutation/index.html" },
-  // Phase-1 aggregate measured at ~66% — the suite PASSES but kills only ~2/3 of injected decision-path
-  // mutants (the survivor backlog + priority order live in research/hardening/MUTATION-BACKLOG.md). `break`
-  // is a REGRESSION floor set a few points under the measured score: the nightly fails only if the suite's
-  // killing power DROPS, it never demands improvement here. Raise it as the backlog is worked down. high/low
-  // only colour the report.
-  thresholds: { high: 85, low: 60, break: 63 },
+  // Aggregate is ~77.5% after the weak-file survivor campaign (leaky-bucket / sliding-window /
+  // sliding-window-log lifted from ~52% to 76–85%; see research/hardening/MUTATION-BACKLOG.md for the
+  // per-file state + the remaining targets, token-bucket 62% and quota 66%). `break` is a REGRESSION floor
+  // set a few points under the measured score: the nightly fails only if the suite's killing power DROPS,
+  // it never demands improvement here. Raise it further as the backlog is worked down. high/low only colour
+  // the report.
+  thresholds: { high: 85, low: 70, break: 75 },
   concurrency: 4,
   timeoutMS: 20000,
   incremental: true,
