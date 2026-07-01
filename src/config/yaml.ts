@@ -127,12 +127,25 @@ function parseFlowMap(raw: string, lineNo: number): Record<string, unknown> {
   return out;
 }
 
+/**
+ * Cap on block-nesting depth. A rate-limit config is a handful of levels deep; anything past this is a
+ * malformed or hostile document. Without the cap, a deeply-nested file recurses `parseBlock` until the
+ * call stack overflows with an uncatchable `RangeError` — a DoS on the untrusted config text. We reject
+ * with a typed {@link YamlParseError} well before then.
+ */
+const MAX_NESTING_DEPTH = 64;
+
 /** Parse a YAML-subset document into a plain object. Throws {@link YamlParseError} on any deviation. */
 export function parseYaml(text: string): Record<string, unknown> {
   const lines = tokenize(text);
   let i = 0;
 
-  const parseBlock = (indent: number): Record<string, unknown> => {
+  const parseBlock = (indent: number, depth: number): Record<string, unknown> => {
+    if (depth > MAX_NESTING_DEPTH)
+      throw new YamlParseError(
+        `nesting too deep (exceeds ${MAX_NESTING_DEPTH} levels)`,
+        lines[i]?.no ?? 0,
+      );
     const out: Record<string, unknown> = {};
     while (i < lines.length && lines[i]!.indent === indent) {
       const line = lines[i]!;
@@ -151,7 +164,7 @@ export function parseYaml(text: string): Record<string, unknown> {
         // A nested block (deeper indent) or a `null` value.
         const next = lines[i];
         if (next !== undefined && next.indent > indent) {
-          out[key] = parseBlock(next.indent);
+          out[key] = parseBlock(next.indent, depth + 1);
         } else {
           out[key] = null;
         }
@@ -165,7 +178,7 @@ export function parseYaml(text: string): Record<string, unknown> {
   if (lines.length === 0) return {};
   if (lines[0]!.indent !== 0)
     throw new YamlParseError("top-level keys must start at column 0", lines[0]!.no);
-  const result = parseBlock(0);
+  const result = parseBlock(0, 0);
   // Any leftover line means an indent error that escaped the block we returned from.
   if (i < lines.length)
     throw new YamlParseError(
