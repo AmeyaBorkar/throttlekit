@@ -7,7 +7,13 @@ import type {
   Strategy,
   StrategyOutcome,
 } from "../core/types";
-import { requireAtLeast, requireAtMost, requireInteger, requirePositive } from "../core/validate";
+import {
+  requireAtLeast,
+  requireAtMost,
+  requireFiniteWindow,
+  requireInteger,
+  requirePositive,
+} from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns the whole ring HASH (no write). */
 const SLIDING_WINDOW_READ_LUA = "return redis.call('HGETALL', KEYS[1])";
@@ -108,7 +114,10 @@ export function slidingWindow(options: SlidingWindowOptions): Strategy<WindowSta
 
   const limit = options.limit;
   const windowMs = options.windowMs;
-  const w = windowMs / S;
+  const w = windowMs / S; // sub-bucket width
+  // A subnormal `windowMs` (or a `windowMs/S` that underflows to 0) makes `floor(now/w)*w` overflow to
+  // Infinity for a real clock, poisoning `resetAt`/`retryAfterMs`. Reject at construction.
+  requireFiniteWindow("slidingWindow.windowMs/buckets", w);
 
   const lua: LuaProgram = {
     script: SLIDING_WINDOW_LUA,

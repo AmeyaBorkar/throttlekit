@@ -7,7 +7,7 @@ import type {
   Strategy,
   StrategyOutcome,
 } from "../core/types";
-import { requirePositive } from "../core/validate";
+import { requireAtMost, requirePositive } from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns the stored [tokens, last] (no write). */
 const TOKEN_BUCKET_READ_LUA = "return redis.call('HMGET', KEYS[1], 't', 'l')";
@@ -76,6 +76,16 @@ export function tokenBucket(options: TokenBucketOptions): Strategy<TokenBucketSt
   const refillPerSec = options.refillPerSec;
   const refillPerMs = refillPerSec / 1000; // tokens per ms; identical division in JS and Lua
   const ttlMs = Math.max(1, Math.ceil(capacity / refillPerMs)); // time to refill from empty
+  // The full-refill time `capacity/refillPerMs` must be a safe-integer number of ms. A subnormal
+  // `refillPerSec` makes `refillPerMs` underflow to 0, so this (and the per-check
+  // `(capacity - tokens)/refillPerMs` that becomes `resetAt`) overflows to Infinity/NaN — a non-finite
+  // decision. Bounding it also keeps `retryAfterMs = (cost - tokens)/refillPerMs` finite for any valid
+  // `cost`. No real bucket takes >285k years to refill; reject at construction.
+  requireAtMost(
+    "tokenBucket: the derived refill time capacity/refillPerMs (ms)",
+    ttlMs,
+    Number.MAX_SAFE_INTEGER,
+  );
 
   const lua: LuaProgram = {
     script: TOKEN_BUCKET_LUA,

@@ -25,6 +25,34 @@ export function requireInteger(name: string, value: number): void {
 }
 
 /**
+ * Reject a construction-derived rate or interval (e.g. `periodMs/limit`, `1000/ratePerSec`,
+ * `capacity/refillPerMs`) that overflowed to a non-finite value. A subnormal/huge factor can send
+ * such a quantity to `Infinity`, which then poisons every `resetAt`/`retryAfterMs` with a non-finite
+ * (or `NaN`) value — a malformed decision. Fail at construction so a limiter that builds always emits
+ * finite decisions. `name` should describe the derivation for a legible message.
+ */
+export function requireFinite(name: string, value: number): void {
+  if (!Number.isFinite(value)) {
+    throw new RangeError(`${name} must be finite, got ${String(value)}`);
+  }
+}
+
+/**
+ * Reject a window/sub-bucket span so small that epoch-ms boundary math — `floor(now/span)*span` —
+ * overflows to a non-finite value for a realistic clock, poisoning `resetAt`/`retryAfterMs`. `span`
+ * is expected to be positive and finite already; this additionally rejects the sub-`~1e-292`-ms range
+ * (and a `span` that underflowed to `0`, e.g. `windowMs/buckets`). `Number.MAX_SAFE_INTEGER`
+ * (~year 285616 in epoch-ms) is the conservative upper bound on any `now`. No real window is affected.
+ */
+export function requireFiniteWindow(name: string, span: number): void {
+  if (span <= 0 || !Number.isFinite(Math.floor(Number.MAX_SAFE_INTEGER / span) * span)) {
+    throw new RangeError(
+      `${name} is too small: epoch-ms window math overflows for a realistic clock, got ${String(span)}`,
+    );
+  }
+}
+
+/**
  * Validate a per-request `cost`: a positive finite number. The one source of this check and its
  * message, shared by every limiter/shaper (`rateLimit`, `twoTier`, `leakyBucket`, `multiRateLimit`)
  * so the public-facing wording can never drift between them.

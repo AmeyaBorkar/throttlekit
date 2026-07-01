@@ -7,7 +7,7 @@ import type {
   Strategy,
   StrategyOutcome,
 } from "../core/types";
-import { requireInteger, requirePositive } from "../core/validate";
+import { requireFiniteWindow, requireInteger, requirePositive } from "../core/validate";
 import { type CalendarCadence, MS_PER_DAY, calendarPeriod } from "./calendar";
 import { slidingWindow } from "./sliding-window";
 
@@ -186,6 +186,11 @@ export function quota(options: QuotaOptions): Strategy {
   if (cal === "fixed") {
     requirePositive("quota.periodMs", options.periodMs as number);
     periodMs = options.periodMs as number;
+    // A subnormal `periodMs` makes `floor((now-anchor)/periodMs)*periodMs` (the period start) overflow
+    // to Infinity for a real clock, poisoning `resetAt`/`retryAfterMs`. Reject at construction. (The
+    // `"rolling"` cadence delegates to slidingWindow, which guards its own window; calendar cadences
+    // derive boundaries from civil-date math with no user-supplied divisor.)
+    requireFiniteWindow("quota.periodMs", periodMs);
   }
 
   const mode = MODE[cal];

@@ -10,7 +10,7 @@ import type {
   Store,
   Transform,
 } from "../core/types";
-import { requireAtLeast, requireCost, requirePositive } from "../core/validate";
+import { requireAtLeast, requireAtMost, requireCost, requirePositive } from "../core/validate";
 import { MemoryStore } from "../stores/memory";
 
 export interface LeakyBucketOptions {
@@ -120,6 +120,15 @@ export function leakyBucket(options: LeakyBucketOptions): Shaper {
   const keyFor = prefixer(options.prefix);
 
   const T = 1000 / options.ratePerSec;
+  // The pacing interval `1000/ratePerSec` must be a safe-integer number of ms. A subnormal `ratePerSec`
+  // overflows it to Infinity; a finite-but-astronomical value lets `inc = T*cost` (and the accumulating
+  // departure timestamp) overflow to Infinity, so `delayMs` becomes Infinity — and `schedule()` would
+  // then `sleep(Infinity)` and never fire (a silent hang). Reject at construction.
+  requireAtMost(
+    "leakyBucket: the derived pacing interval 1000/ratePerSec (ms)",
+    T,
+    Number.MAX_SAFE_INTEGER,
+  );
   const maxQueueMs = options.maxQueueMs;
   const ratePerSec = options.ratePerSec;
 

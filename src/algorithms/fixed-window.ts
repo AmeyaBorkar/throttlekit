@@ -7,7 +7,7 @@ import type {
   Strategy,
   StrategyOutcome,
 } from "../core/types";
-import { requirePositive } from "../core/validate";
+import { requireFiniteWindow, requirePositive } from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns the stored [start, count] (no write). */
 const FIXED_WINDOW_READ_LUA = "return redis.call('HMGET', KEYS[1], 's', 'c')";
@@ -71,6 +71,9 @@ export function fixedWindow(options: FixedWindowOptions): Strategy<FixedWindowSt
 
   const limit = options.limit;
   const windowMs = options.windowMs;
+  // A subnormal `windowMs` makes `floor(now/windowMs)*windowMs` (the epoch-aligned window start)
+  // overflow to Infinity for a real clock, poisoning `resetAt`/`retryAfterMs`. Reject at construction.
+  requireFiniteWindow("fixedWindow.windowMs", windowMs);
   const ttlMs = windowMs;
 
   const lua: LuaProgram = {

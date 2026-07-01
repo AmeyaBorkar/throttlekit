@@ -7,7 +7,7 @@ import type {
   Strategy,
   StrategyOutcome,
 } from "../core/types";
-import { requireAtLeast, requirePositive } from "../core/validate";
+import { requireAtLeast, requireFinite, requirePositive } from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns the stored TAT string (no write). */
 const GCRA_READ_LUA = "return redis.call('GET', KEYS[1])";
@@ -70,14 +70,20 @@ export function gcra(options: GcraOptions): Strategy<number> {
   const period = options.periodMs;
   const limit = options.limit;
   const T = period / limit; // emission interval (ms per request)
-  if (!Number.isFinite(T)) {
-    // A subnormal `limit` (e.g. Number.MIN_VALUE) makes period/limit overflow to Infinity, poisoning
-    // every downstream TAT / resetAt / retryAfterMs with a non-finite value. Reject at construction.
+  if (!Number.isFinite(T) || T <= 0 || T > Number.MAX_SAFE_INTEGER) {
+    // The emission interval `periodMs/limit` must be a positive, safe-integer number of ms. A subnormal
+    // `limit` overflows it to Infinity; a `period` that underflows relative to `limit` makes it 0
+    // (→ later `0/0 = NaN`); and a finite-but-astronomical value (a `limit` far below 1) lets the
+    // accumulating TAT `tatEff + T*cost` overflow to Infinity after a couple of requests — each poisons
+    // resetAt / retryAfterMs with a non-finite value. No real limiter paces one request per >285k years.
     throw new RangeError(
-      `gcra.limit is too small: the derived emission interval overflows (limit=${limit})`,
+      `gcra: the derived emission interval periodMs/limit is out of range — expected a positive, safe-integer number of ms (limit=${limit}, periodMs=${period}, interval=${T})`,
     );
   }
   const tau = T * burst; // burst tolerance window
+  // A large `T` and/or `burst` can overflow the tolerance window to Infinity, which flows straight
+  // into `remaining`/`resetAt`. Reject rather than emit a non-finite decision.
+  requireFinite("gcra: the derived burst-tolerance window T*burst", tau);
   const ttlMs = Math.ceil(tau);
 
   const lua: LuaProgram = {
