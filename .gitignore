@@ -10,6 +10,8 @@ coverage/
 *.tsbuildinfo
 .vitest/
 .tsup/
+.stryker-tmp/
+reports/
 tmp/
 
 # TLA+ / TLC model-checker artifacts (the spec is tracked; the jar and scratch are not)

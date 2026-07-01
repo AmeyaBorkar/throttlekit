@@ -32,6 +32,20 @@ describe("civil-calendar math", () => {
       expect(daysFromCivil(y, m, d) * MS_PER_DAY).toBe(Date.UTC(y, m - 1, d));
     }
   });
+
+  it("civilFromDays agrees with Date on UTC (y,m,d) across both month-split branches", () => {
+    // Independent of the round-trip (which stays self-consistent even under a broken month split):
+    // compare the civil fields directly to the platform Date, across dates in BOTH branches of the
+    // `mp < 10` split — Jan/Feb take one branch, Mar–Dec the other.
+    for (let z = -50_000; z <= 50_000; z += 13) {
+      const dt = new Date(z * MS_PER_DAY);
+      expect(civilFromDays(z)).toEqual({
+        y: dt.getUTCFullYear(),
+        m: dt.getUTCMonth() + 1,
+        d: dt.getUTCDate(),
+      });
+    }
+  });
 });
 
 describe("calendarPeriod", () => {
@@ -84,5 +98,28 @@ describe("calendarPeriod", () => {
     const sun = calendarPeriod("calendar-week", now, 0, 0);
     expect(sun.start).toBe(Date.UTC(2026, 4, 24));
     expect(sun.reset).toBe(Date.UTC(2026, 4, 31));
+  });
+
+  it("applies a fixed offset to calendar-day and calendar-week boundaries (pins the offset sign)", () => {
+    const ist = 330 * 60_000; // UTC+5:30 — not a whole-day multiple, so the offset sign is observable.
+    // 2024-01-31 20:00 UTC is 2024-02-01 01:30 IST: the offset carries this instant into the next
+    // local day (and a different local week), so a flipped `- offsetMs` sign would move the boundary
+    // off local midnight and out from under `now`.
+    const now = Date.UTC(2024, 0, 31, 20, 0);
+
+    const day = calendarPeriod("calendar-day", now, ist, 1);
+    expect(day.start).toBe(Date.UTC(2024, 1, 1) - ist); // Feb 1 00:00 IST
+    expect(day.reset).toBe(Date.UTC(2024, 1, 2) - ist); // Feb 2 00:00 IST
+    expect(day.reset - day.start).toBe(MS_PER_DAY);
+    expect(day.start).toBeLessThanOrEqual(now);
+    expect(now).toBeLessThan(day.reset);
+
+    // 2024-02-01 IST is a Thursday → week starting Monday spans Mon 2024-01-29 .. Mon 2024-02-05 (IST).
+    const week = calendarPeriod("calendar-week", now, ist, 1);
+    expect(week.start).toBe(Date.UTC(2024, 0, 29) - ist);
+    expect(week.reset).toBe(Date.UTC(2024, 1, 5) - ist);
+    expect(week.reset - week.start).toBe(7 * MS_PER_DAY);
+    expect(week.start).toBeLessThanOrEqual(now);
+    expect(now).toBeLessThan(week.reset);
   });
 });

@@ -1,0 +1,33 @@
+name: Mutation testing
+
+# A full Stryker sweep is far too slow for the PR critical path, so it runs nightly (and on demand). It
+# measures whether the test suite KILLS injected bugs in the core decision math — a surviving mutant is a
+# real gap in the suite, not a runtime failure. Scope + thresholds live in stryker.config.mjs.
+on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: Stryker (core math)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run mutation
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          if-no-files-found: ignore
