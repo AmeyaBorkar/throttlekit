@@ -74,10 +74,41 @@ Store outages resolve via an explicit `fail: "open" | "closed"`, never an accide
 outage can't be ridden to bypass the limit, and the policy applies to *any* limiter throw. In HTTP adapters a
 fail-closed outage is a 503; in gRPC it's `UNAVAILABLE`.
 
+## Adversarial-input guards at the boundary
+
+Rate limiting sits on an untrusted edge, so every value that crosses the boundary — the raw text of a
+`.throttlekit.yaml`, a per-request `cost`, a strategy's construction options, a peer's wire sketch — is
+validated to fail *loudly and finitely* rather than produce a corrupt limit. A fuzz + mutation + model-based
+sweep of these surfaces surfaced the guards below; each rejects at the boundary with a typed error:
+
+- **Decision finiteness (`src/algorithms/`, `src/core/validate.ts`).** A construction parameter that would
+  make a `Decision` field non-finite is rejected with a `RangeError`, so a limiter that builds only ever emits
+  finite `resetAt`/`retryAfterMs` (a non-finite `resetAt` would become a malformed `RateLimit-Reset` header).
+  This covers a subnormal or astronomically-scaled `limit`/`refillPerSec`/`windowMs`/`periodMs`/`ratePerSec`
+  across `gcra`, `tokenBucket`, `fixedWindow`, `slidingWindow`, and `quota` — and `leakyBucket`, where a
+  non-finite `delayMs` would otherwise make `schedule()` `sleep(Infinity)` and never fire (a silent hang). The
+  rate-based strategies additionally bound their derived emission interval to a safe-integer count of ms.
+- **Config parser recursion (`src/config/yaml.ts`).** The zero-dependency YAML/JSON-subset parser caps
+  block-nesting depth (`MAX_NESTING_DEPTH = 64`) and throws a typed `YamlParseError`, so a deeply-nested
+  untrusted config can't overflow the call stack (a DoS on config text). The parser also never pollutes
+  `Object.prototype` — `__proto__`/`constructor`/`prototype` keys are dropped.
+- **Cost overflow (`src/core/validate.ts`).** A per-request `cost` must be a positive finite number
+  `≤ Number.MAX_SAFE_INTEGER`; a larger cost overflowed the emission-interval `cost · T` to a non-finite
+  `retryAfterMs`.
+- **Bounded sketch ring (`src/algorithms/sliding-window.ts`).** `slidingWindow.buckets` is capped at 100 000 —
+  the estimator holds an O(buckets) ring *per key*, so an unbounded `buckets` from one hostile config was a
+  memory-amplification vector (the fixed-memory sketches above bound the orthogonal *key-count* axis).
+- **Sketch total poisoning (`src/sketch/index.ts`).** A decoded snapshot whose `total` is non-finite or
+  negative is rejected, and a poisoned peer `total` is ignored on merge, so a malformed wire snapshot can't
+  corrupt the cluster-wide `N` (the count in the `ε·N` shed threshold).
+
 ## Design decisions & rationale
 
 - **Fixed-memory sketches** because per-key state is itself the DDoS amplification vector; the sketch's
   footprint is a function of accuracy, not cardinality.
+- **Every boundary value fails loudly and finitely** — a config, cost, option, or peer snapshot that could
+  only yield a corrupt or non-finite limit is rejected at the edge with a typed error, never a silent
+  `Infinity`/`NaN`, unbounded allocation, or hang.
 - **The sketch limiter over-denies, never over-admits** — the one-sided error that is correct for abuse
   protection, and it's a hard (non-probabilistic) safety property because `estimate ≥ trueCount`.
 - **Trust is opt-in and validated** — the default ignores `X-Forwarded-For`; a malformed trust entry never
@@ -105,8 +136,13 @@ fail-closed outage is a 503; in gRPC it's `UNAVAILABLE`.
 - `test/http/headers.test.ts` + `policy-name-sanitization.test.ts` — delta-vs-epoch reset contrast,
   `Retry-After` present even with `emit:{}`, and CR/LF stripped from `policyName` (no injection).
 - `test/adapters/enforce.test.ts` — fail-open vs fail-closed behavior.
+- `test/algorithms/decision-finiteness.test.ts` — every strategy, driven through adversarial construction
+  params, either throws a `RangeError` or only emits finite decisions (the finiteness invariant).
+- `test/fuzz/*.fuzz.test.ts` — the config parser, IP/XFF, key/cost, and sketch-merge boundaries survive
+  arbitrary input: a typed throw or a valid result, never a crash, hang, or `Object.prototype` pollution.
 
 ## Source map
 
-`src/sketch/index.ts` · `src/security/ip.ts`, `keys.ts` · `src/http/headers.ts` · the fail policy lives in
+`src/sketch/index.ts` · `src/security/ip.ts`, `keys.ts` · `src/http/headers.ts` · the boundary guards in
+`src/core/validate.ts`, `src/config/yaml.ts`, `src/algorithms/` · the fail policy lives in
 `src/adapters/` ([09](09-adapters.md)).

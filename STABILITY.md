@@ -35,6 +35,12 @@ The surface is designed so it can grow for years without a major bump. Two rules
   (`"store_unavailable" | "rate_limit_exceeded" | "not_implemented" | "queue_full" | "config_invalid"
   | "throttlekit_error"`). Prefer it over `instanceof` when robustness across realms / duplicate
   bundles matters. The value set grows additively.
+- **Validation may tighten to reject inputs that could only misbehave.** A patch or minor may begin throwing
+  a `RangeError` on an option or argument value that previously produced a *corrupt* result — a non-finite
+  `Decision` field, an unbounded allocation, or a hang (e.g. a subnormal `limit`/`ratePerSec`, a
+  `cost > Number.MAX_SAFE_INTEGER`, an oversized `slidingWindow.buckets`, a pathologically-nested config
+  file). This is a **bug fix**, not a narrowing of the supported surface: such values could never yield a
+  valid limit. No *valid* input changes behavior.
 
 These rules are **mechanically enforced**, not just documented: type-level tests (`test/types/`) pin
 the frozen shapes — `readonly` fields, the exact members of each closed union, `bindingAxis`'s shape,

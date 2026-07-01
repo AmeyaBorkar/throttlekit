@@ -6,6 +6,45 @@ All notable changes to ThrottleKit are documented in this file. The format is ba
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-07-01
+
+A security & robustness **hardening** release. A new fuzz + mutation + model-based test layer surfaced a class
+of latent boundary bugs where a pathological, **config-file-unreachable** input produced a **non-finite
+decision**, a **silent hang**, or **unbounded resource use**; each is now rejected at construction/validation
+and pinned by a regression. Minor (not patch): no stable API, option, default, or decision value changed for
+any *valid* input, but a handful of absurd option values that previously "worked" (returned garbage) now throw
+a `RangeError` — a behavior change worth signalling.
+
+### Security / Hardening
+
+- **Decision-finiteness invariant across every strategy.** A construction parameter that would make a
+  `Decision` field non-finite is now rejected with a `RangeError`, so a limiter that builds only ever emits
+  finite `limit`/`remaining`/`resetAt`/`retryAfterMs` (a non-finite `resetAt` would otherwise become a
+  malformed `RateLimit-Reset`/`Retry-After`). Closes it in `gcra` (subnormal `limit` → `Infinity`, `period`
+  underflow → `NaN`, an astronomical emission interval → an accumulating-TAT overflow, `tau = T·burst`
+  overflow), `tokenBucket` (subnormal `refillPerSec` → `Infinity`/`NaN`), and `fixedWindow` / `slidingWindow` /
+  `quota(fixed|rolling)` (subnormal window/period → `Infinity`). The worst case was **`leakyBucket`**: a
+  subnormal `ratePerSec` made `delayMs` non-finite, so `schedule()` would `sleep(Infinity)` and never fire (a
+  silent hang). The rate-based strategies bound their derived interval to a safe-integer count of ms.
+- **Config parser recursion bound.** The zero-dependency YAML/JSON-subset parser (`throttlekit/config`) now
+  caps block-nesting depth (`MAX_NESTING_DEPTH = 64`), so a deeply-nested untrusted `.throttlekit.yaml` throws
+  a typed `YamlParseError` instead of overflowing the call stack — a DoS on untrusted config text.
+- **Cost overflow guard.** A per-request `cost` above `Number.MAX_SAFE_INTEGER` is rejected — it overflowed
+  the emission-interval strategies' `cost · T` arithmetic to a non-finite `retryAfterMs`.
+- **`slidingWindow.buckets` upper bound.** Capped at 100 000 — the estimator holds an O(buckets) ring per key,
+  so an unbounded `buckets` from one hostile config was a memory-exhaustion vector.
+- **Sketch `total` poisoning.** `sketchSnapshotFromBytes` rejects a decoded snapshot whose `total` is
+  non-finite or negative, and `mergeSnapshot` ignores a poisoned peer `total`, so a malformed wire snapshot
+  can't corrupt the cluster-wide count (the `N` in the `ε·N` shed threshold).
+
+### Internal (no runtime change)
+
+- Test-infrastructure hardening that surfaced the above: Stryker **mutation testing** on the core decision
+  math (score 65.4% → 77.5%, with a `break` regression floor + nightly run), **model-based / stateful property
+  tests** (`fc.commands`) over the composite and sequencing seams, **fast-check fuzz harnesses** on the
+  untrusted boundaries (config parser, IP/XFF, key/cost, sketch merge), and a **live-store CI gate**
+  (Redis + Postgres + DynamoDB) running the serialized store suite + server e2e on every push.
+
 ## [1.6.1] — 2026-06-30
 
 ### Performance

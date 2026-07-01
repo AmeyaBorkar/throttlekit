@@ -5,6 +5,37 @@ reasoning behind them. Newest entries at the top.
 
 ---
 
+## 2026-07-01 — Hardening the boundary: fuzz, mutation, and a decision-finiteness sweep (1.7.0)
+
+After the perf sweep, the question was "how hard can we make the core fail *loud* instead of fail *weird*?" A
+bug-surfacing layer went in first: Stryker **mutation testing** on the decision math (a survivor campaign
+lifted the core-math score 65.4% → 77.5% behind a regression floor), **model-based** `fc.commands` suites over
+the composite/sequencing seams, a **live-store CI gate** (Redis + Postgres + DynamoDB) running the serialized
+store suite + server e2e on every push, and **fast-check fuzz harnesses** on the untrusted boundaries (config
+parser, IP/XFF, key/cost, sketch merge). Mutation and model-based found no product bugs (the audit fixes hold);
+the fuzzers surfaced five (F1–F5), all guarded.
+
+**The finding that generalized.** F4 was a subnormal `gcra` `limit` making `T = periodMs/limit = Infinity` — a
+non-finite `resetAt`/`retryAfterMs`, i.e. a malformed `RateLimit-Reset` header. Guarding *only* gcra was the
+trap: the same "a construction parameter overflows the derived time arithmetic" shape was live in every sibling
+that divides by a rate or period. An executable invariant test — drive each strategy through adversarial
+construction params, assert it *either* throws a `RangeError` *or* only emits finite decisions — turned the
+one-off into a sweep. It caught its own author twice: a finite-but-astronomical emission interval still
+overflowed the *accumulating* TAT after two requests (so the bound is a safe-integer count of ms, not merely
+finite), and the worst case was `leakyBucket`, where a non-finite `delayMs` made `schedule()` `sleep(Infinity)`
+and never fire — a silent hang, not a bad number.
+
+**The rest of the boundary.** F2 caps the zero-dep YAML parser's block-nesting depth (a deeply-nested untrusted
+config was a stack-overflow DoS); F3 rejects a `cost > 2^53` (it overflowed `cost·T`); F5 bounds
+`slidingWindow.buckets` at 100k (an O(buckets)-per-key ring is a memory-amplification vector); F1 rejects a
+poisoned sketch `total` on decode and ignores it on merge (a malformed peer snapshot can't corrupt the
+cluster-wide `N`). Common thread: every value crossing the edge now fails loudly and finitely.
+
+**Status.** Storeless core **1551** green, lint + strict types clean, package surface (`publint` + `attw`)
+clean. Shipped as **1.7.0** — minor, because a handful of absurd, config-file-unreachable option values that
+previously returned garbage now throw; no *valid* input changed. F1–F6 were all unreleased since 1.6.1, so this
+is their first release.
+
 ## 2026-06-30 — A performance optimization sweep (measured before/after)
 
 Ran a multi-agent performance audit across all three libraries — core, the server (`throttlekit-server`),

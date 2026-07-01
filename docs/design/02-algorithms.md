@@ -10,7 +10,11 @@ Every limit ThrottleKit enforces is one of these algorithms. Each is a pure func
 serialization cost on distributed backends) and, for the distribution-relevant ones, an **atomic Lua
 program** that computes the identical decision in one Redis round trip. A universal invariant holds across
 all of them: **a denied request never consumes** (`persist: false` on deny), so `remaining` stays
-meaningful across repeated denials.
+meaningful across repeated denials. A second: **a strategy that constructs emits only finite decisions** — a
+construction parameter that would drive a `Decision` field to `Infinity`/`NaN` (a subnormal
+`limit`/`refillPerSec`/`windowMs`/`ratePerSec`, or an astronomically-scaled emission interval) is rejected at
+construction with a `RangeError`, so `resetAt`/`retryAfterMs` are always finite and safe to serialize into a
+`RateLimit-Reset`/`Retry-After` header (see [11 · Overload & security](11-overload-and-security.md)).
 
 ## The algorithms
 
@@ -199,6 +203,9 @@ memory and Redis composites are bit-identical. The async path supports `gcra`/`t
   binding decision = tightest remaining; Redis dual-path conformance for both.
 - `test/conformance/conformance.test.ts` — the bit-identical JS-vs-Lua proof across all strategies (see
   [01](01-core-model.md)).
+- `test/algorithms/decision-finiteness.test.ts` — every strategy, under adversarial construction params
+  (subnormal / astronomical rates and windows), either throws a `RangeError` or only emits finite `Decision`
+  fields — the construction-time finiteness invariant.
 
 ## Source map
 
