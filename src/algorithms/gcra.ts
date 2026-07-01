@@ -70,6 +70,13 @@ export function gcra(options: GcraOptions): Strategy<number> {
   const period = options.periodMs;
   const limit = options.limit;
   const T = period / limit; // emission interval (ms per request)
+  if (!Number.isFinite(T)) {
+    // A subnormal `limit` (e.g. Number.MIN_VALUE) makes period/limit overflow to Infinity, poisoning
+    // every downstream TAT / resetAt / retryAfterMs with a non-finite value. Reject at construction.
+    throw new RangeError(
+      `gcra.limit is too small: the derived emission interval overflows (limit=${limit})`,
+    );
+  }
   const tau = T * burst; // burst tolerance window
   const ttlMs = Math.ceil(tau);
 

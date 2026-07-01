@@ -7,7 +7,7 @@ import type {
   Strategy,
   StrategyOutcome,
 } from "../core/types";
-import { requireAtLeast, requireInteger, requirePositive } from "../core/validate";
+import { requireAtLeast, requireAtMost, requireInteger, requirePositive } from "../core/validate";
 
 /** Read-only Lua for non-consuming introspection: returns the whole ring HASH (no write). */
 const SLIDING_WINDOW_READ_LUA = "return redis.call('HGETALL', KEYS[1])";
@@ -102,6 +102,9 @@ export function slidingWindow(options: SlidingWindowOptions): Strategy<WindowSta
   const S = options.buckets ?? 10;
   requireInteger("slidingWindow.buckets", S);
   requireAtLeast("slidingWindow.buckets", S, 1);
+  // Upper bound: the estimator holds an O(buckets) ring PER KEY, so an unbounded `buckets` is a memory
+  // DoS from one hostile config. 10k buckets already gives <0.01% window error; cap generously above it.
+  requireAtMost("slidingWindow.buckets", S, 100_000);
 
   const limit = options.limit;
   const windowMs = options.windowMs;

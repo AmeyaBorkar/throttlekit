@@ -17,6 +17,8 @@ describe("gcra", () => {
     expect(() => gcra({ limit: 0, periodMs: 1000 })).toThrow(RangeError);
     expect(() => gcra({ limit: 10, periodMs: -1 })).toThrow(RangeError);
     expect(() => gcra({ limit: 10, periodMs: 1000, burst: 0 })).toThrow(RangeError);
+    // A subnormal limit makes the derived emission interval periodMs/limit overflow to Infinity — reject it.
+    expect(() => gcra({ limit: Number.MIN_VALUE, periodMs: 1000 })).toThrow(RangeError);
   });
 
   it("admits exactly `burst` requests from cold, then denies (burst-then-pace)", () => {

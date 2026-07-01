@@ -236,29 +236,33 @@ describe("fuzz: config parser boundary", () => {
   });
 
   /**
-   * FINDING F4 (marked, NOT fixed) — an extreme-but-`requirePositive`-valid numeric parameter builds
-   * a limiter that then emits NON-FINITE decision fields (a "half-valid config that later misbehaves").
+   * FINDING F4 (FIXED) — a subnormal `limit` is now rejected at build instead of producing a limiter
+   * that emits NON-FINITE decision fields.
    *
-   * `gcra`'s validators accept any finite positive `limit`, including subnormals like
-   * `Number.MIN_VALUE` (5e-324). But `T = periodMs / limit` then overflows to `Infinity`, so every
-   * decision the built limiter emits carries a non-finite `resetAt` / `retryAfterMs`. This is the
-   * config-boundary sibling of FINDING F3 (huge cost): the same "unbounded arithmetic → non-finite
-   * decision field" root, reached through a config parameter instead of a per-request cost. The
-   * config text `{ strategy: gcra, limit: 5e-324, period: 1m, burst: 1 }` decodes such a `limit`
-   * (the number regex accepts scientific notation), so a hostile policy file reaches it.
-   *
-   * `it.fails` keeps the suite green while pinning the bug; it flips to RED once the strategy rejects
-   * (or clamps) parameters that would overflow its internal rate.
+   * `gcra` now checks that the derived emission interval `T = periodMs / limit` is finite, so a
+   * subnormal `limit` like `Number.MIN_VALUE` (which overflowed `T` to `Infinity`) is a clean throw at
+   * construction. The config text `{ strategy: gcra, limit: 5e-324, ... }` therefore fails to load.
    */
-  it.fails(
-    "FINDING F4: a subnormal `limit` builds a limiter that emits non-finite decisions",
-    () => {
-      const { limiters } = loadConfigObject({
+  it("FINDING F4 (fixed): a subnormal `limit` is rejected at build, not a non-finite-decision limiter", () => {
+    expect(() =>
+      loadConfigObject({
         limiters: { a: { strategy: "gcra", limit: Number.MIN_VALUE, period: "1m", burst: 1 } },
-      });
-      const d = limiters.a!.checkSync("k", 1);
-      // DESIRED: a finite, well-formed decision (or a build-time rejection). ACTUAL: non-finite fields.
-      expect(Number.isFinite(d.resetAt) && Number.isFinite(d.retryAfterMs)).toBe(true);
-    },
-  );
+      }),
+    ).toThrow();
+  });
+
+  /**
+   * FINDING F5 (FIXED) — `slidingWindow` now bounds `buckets`. It holds an O(buckets) ring PER KEY, so
+   * a hostile `buckets: 1e6+` config was an unbounded memory allocation (a DoS). The strategy caps
+   * `buckets` at 100k and rejects anything larger with a RangeError.
+   */
+  it("FINDING F5 (fixed): an oversized slidingWindow `buckets` is rejected at build", () => {
+    expect(() =>
+      loadConfigObject({
+        limiters: {
+          a: { strategy: "slidingWindow", limit: 100, period: "1s", buckets: 1_000_000 },
+        },
+      }),
+    ).toThrow();
+  });
 });

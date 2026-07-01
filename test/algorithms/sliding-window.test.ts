@@ -53,6 +53,11 @@ describe("slidingWindow (sub-bucketed)", () => {
     expect(() => slidingWindow({ limit: 0, windowMs: 1000 })).toThrow(RangeError);
     expect(() => slidingWindow({ limit: 10, windowMs: 1000, buckets: 0 })).toThrow(RangeError);
     expect(() => slidingWindow({ limit: 10, windowMs: 1000, buckets: 2.5 })).toThrow(RangeError);
+    // Upper-bounded: an O(buckets) ring per key means an unbounded buckets is a memory DoS.
+    expect(() => slidingWindow({ limit: 10, windowMs: 1000, buckets: 100_001 })).toThrow(
+      RangeError,
+    );
+    expect(() => slidingWindow({ limit: 10, windowMs: 1000, buckets: 100_000 })).not.toThrow();
   });
 
   it("admits `limit` in a burst, denies the next", () => {

@@ -121,25 +121,24 @@ describe("fuzz: cross-node sketch merge boundary", () => {
    *
    * Minimal deterministic reproduction (assertion states the DESIRED finite, non-negative total):
    */
-  it.fails(
-    "FINDING F1: a peer's poisoned float64 `total` (NaN) corrupts the merged sketch total",
-    () => {
-      const recv = mergeableSketch();
-      recv.add("legit", 10);
-      const template = mergeableSketch().toBytes(); // matching dims so the merge is accepted
-      const poisoned = template.slice();
-      new DataView(poisoned.buffer, poisoned.byteOffset, poisoned.byteLength).setFloat64(
-        8,
-        Number.NaN,
-        true,
-      );
+  it("FINDING F1 (fixed): a poisoned float64 `total` is rejected on decode and ignored on merge", () => {
+    const poisoned = mergeableSketch().toBytes().slice(); // matching dims
+    new DataView(poisoned.buffer, poisoned.byteOffset, poisoned.byteLength).setFloat64(
+      8,
+      Number.NaN,
+      true,
+    );
+    // Decode rejects a non-finite total outright — it never reaches a running count.
+    expect(() => sketchSnapshotFromBytes(poisoned)).toThrow();
 
-      const snap = sketchSnapshotFromBytes(poisoned);
-      recv.merge(snap);
-
-      // DESIRED: total stays a finite, non-negative number. ACTUAL: NaN — so these assertions fail.
-      expect(Number.isFinite(recv.total)).toBe(true);
-      expect(recv.total).toBeGreaterThanOrEqual(0);
-    },
-  );
+    // Defense in depth: a snapshot object carrying a poisoned total (built out-of-band) is ignored by
+    // merge, leaving the receiver's running total untouched.
+    const recv = mergeableSketch();
+    recv.add("legit", 10);
+    const before = recv.total;
+    const good = sketchSnapshotFromBytes(mergeableSketch().toBytes());
+    recv.merge({ ...good, total: Number.NaN });
+    expect(recv.total).toBe(before);
+    expect(Number.isFinite(recv.total)).toBe(true);
+  });
 });

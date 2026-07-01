@@ -216,7 +216,9 @@ export class CountMinSketch {
     // wrap below the true union count and hide a heavy hitter from threshold shedding.
     for (let i = 0; i < a.length; i++)
       a[i] = Math.min((a[i] as number) + (b[i] as number), MAX_U32);
-    this.#total += snap.total;
+    // Defense in depth for a snapshot built outside sketchSnapshotFromBytes: never fold a non-finite or
+    // negative total into the running count (a poisoned peer total would corrupt the epsilon*N bound).
+    if (Number.isFinite(snap.total) && snap.total >= 0) this.#total += snap.total;
   }
 
   /** A detached copy of this sketch's table and total, for transport or in-process merge. */
@@ -408,6 +410,11 @@ export function sketchSnapshotFromBytes(bytes: Uint8Array): SketchSnapshot {
   const width = dv.getUint32(0, true);
   const depth = dv.getUint32(4, true);
   const total = dv.getFloat64(8, true);
+  if (!Number.isFinite(total) || total < 0) {
+    // Untrusted peer bytes: a poisoned `total` (NaN / Infinity / negative) would corrupt the receiver's
+    // cluster-wide count (the N in the epsilon*N shed threshold). Reject the snapshot outright.
+    throw new Error(`sketch snapshot has a non-finite or negative total: ${String(total)}`);
+  }
   const n = width * depth;
   if (bytes.byteLength !== HEADER_BYTES + n * 4) {
     throw new Error(`sketch bytes length mismatch: expected ${HEADER_BYTES + n * 4}`);
